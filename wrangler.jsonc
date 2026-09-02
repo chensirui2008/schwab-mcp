@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "schwab-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "GITHUB_CLIENT_ID": "replace-with-github-oauth-client-id",
+    "ALLOWED_GITHUB_USER_ID": "replace-with-your-numeric-github-user-id",
+    "SCHWAB_REDIRECT_URI": "https://schwab-mcp.<account-subdomain>.workers.dev/auth/schwab/callback",
+    "MARKET_DATA_BASE_URL": "https://api.schwabapi.com/marketdata/v1",
+    "TRADER_BASE_URL": "https://api.schwabapi.com/trader/v1",
+    "APP_VERSION": "0.1.0"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SCHWAB_VAULT",
+        "class_name": "SchwabVault"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SchwabVault"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  }
+}
