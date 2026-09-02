@@ -7,7 +7,13 @@ import { createServer } from "./tools";
 export { SchwabVault } from "./vault";
 
 const apiHandler = {
-  fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
+    const cors = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version, MCP-Method",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+    };
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const handler = createMcpHandler(() => createServer(env), {
       legacy: "stateless",
       responseMode: "auto",
@@ -16,7 +22,12 @@ const apiHandler = {
       },
     });
     ctx.passThroughOnException();
-    return handler.fetch(request);
+    const response = await handler.fetch(request);
+    const headers = new Headers(response.headers);
+    Object.entries(cors).forEach(([key, value]) => {
+      headers.set(key, value);
+    });
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
 };
 

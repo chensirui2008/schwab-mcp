@@ -36,11 +36,12 @@ function reconnectUrl(env: AppEnv): string {
 
 function toolError(error: PublicError, env: AppEnv) {
   const output: PublicError =
-    error.code === "REAUTHORIZATION_REQUIRED" ? { ...error, reconnectUrl: reconnectUrl(env) } : error;
+    error.code === "AUTH_REQUIRED" || error.code === "REAUTHORIZATION_REQUIRED" ? { ...error, reconnectUrl: reconnectUrl(env) } : error;
   return {
     resultType: "complete" as const,
     isError: true,
     content: [{ type: "text" as const, text: JSON.stringify({ error: output }) }],
+    structuredContent: { error: output },
   };
 }
 
@@ -53,11 +54,17 @@ async function execute(
   transform: Transform = redact,
 ) {
   const requestId = crypto.randomUUID();
-  const response = await vaultStub(env).fetch("https://vault/request", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ base, path, query, requestId, tool } satisfies VaultRequest),
-  });
+  let response: Response;
+  try {
+    response = await vaultStub(env).fetch("https://vault/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base, path, query, requestId, tool } satisfies VaultRequest),
+    });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "schwab_vault_unavailable", requestId, tool, message: error instanceof Error ? error.message : "Unknown error" }));
+    return toolError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab vault is unavailable", requestId }, env);
+  }
   const envelope = parseVaultEnvelope(await response.json());
   if (!response.ok || envelope.error) {
     return toolError(

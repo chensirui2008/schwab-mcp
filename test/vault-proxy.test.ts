@@ -40,6 +40,13 @@ function requestUrl(input: RequestInfo | URL): string {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("SchwabVault upstream behavior", () => {
+  it("returns AUTH_REQUIRED before the first Schwab connection", async () => {
+    const vault = stub();
+    const response = await proxy(vault);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { code: "AUTH_REQUIRED", attempts: 1 } });
+  });
+
   it("preserves the configured API base path", async () => {
     const vault = stub();
     await saveToken(vault);

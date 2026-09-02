@@ -7,8 +7,8 @@
   "workers_dev": true,
   "vars": {
     "GITHUB_CLIENT_ID": "replace-with-github-oauth-client-id",
-    "ALLOWED_GITHUB_USER_ID": "replace-with-your-numeric-github-user-id",
-    "SCHWAB_REDIRECT_URI": "https://schwab-mcp.<account-subdomain>.workers.dev/auth/schwab/callback",
+    "ALLOWED_GITHUB_USER_ID": "91513186",
+    "SCHWAB_REDIRECT_URI": "https://schwab-mcp.siruichen461.workers.dev/auth/schwab/callback",
     "MARKET_DATA_BASE_URL": "https://api.schwabapi.com/marketdata/v1",
     "TRADER_BASE_URL": "https://api.schwabapi.com/trader/v1",
     "APP_VERSION": "0.1.0"
@@ -16,7 +16,7 @@
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
-      "id": "00000000000000000000000000000000"
+      "id": "b849f6be217b4f6bac9fcb7cb8545859"
     }
   ],
   "durable_objects": {

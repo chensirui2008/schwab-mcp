@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 const symbol = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9$./_ -]+$/);
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const isoDate = z.iso.date();
 const isoDateTime = z.iso.datetime({ offset: true });
 const accountHash = z.string().min(16).max(256).regex(/^[A-Za-z0-9_-]+$/);
 

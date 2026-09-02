@@ -29,8 +29,11 @@ function isTokenResponse(value: unknown): value is SchwabTokenResponse {
   if (value === null || typeof value !== "object") return false;
   return (
     typeof field(value, "access_token") === "string" &&
+    (field(value, "access_token") as string).length > 0 &&
     typeof field(value, "refresh_token") === "string" &&
-    typeof field(value, "expires_in") === "number"
+    (field(value, "refresh_token") as string).length > 0 &&
+    typeof field(value, "expires_in") === "number" &&
+    (field(value, "expires_in") as number) > 0
   );
 }
 
@@ -215,8 +218,9 @@ export class SchwabVault extends DurableObject<AppEnv> {
 
   private async refreshToken(force: boolean, requestId: string, failedAccessToken?: string): Promise<TokenRecord> {
     const current = this.readToken();
-    if (!current || current.status !== "connected" || current.refreshExpiresAt <= Date.now()) {
-      if (current) this.markReauthorizationRequired(current);
+    if (!current) throw new Error("AUTH_REQUIRED");
+    if (current.status !== "connected" || current.refreshExpiresAt <= Date.now()) {
+      this.markReauthorizationRequired(current);
       throw new Error("REAUTHORIZATION_REQUIRED");
     }
     if (force && failedAccessToken !== undefined && current.accessToken !== failedAccessToken) return current;
@@ -231,14 +235,25 @@ export class SchwabVault extends DurableObject<AppEnv> {
 
   private async performRefresh(current: TokenRecord, requestId: string): Promise<TokenRecord> {
     const started = Date.now();
-    const response = await fetch("https://api.schwabapi.com/v1/oauth/token", {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${btoa(`${this.env.SCHWAB_CLIENT_ID}:${this.env.SCHWAB_CLIENT_SECRET}`)}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken }),
-    });
+    let response: Response;
+    try {
+      response = await fetch("https://api.schwabapi.com/v1/oauth/token", {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${btoa(`${this.env.SCHWAB_CLIENT_ID}:${this.env.SCHWAB_CLIENT_SECRET}`)}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken }),
+      });
+    } catch (error) {
+      logEvent("schwab_token_refresh", {
+        requestId,
+        status: "network_error",
+        durationMs: Date.now() - started,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+      throw new Error("UPSTREAM_UNAVAILABLE");
+    }
     const body: unknown = await response.json().catch(() => null);
     logEvent("schwab_token_refresh", {
       requestId,
@@ -285,20 +300,33 @@ export class SchwabVault extends DurableObject<AppEnv> {
       try {
         token = await this.refreshToken(forceRefresh, input.requestId, failedAccessToken);
       } catch (error) {
-        const reauth = error instanceof Error && error.message === "REAUTHORIZATION_REQUIRED";
+        const errorCode = error instanceof Error && (error.message === "AUTH_REQUIRED" || error.message === "REAUTHORIZATION_REQUIRED") ? error.message : undefined;
         return publicError(
           {
-            code: reauth ? "REAUTHORIZATION_REQUIRED" : "UPSTREAM_UNAVAILABLE",
-            message: reauth ? "Schwab authorization must be renewed" : "Unable to refresh Schwab authorization",
+            code: errorCode ?? "UPSTREAM_UNAVAILABLE",
+            message: errorCode === "AUTH_REQUIRED" ? "Schwab authorization is required" : errorCode === "REAUTHORIZATION_REQUIRED" ? "Schwab authorization must be renewed" : "Unable to refresh Schwab authorization",
             requestId: input.requestId,
             attempts,
           },
-          reauth ? 401 : 502,
+          errorCode ? 401 : 502,
         );
       }
 
       const started = Date.now();
-      const upstream = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${token.accessToken}` } });
+      let upstream: Response;
+      try {
+        upstream = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${token.accessToken}` } });
+      } catch (error) {
+        logEvent("schwab_api_request", {
+          requestId: input.requestId,
+          tool: input.tool,
+          status: "network_error",
+          attempts,
+          durationMs: Date.now() - started,
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+        return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab API is unavailable", requestId: input.requestId, attempts }, 502);
+      }
       logEvent("schwab_api_request", {
         requestId: input.requestId,
         tool: input.tool,
@@ -307,7 +335,13 @@ export class SchwabVault extends DurableObject<AppEnv> {
         durationMs: Date.now() - started,
       });
       if (upstream.ok) {
-        const result: unknown = await upstream.json();
+        let result: unknown;
+        try {
+          result = await upstream.json();
+        } catch (error) {
+          logEvent("schwab_response_invalid", { requestId: input.requestId, tool: input.tool, message: error instanceof Error ? error.message : "Invalid JSON" });
+          return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab returned an invalid response", requestId: input.requestId, attempts }, 502);
+        }
         return jsonResponse({ result, attempts });
       }
       if (upstream.status === 401 && attempts === 1) {

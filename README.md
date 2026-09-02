@@ -50,7 +50,7 @@ cp .dev.vars.example .dev.vars
 
 1. 把 `GITHUB_CLIENT_ID` 换成 GitHub OAuth App 的 Client ID。
 2. 把 `ALLOWED_GITHUB_USER_ID` 换成你不可变的 GitHub numeric user ID。
-3. 把 `SCHWAB_REDIRECT_URI` 换成固定生产回调地址：`https://schwab-mcp.<account-subdomain>.workers.dev/auth/schwab/callback`。
+3. `SCHWAB_REDIRECT_URI` 已按当前账户子域名配置为 `https://schwab-mcp.siruichen461.workers.dev/auth/schwab/callback`。
 4. 创建 KV namespace，然后把返回的 ID 写入 `OAUTH_KV`：
 
 ```bash
@@ -62,7 +62,7 @@ npx wrangler kv namespace create OAUTH_KV
 GitHub OAuth App 的 callback URL 必须是：
 
 ```text
-https://schwab-mcp.<account-subdomain>.workers.dev/auth/github/callback
+https://schwab-mcp.siruichen461.workers.dev/auth/github/callback
 ```
 
 Schwab Production App 的 callback URL 必须和 `SCHWAB_REDIRECT_URI` 完全一致，包括协议、主机、路径和大小写。
@@ -92,13 +92,13 @@ npm run deploy
 部署后访问以下地址完成 Schwab 授权：
 
 ```text
-https://schwab-mcp.<account-subdomain>.workers.dev/auth/schwab/connect
+https://schwab-mcp.siruichen461.workers.dev/auth/schwab/connect
 ```
 
 远程 MCP 地址是：
 
 ```text
-https://schwab-mcp.<account-subdomain>.workers.dev/mcp
+https://schwab-mcp.siruichen461.workers.dev/mcp
 ```
 
 `/health` 只返回运行状态和版本，不返回 Schwab 连接状态或账户数据。
