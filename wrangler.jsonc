@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "vars": {
-    "GITHUB_CLIENT_ID": "replace-with-github-oauth-client-id",
+    "GITHUB_CLIENT_ID": "Ov23liW2n6FLZm3U4FPE",
     "ALLOWED_GITHUB_USER_ID": "91513186",
     "SCHWAB_REDIRECT_URI": "https://schwab-mcp.siruichen461.workers.dev/auth/schwab/callback",
     "MARKET_DATA_BASE_URL": "https://api.schwabapi.com/marketdata/v1",
