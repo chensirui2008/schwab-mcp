@@ -3,11 +3,14 @@ import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
 import { accountHashes, redact } from "./redaction";
 import { toolSchemas } from "./schemas";
-import type { PublicError, ToolResult, VaultRequest } from "./types";
+import type { AuthorizationNotice, PublicError, ToolResult, VaultRequest } from "./types";
+
+const REAUTHORIZATION_NOTICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 interface VaultEnvelope {
   result?: unknown;
   attempts?: number;
+  refreshExpiresAt?: number;
   error?: PublicError;
 }
 
@@ -21,10 +24,12 @@ function parseVaultEnvelope(value: unknown): VaultEnvelope {
   const error = Reflect.get(value, "error") as unknown;
   const result = Reflect.get(value, "result") as unknown;
   const attempts = Reflect.get(value, "attempts") as unknown;
+  const refreshExpiresAt = Reflect.get(value, "refreshExpiresAt") as unknown;
   return {
     ...(isPublicError(error) ? { error } : {}),
     ...(result === undefined ? {} : { result }),
     ...(typeof attempts === "number" ? { attempts } : {}),
+    ...(typeof refreshExpiresAt === "number" ? { refreshExpiresAt } : {}),
   };
 }
 
@@ -32,6 +37,16 @@ type Transform = (value: unknown) => unknown;
 
 function reconnectUrl(env: AppEnv): string {
   return `${new URL(env.SCHWAB_REDIRECT_URI).origin}/auth/schwab/connect`;
+}
+
+export function authorizationNotice(refreshExpiresAt: number | null | undefined, env: AppEnv, now = Date.now()): AuthorizationNotice | undefined {
+  if (typeof refreshExpiresAt !== "number" || refreshExpiresAt <= now || refreshExpiresAt - now > REAUTHORIZATION_NOTICE_WINDOW_MS) return undefined;
+  return {
+    code: "REAUTHORIZATION_DUE_SOON",
+    message: "Schwab authorization expires within 24 hours; reconnect to avoid interruption",
+    refreshExpiresAt: new Date(refreshExpiresAt).toISOString(),
+    reconnectUrl: reconnectUrl(env),
+  };
 }
 
 function toolError(error: PublicError, env: AppEnv) {
@@ -79,9 +94,15 @@ async function execute(
     console.error(JSON.stringify({ event: "schwab_response_invalid", requestId, tool, message: error instanceof Error ? error.message : "Unknown error" }));
     return toolError({ code: "UPSTREAM_UNAVAILABLE", message: "Unexpected Schwab response shape", requestId }, env);
   }
+  const notice = authorizationNotice(envelope.refreshExpiresAt, env);
   const output: ToolResult<unknown> = {
     data,
-    meta: { source: "schwab", fetchedAt: new Date().toISOString(), requestId },
+    meta: {
+      source: "schwab",
+      fetchedAt: new Date().toISOString(),
+      requestId,
+      ...(notice ? { authorizationNotice: notice } : {}),
+    },
   };
   return {
     resultType: "complete" as const,
@@ -105,9 +126,15 @@ export function createServer(env: AppEnv): McpServer {
       const response = await vaultStub(env).fetch("https://vault/status");
       const rawStatus: unknown = await response.json();
       const status = rawStatus !== null && typeof rawStatus === "object" ? redact(rawStatus) : {};
+      const notice = authorizationNotice(Reflect.get(status as object, "refreshExpiresAt") as number | null | undefined, env);
       const output: ToolResult<unknown> = {
         data: { ...(status as Record<string, unknown>), reconnectUrl: reconnectUrl(env) },
-        meta: { source: "schwab", fetchedAt: new Date().toISOString(), requestId },
+        meta: {
+          source: "schwab",
+          fetchedAt: new Date().toISOString(),
+          requestId,
+          ...(notice ? { authorizationNotice: notice } : {}),
+        },
       };
       return { resultType: "complete" as const, content: [{ type: "text" as const, text: JSON.stringify(output) }], structuredContent: output };
     },

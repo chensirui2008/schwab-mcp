@@ -104,7 +104,7 @@ describe("SchwabVault upstream behavior", () => {
 
     const response = await proxy(vault);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ result: { symbol: "AAPL" }, attempts: 2 });
+    expect(await response.json()).toMatchObject({ result: { symbol: "AAPL" }, attempts: 2, refreshExpiresAt: before });
     expect(apiCalls).toBe(2);
     expect(refreshCalls).toBe(1);
     const after = await refreshExpiry(vault);
@@ -154,6 +154,21 @@ describe("SchwabVault upstream behavior", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ error: { code: "REAUTHORIZATION_REQUIRED", attempts: 2 } });
     expect(await (await vault.fetch("https://vault/status")).json()).toMatchObject({ status: "reauthorization_required" });
+  });
+
+  it("recognizes an expired refresh token in the OAuth error description", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (requestUrl(input).endsWith("/v1/oauth/token")) {
+        return Response.json({ error: "oauth_error", error_description: "The refresh token is expired" }, { status: 400 });
+      }
+      return Response.json({ error: "expired" }, { status: 401 });
+    }));
+
+    const response = await proxy(vault);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { code: "REAUTHORIZATION_REQUIRED", attempts: 2 } });
   });
 });
 

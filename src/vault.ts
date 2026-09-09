@@ -37,6 +37,15 @@ function isTokenResponse(value: unknown): value is SchwabTokenResponse {
   );
 }
 
+function isReauthorizationError(value: unknown): boolean {
+  if (value === null || typeof value !== "object") return false;
+  const details = [field(value, "error"), field(value, "error_description"), field(value, "message")]
+    .filter((item): item is string => typeof item === "string")
+    .join(" ")
+    .toLowerCase();
+  return details.includes("invalid_grant") || (details.includes("refresh token") && /expired|invalid|revoked/.test(details));
+}
+
 function isStringRecord(value: unknown): value is Record<string, string> {
   return value !== null && typeof value === "object" && Object.values(value).every((item) => typeof item === "string");
 }
@@ -261,8 +270,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       durationMs: Date.now() - started,
     });
     if (!response.ok || !isTokenResponse(body)) {
-      const errorName = body !== null && typeof body === "object" ? field(body, "error") : undefined;
-      const reauthorizationRequired = errorName === "invalid_grant";
+      const reauthorizationRequired = isReauthorizationError(body);
       if (reauthorizationRequired) this.markReauthorizationRequired(current);
       throw new Error(reauthorizationRequired ? "REAUTHORIZATION_REQUIRED" : "UPSTREAM_UNAVAILABLE");
     }
@@ -342,7 +350,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
           logEvent("schwab_response_invalid", { requestId: input.requestId, tool: input.tool, message: error instanceof Error ? error.message : "Invalid JSON" });
           return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab returned an invalid response", requestId: input.requestId, attempts }, 502);
         }
-        return jsonResponse({ result, attempts });
+        return jsonResponse({ result, attempts, refreshExpiresAt: token.refreshExpiresAt });
       }
       if (upstream.status === 401 && attempts === 1) {
         failedAccessToken = token.accessToken;

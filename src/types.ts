@@ -10,6 +10,14 @@ export interface ToolMeta {
   source: "schwab";
   fetchedAt: string;
   requestId: string;
+  authorizationNotice?: AuthorizationNotice;
+}
+
+export interface AuthorizationNotice {
+  code: "REAUTHORIZATION_DUE_SOON";
+  message: string;
+  refreshExpiresAt: string;
+  reconnectUrl: string;
 }
 
 export interface ToolResult<T> {

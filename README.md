@@ -35,7 +35,7 @@ flowchart LR
   U -->|Schwab OAuth callback| V
 ```
 
-每个 MCP 请求创建新的 `McpServer`。Schwab token、到期时间和一次性 OAuth state 放在单个 `SchwabVault` Durable Object 中。对象会合并并发 refresh、在 access token 到期前五分钟刷新、在 401 后强制刷新并重试一次。刷新不会延长首次 Schwab 授权起算的七天期限。429 和 5xx 最多重试一次；若 `Retry-After` 超过两秒，则不提前重试，而是返回包含 `retryAfterMs` 的明确错误。`invalid_grant` 会立即转为 `REAUTHORIZATION_REQUIRED`。
+每个 MCP 请求创建新的 `McpServer`。Schwab token、到期时间和一次性 OAuth state 放在单个 `SchwabVault` Durable Object 中。对象会合并并发 refresh、在 access token 到期前五分钟刷新、在 401 后强制刷新并重试一次。刷新不会延长首次 Schwab 授权起算的七天期限。剩余有效期不足 24 小时时，成功的 MCP 工具结果会在 `meta.authorizationNotice` 中返回到期时间和一键重连链接。429 和 5xx 最多重试一次；若 `Retry-After` 超过两秒，则不提前重试，而是返回包含 `retryAfterMs` 的明确错误。`invalid_grant`，以及明确表示 refresh token 已过期、失效或撤销的 OAuth 错误，会立即转为 `REAUTHORIZATION_REQUIRED`。
 
 ## 本地配置
 
@@ -120,4 +120,4 @@ Workers structured logs 记录：
 npx wrangler tail schwab-mcp --format json
 ```
 
-错误通过 MCP `isError: true` 返回稳定错误码：`AUTH_REQUIRED`、`REAUTHORIZATION_REQUIRED`、`INVALID_ARGUMENT`、`RATE_LIMITED`、`SCHWAB_REJECTED`、`UPSTREAM_UNAVAILABLE`。上游错误不会转换为空结果。
+错误通过 MCP `isError: true` 返回稳定错误码：`AUTH_REQUIRED`、`REAUTHORIZATION_REQUIRED`、`INVALID_ARGUMENT`、`RATE_LIMITED`、`SCHWAB_REJECTED`、`UPSTREAM_UNAVAILABLE`。`AUTH_REQUIRED` 和 `REAUTHORIZATION_REQUIRED` 会附带 `reconnectUrl`；成功结果在授权剩余不足 24 小时时附带 `meta.authorizationNotice`。上游错误不会转换为空结果。

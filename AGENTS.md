@@ -12,7 +12,7 @@
 - Schwab 数据 API 仅允许 `GET`，禁止下单、改单和撤单。OAuth token exchange 和 Durable Object 内部 RPC 可使用非 GET 方法，但不得承载交易指令。
 - 账户工具只接受 Schwab `hashValue`。完整账号必须在序列化和日志前移除。
 - 401 只允许刷新并重试一次；429 和 5xx 只允许重试一次；其他 4xx 不重试。
-- 不添加 Streamer、后台定时刷新、行情缓存或多租户逻辑，除非产品范围明确变更并同步更新本文件和 README。
+- 不添加 Streamer、后台定时刷新、行情缓存或多租户逻辑，除非产品范围明确变更并同步更新本文件和 README。授权到期提醒仅通过 MCP 成功结果的 `meta.authorizationNotice` 返回，不模拟登录，也不绕过 Schwab 的交互式重新授权。
 
 ## 修改与验证
 
