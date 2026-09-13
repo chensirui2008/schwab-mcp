@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppEnv } from "../src/env";
+import { tradingEnabled } from "../src/env";
 import { authorizationNotice } from "../src/tools";
 
 const env = {
@@ -21,5 +22,13 @@ describe("Schwab authorization notice", () => {
     const now = Date.UTC(2026, 8, 9, 0, 0, 0);
     expect(authorizationNotice(now + 24 * 60 * 60 * 1000 + 1, env, now)).toBeUndefined();
     expect(authorizationNotice(now, env, now)).toBeUndefined();
+  });
+});
+
+describe("trading master switch", () => {
+  it("is enabled only by the exact deployment value true", () => {
+    expect(tradingEnabled({ ENABLE_TRADING: "true" } as AppEnv)).toBe(true);
+    expect(tradingEnabled({ ENABLE_TRADING: "false" } as AppEnv)).toBe(false);
+    expect(tradingEnabled({ ENABLE_TRADING: "TRUE" } as AppEnv)).toBe(false);
   });
 });

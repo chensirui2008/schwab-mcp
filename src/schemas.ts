@@ -1,9 +1,65 @@
 import { z } from "zod";
+import type { JsonValue, TradeCondition } from "./types";
 
 const symbol = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9$./_ -]+$/);
 const isoDate = z.iso.date();
 const isoDateTime = z.iso.datetime({ offset: true });
 const accountHash = z.string().min(16).max(256).regex(/^[A-Za-z0-9_-]+$/);
+const uuid = z.uuid();
+
+const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([z.null(), z.boolean(), z.number(), z.string().max(16_384), z.array(jsonValue).max(256), z.record(z.string().min(1).max(128), jsonValue)]),
+);
+
+const orderPayload = z.record(z.string().min(1).max(128), jsonValue).superRefine((value, ctx) => {
+  const encoded = JSON.stringify(value);
+  if (encoded.length > 65_536) ctx.addIssue({ code: "custom", message: "orderPayload must not exceed 64 KiB" });
+  if (typeof value.orderStrategyType !== "string") {
+    ctx.addIssue({ code: "custom", message: "orderPayload.orderStrategyType is required" });
+  }
+  const hasLegs = Array.isArray(value.orderLegCollection) && value.orderLegCollection.length > 0;
+  const hasChildren = Array.isArray(value.childOrderStrategies) && value.childOrderStrategies.length > 0;
+  if (!hasLegs && !hasChildren) {
+    ctx.addIssue({ code: "custom", message: "orderPayload requires orderLegCollection or childOrderStrategies" });
+  }
+});
+
+export const tradeConditionSchema: z.ZodType<TradeCondition> = z.lazy(() =>
+  z.discriminatedUnion("type", [
+    z.object({ type: z.enum(["ALL", "ANY"]), conditions: z.array(tradeConditionSchema).min(1).max(10) }),
+    z.object({ type: z.literal("NOT"), condition: tradeConditionSchema }),
+    z.object({ type: z.literal("TIME"), operator: z.enum(["BEFORE", "AT_OR_BEFORE", "AFTER", "AT_OR_AFTER"]), at: isoDateTime }),
+    z.object({
+      type: z.literal("QUOTE"),
+      symbol,
+      field: z.enum(["askPrice", "bidPrice", "lastPrice", "mark", "netPercentChangeInDouble", "totalVolume"]),
+      operator: z.enum(["LT", "LTE", "EQ", "GTE", "GT"]),
+      value: z.number(),
+    }),
+  ]),
+);
+
+const prepareTrade = z.object({
+  accountHash,
+  action: z.enum(["PLACE", "REPLACE"]),
+  executionMode: z.enum(["IMMEDIATE", "DELAYED"]),
+  orderId: z.number().int().positive().optional(),
+  orderPayload,
+  userInstruction: z.string().trim().min(1).max(4000),
+  condition: tradeConditionSchema.optional(),
+  validUntil: isoDateTime.optional(),
+  pollIntervalSeconds: z.number().int().min(15).max(3600).optional(),
+  replacesTaskId: uuid.optional(),
+}).superRefine((value, ctx) => {
+  if (value.action === "REPLACE" && value.orderId === undefined) ctx.addIssue({ code: "custom", message: "orderId is required for REPLACE" });
+  if (value.action === "PLACE" && value.orderId !== undefined) ctx.addIssue({ code: "custom", message: "orderId is not allowed for PLACE" });
+  if (value.executionMode === "DELAYED") {
+    if (value.condition === undefined) ctx.addIssue({ code: "custom", message: "condition is required for DELAYED execution" });
+    if (value.validUntil === undefined) ctx.addIssue({ code: "custom", message: "validUntil is required for DELAYED execution" });
+  } else if (value.condition !== undefined || value.validUntil !== undefined || value.pollIntervalSeconds !== undefined || value.replacesTaskId !== undefined) {
+    ctx.addIssue({ code: "custom", message: "delayed-execution fields are not allowed for IMMEDIATE execution" });
+  }
+});
 
 export const toolSchemas = {
   empty: z.object({}),
@@ -71,4 +127,13 @@ export const toolSchemas = {
   }).refine((value) => value.startDate <= value.endDate, {
     message: "startDate must not be after endDate",
   }),
+  prepareTrade,
+  confirmTrade: z.object({
+    proposalId: uuid,
+    confirmationToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    confirmationText: z.string().trim().min(1).max(256),
+  }),
+  cancelOrder: z.object({ accountHash, orderId: z.number().int().positive(), userInstruction: z.string().trim().min(1).max(4000) }),
+  listDelayedTrades: z.object({ status: z.enum(["ACTIVE", "EXECUTING", "EXECUTED", "FAILED", "EXECUTION_UNCERTAIN", "CANCELLED", "EXPIRED"]).optional() }),
+  cancelDelayedTrade: z.object({ taskId: uuid, userInstruction: z.string().trim().min(1).max(4000) }),
 } as const;

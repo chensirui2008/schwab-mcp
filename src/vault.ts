@@ -1,11 +1,54 @@
 import { DurableObject } from "cloudflare:workers";
 import type { AppEnv } from "./env";
+import { tradingEnabled } from "./env";
 import { logEvent } from "./log";
-import type { PublicError, TokenRecord, VaultRequest } from "./types";
+import { toolSchemas, tradeConditionSchema } from "./schemas";
+import { assertSafeOrderPayload, canonicalJson, collectQuoteSymbols, evaluateCondition, randomToken, sha256, tokenMatches } from "./trading";
+import type { JsonValue, PublicError, TokenRecord, TradeCondition, TradeProposalInput, VaultRequest } from "./types";
 
 const ACCESS_REFRESH_SKEW_MS = 5 * 60 * 1000;
 const REFRESH_TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_INLINE_RETRY_WAIT_MS = 2000;
+const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
+const DISABLED_ALARM_RECHECK_MS = 15 * 60 * 1000;
+
+interface ProposalRow {
+  [key: string]: string | number | null;
+  id: string;
+  mode: TradeProposalInput["executionMode"];
+  action: TradeProposalInput["action"];
+  account_hash: string;
+  order_id: number | null;
+  order_json: string;
+  condition_json: string | null;
+  valid_until: number | null;
+  poll_interval_seconds: number | null;
+  replaces_task_id: string | null;
+  intent_digest: string;
+  token_hash: string;
+  confirmation_text: string;
+  status: string;
+  expires_at: number;
+}
+
+interface DelayedTradeRow {
+  [key: string]: string | number | null;
+  id: string;
+  version: number;
+  action: TradeProposalInput["action"];
+  account_hash: string;
+  order_id: number | null;
+  order_json: string;
+  condition_json: string;
+  valid_until: number;
+  poll_interval_seconds: number;
+  intent_digest: string;
+  status: string;
+  next_check_at: number;
+  execution_request_id: string | null;
+  outcome_json: string | null;
+  updated_at: number;
+}
 
 export function retryAfterDelay(header: string | null, now = Date.now()): number {
   if (header === null) return 0;
@@ -95,6 +138,58 @@ export class SchwabVault extends DurableObject<AppEnv> {
         payload TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS trade_proposal (
+        id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL,
+        action TEXT NOT NULL,
+        account_hash TEXT NOT NULL,
+        order_id INTEGER,
+        order_json TEXT NOT NULL,
+        condition_json TEXT,
+        valid_until INTEGER,
+        poll_interval_seconds INTEGER,
+        replaces_task_id TEXT,
+        intent_digest TEXT NOT NULL,
+        instruction_digest TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        confirmation_text TEXT NOT NULL,
+        status TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        outcome_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_trade_proposal_expiry ON trade_proposal(status, expires_at);
+      CREATE TABLE IF NOT EXISTS delayed_trade (
+        id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        account_hash TEXT NOT NULL,
+        order_id INTEGER,
+        order_json TEXT NOT NULL,
+        condition_json TEXT NOT NULL,
+        valid_until INTEGER NOT NULL,
+        poll_interval_seconds INTEGER NOT NULL,
+        intent_digest TEXT NOT NULL,
+        instruction_digest TEXT NOT NULL,
+        status TEXT NOT NULL,
+        next_check_at INTEGER NOT NULL,
+        execution_request_id TEXT,
+        outcome_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_delayed_trade_due ON delayed_trade(status, next_check_at);
+      CREATE TABLE IF NOT EXISTS trade_audit (
+        id TEXT PRIMARY KEY,
+        event TEXT NOT NULL,
+        entity_id TEXT,
+        request_id TEXT NOT NULL,
+        intent_digest TEXT,
+        instruction_digest TEXT,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
     `);
   }
 
@@ -122,6 +217,24 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
     if (request.method === "POST" && url.pathname === "/request") {
       return this.proxySchwab(request);
+    }
+    if (request.method === "GET" && url.pathname === "/trading/status") {
+      return jsonResponse({ result: { enabled: tradingEnabled(this.env), source: "deployment_config" } });
+    }
+    if (request.method === "POST" && url.pathname === "/trade/prepare") {
+      return this.prepareTrade(request);
+    }
+    if (request.method === "POST" && url.pathname === "/trade/confirm") {
+      return this.confirmTrade(request);
+    }
+    if (request.method === "POST" && url.pathname === "/trade/cancel-order") {
+      return this.cancelOrder(request);
+    }
+    if (request.method === "POST" && url.pathname === "/trade/cancel-delayed") {
+      return this.cancelDelayedTrade(request);
+    }
+    if (request.method === "POST" && url.pathname === "/trade/list-delayed") {
+      return this.listDelayedTrades(request);
     }
     return new Response("Not found", { status: 404 });
   }
@@ -287,11 +400,379 @@ export class SchwabVault extends DurableObject<AppEnv> {
     return refreshed;
   }
 
+  private audit(event: string, entityId: string | null, requestId: string, status: string, intentDigest?: string, instructionDigest?: string): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO trade_audit (id, event, entity_id, request_id, intent_digest, instruction_digest, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      crypto.randomUUID(),
+      event,
+      entityId,
+      requestId,
+      intentDigest ?? null,
+      instructionDigest ?? null,
+      status,
+      Date.now(),
+    );
+  }
+
+  private tradingDisabled(requestId: string): Response {
+    return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trading is disabled by deployment configuration", requestId }, 409);
+  }
+
+  private async prepareTrade(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    if (!tradingEnabled(this.env)) return this.tradingDisabled(requestId);
+    const parsed = toolSchemas.prepareTrade.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid trade proposal", requestId }, 400);
+    const input = parsed.data;
+    try {
+      assertSafeOrderPayload(input.orderPayload);
+    } catch {
+      return publicError({ code: "INVALID_ARGUMENT", message: "Unsafe order payload", requestId }, 400);
+    }
+    const now = Date.now();
+    const validUntil = input.validUntil === undefined ? null : Date.parse(input.validUntil);
+    if (validUntil !== null && (validUntil <= now || validUntil > now + 365 * 24 * 60 * 60 * 1000)) {
+      return publicError({ code: "INVALID_ARGUMENT", message: "validUntil must be in the next 365 days", requestId }, 400);
+    }
+    if (input.condition !== undefined && collectQuoteSymbols(input.condition).size > 50) {
+      return publicError({ code: "INVALID_ARGUMENT", message: "A delayed condition can reference at most 50 symbols", requestId }, 400);
+    }
+    if (input.replacesTaskId !== undefined) {
+      const existing = this.ctx.storage.sql.exec<{ status: string }>("SELECT status FROM delayed_trade WHERE id = ?", input.replacesTaskId).toArray()[0];
+      if (!existing) return publicError({ code: "TRADE_NOT_FOUND", message: "Delayed trade was not found", requestId }, 404);
+      if (existing.status !== "ACTIVE") return publicError({ code: "TRADE_STATE_CONFLICT", message: "Only an active delayed trade can be modified", requestId }, 409);
+    }
+    const proposalId = crypto.randomUUID();
+    const token = randomToken();
+    const intent: { [key: string]: JsonValue } = {
+      accountHash: input.accountHash,
+      action: input.action,
+      executionMode: input.executionMode,
+      orderPayload: input.orderPayload,
+      ...(input.orderId === undefined ? {} : { orderId: input.orderId }),
+      ...(input.condition === undefined ? {} : { condition: input.condition }),
+      ...(input.validUntil === undefined ? {} : { validUntil: input.validUntil }),
+      ...(input.pollIntervalSeconds === undefined ? {} : { pollIntervalSeconds: input.pollIntervalSeconds }),
+      ...(input.replacesTaskId === undefined ? {} : { replacesTaskId: input.replacesTaskId }),
+    };
+    const intentDigest = await sha256(canonicalJson(intent));
+    const instructionDigest = await sha256(input.userInstruction);
+    const tokenHash = await sha256(token);
+    const confirmationText = `确认交易 ${proposalId.slice(0, 8)} ${intentDigest.slice(0, 12)}`;
+    const expiresAt = now + CONFIRMATION_TTL_MS;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO trade_proposal
+       (id, mode, action, account_hash, order_id, order_json, condition_json, valid_until,
+        poll_interval_seconds, replaces_task_id, intent_digest, instruction_digest, token_hash,
+        confirmation_text, status, expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+      proposalId,
+      input.executionMode,
+      input.action,
+      input.accountHash,
+      input.orderId ?? null,
+      JSON.stringify(input.orderPayload),
+      input.condition === undefined ? null : JSON.stringify(input.condition),
+      validUntil,
+      input.pollIntervalSeconds ?? null,
+      input.replacesTaskId ?? null,
+      intentDigest,
+      instructionDigest,
+      tokenHash,
+      confirmationText,
+      expiresAt,
+      now,
+      now,
+    );
+    this.audit("trade_proposal_created", proposalId, requestId, "PENDING", intentDigest, instructionDigest);
+    return jsonResponse({
+      result: {
+        proposalId,
+        confirmationToken: token,
+        confirmationText,
+        expiresAt: new Date(expiresAt).toISOString(),
+        intentDigest,
+        preview: intent,
+        warning: "Only call confirm_trade after the user explicitly repeats confirmationText; AI must never propose or initiate a trade.",
+      },
+    });
+  }
+
+  private proposal(id: string): ProposalRow | undefined {
+    return this.ctx.storage.sql.exec<ProposalRow>("SELECT * FROM trade_proposal WHERE id = ?", id).toArray()[0];
+  }
+
+  private async confirmTrade(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    if (!tradingEnabled(this.env)) return this.tradingDisabled(requestId);
+    const parsed = toolSchemas.confirmTrade.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid trade confirmation", requestId }, 400);
+    const current = this.proposal(parsed.data.proposalId);
+    if (!current) return publicError({ code: "TRADE_NOT_FOUND", message: "Trade proposal was not found", requestId }, 404);
+    if (current.status !== "PENDING") return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal is no longer pending", requestId }, 409);
+    if (current.expires_at <= Date.now()) {
+      this.ctx.storage.sql.exec("UPDATE trade_proposal SET status = 'EXPIRED', updated_at = ? WHERE id = ? AND status = 'PENDING'", Date.now(), current.id);
+      return publicError({ code: "CONFIRMATION_EXPIRED", message: "Trade confirmation expired", requestId }, 410);
+    }
+    if (parsed.data.confirmationText !== current.confirmation_text || !(await tokenMatches(parsed.data.confirmationToken, current.token_hash))) {
+      this.audit("trade_confirmation_rejected", current.id, requestId, "INVALID", current.intent_digest);
+      return publicError({ code: "CONFIRMATION_INVALID", message: "Trade confirmation did not match the frozen proposal", requestId }, 403);
+    }
+
+    if (current.mode === "DELAYED") return this.activateDelayedTrade(current, requestId);
+    const claimed = this.ctx.storage.sql.exec<{ id: string }>(
+      "UPDATE trade_proposal SET status = 'EXECUTING', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
+      Date.now(),
+      current.id,
+    ).toArray()[0];
+    if (!claimed) return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal was already consumed", requestId }, 409);
+    this.audit("trade_execution_started", current.id, requestId, "EXECUTING", current.intent_digest);
+    const response = await this.executeMutation(current.action, current.account_hash, current.order_id, JSON.parse(current.order_json) as { [key: string]: JsonValue }, requestId, "confirm_trade");
+    return this.finishProposal(current, requestId, response);
+  }
+
+  private async activateDelayedTrade(proposal: ProposalRow, requestId: string): Promise<Response> {
+    if (proposal.condition_json === null || proposal.valid_until === null) {
+      return publicError({ code: "TRADE_STATE_CONFLICT", message: "Delayed proposal is incomplete", requestId }, 409);
+    }
+    let version = 1;
+    if (proposal.replaces_task_id !== null) {
+      const previous = this.ctx.storage.sql.exec<{ version: number; status: string }>("SELECT version, status FROM delayed_trade WHERE id = ?", proposal.replaces_task_id).toArray()[0];
+      if (!previous) return publicError({ code: "TRADE_NOT_FOUND", message: "Delayed trade was not found", requestId }, 404);
+      if (previous.status !== "ACTIVE") return publicError({ code: "TRADE_STATE_CONFLICT", message: "Delayed trade is no longer active", requestId }, 409);
+      version = previous.version + 1;
+    }
+    const claimed = this.ctx.storage.sql.exec<{ id: string }>(
+      "UPDATE trade_proposal SET status = 'CONFIRMED', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
+      Date.now(),
+      proposal.id,
+    ).toArray()[0];
+    if (!claimed) return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal was already consumed", requestId }, 409);
+    const now = Date.now();
+    const taskId = crypto.randomUUID();
+    if (proposal.replaces_task_id !== null) {
+      this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'ACTIVE'", now, proposal.replaces_task_id);
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO delayed_trade
+       (id, version, action, account_hash, order_id, order_json, condition_json, valid_until,
+        poll_interval_seconds, intent_digest, instruction_digest, status, next_check_at, created_at, updated_at)
+       SELECT ?, ?, action, account_hash, order_id, order_json, condition_json, valid_until,
+        COALESCE(poll_interval_seconds, 60), intent_digest, instruction_digest, 'ACTIVE', ?, ?, ?
+       FROM trade_proposal WHERE id = ?`,
+      taskId,
+      version,
+      now,
+      now,
+      now,
+      proposal.id,
+    );
+    this.audit("delayed_trade_activated", taskId, requestId, "ACTIVE", proposal.intent_digest);
+    await this.scheduleNextAlarm();
+    return jsonResponse({ result: { taskId, version, status: "ACTIVE", validUntil: new Date(proposal.valid_until).toISOString(), intentDigest: proposal.intent_digest } });
+  }
+
+  private async finishProposal(proposal: ProposalRow, requestId: string, response: Response): Promise<Response> {
+    const payload: unknown = await response.json();
+    const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
+    const errorCode = error !== null && typeof error === "object" ? field(error, "code") : undefined;
+    const status = response.ok ? "EXECUTED" : errorCode === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
+    this.ctx.storage.sql.exec("UPDATE trade_proposal SET status = ?, outcome_json = ?, updated_at = ? WHERE id = ?", status, JSON.stringify(payload), Date.now(), proposal.id);
+    this.audit("trade_execution_finished", proposal.id, requestId, status, proposal.intent_digest);
+    return jsonResponse(payload, response.status);
+  }
+
+  private async cancelOrder(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    const parsed = toolSchemas.cancelOrder.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid cancellation request", requestId }, 400);
+    const instructionDigest = await sha256(parsed.data.userInstruction);
+    this.audit("order_cancellation_started", String(parsed.data.orderId), requestId, "EXECUTING", undefined, instructionDigest);
+    const response = await this.executeMutation("CANCEL", parsed.data.accountHash, parsed.data.orderId, undefined, requestId, "cancel_order");
+    const payload: unknown = await response.json();
+    const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
+    const status = response.ok ? "EXECUTED" : error !== null && typeof error === "object" && field(error, "code") === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
+    this.audit("order_cancellation_finished", String(parsed.data.orderId), requestId, status, undefined, instructionDigest);
+    return jsonResponse(payload, response.status);
+  }
+
+  private async cancelDelayedTrade(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    const parsed = toolSchemas.cancelDelayedTrade.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid delayed-trade cancellation", requestId }, 400);
+    const instructionDigest = await sha256(parsed.data.userInstruction);
+    const cancelled = this.ctx.storage.sql.exec<{ id: string }>(
+      "UPDATE delayed_trade SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'ACTIVE' RETURNING id",
+      Date.now(),
+      parsed.data.taskId,
+    ).toArray()[0];
+    if (!cancelled) {
+      const exists = this.ctx.storage.sql.exec<{ status: string }>("SELECT status FROM delayed_trade WHERE id = ?", parsed.data.taskId).toArray()[0];
+      return exists
+        ? publicError({ code: "TRADE_STATE_CONFLICT", message: "Only an active delayed trade can be cancelled", requestId }, 409)
+        : publicError({ code: "TRADE_NOT_FOUND", message: "Delayed trade was not found", requestId }, 404);
+    }
+    this.audit("delayed_trade_cancelled", parsed.data.taskId, requestId, "CANCELLED", undefined, instructionDigest);
+    await this.scheduleNextAlarm();
+    return jsonResponse({ result: { taskId: parsed.data.taskId, status: "CANCELLED" } });
+  }
+
+  private async listDelayedTrades(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    const parsed = toolSchemas.listDelayedTrades.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid delayed-trade query", requestId }, 400);
+    const rows = parsed.data.status === undefined
+      ? this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade ORDER BY updated_at DESC LIMIT 100").toArray()
+      : this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade WHERE status = ? ORDER BY updated_at DESC LIMIT 100", parsed.data.status).toArray();
+    return jsonResponse({
+      result: rows.map((row) => ({
+        taskId: row.id,
+        version: row.version,
+        action: row.action,
+        accountHash: row.account_hash,
+        ...(row.order_id === null ? {} : { orderId: row.order_id }),
+        orderPayload: JSON.parse(row.order_json) as unknown,
+        condition: JSON.parse(row.condition_json) as unknown,
+        validUntil: new Date(row.valid_until).toISOString(),
+        pollIntervalSeconds: row.poll_interval_seconds,
+        intentDigest: row.intent_digest,
+        status: row.status,
+        nextCheckAt: new Date(row.next_check_at).toISOString(),
+        ...(row.outcome_json === null ? {} : { outcome: JSON.parse(row.outcome_json) as unknown }),
+      })),
+    });
+  }
+
+  override async alarm(): Promise<void> {
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      "UPDATE delayed_trade SET status = 'EXECUTION_UNCERTAIN', updated_at = ? WHERE status = 'EXECUTING' AND updated_at < ?",
+      now,
+      now - 5 * 60 * 1000,
+    );
+    this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'EXPIRED', updated_at = ? WHERE status = 'ACTIVE' AND valid_until <= ?", now, now);
+    if (!tradingEnabled(this.env)) {
+      const active = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM delayed_trade WHERE status = 'ACTIVE'").one().count;
+      if (active > 0) await this.ctx.storage.setAlarm(now + DISABLED_ALARM_RECHECK_MS);
+      return;
+    }
+    const due = this.ctx.storage.sql.exec<DelayedTradeRow>(
+      "SELECT * FROM delayed_trade WHERE status = 'ACTIVE' AND next_check_at <= ? AND valid_until > ? ORDER BY next_check_at LIMIT 10",
+      now,
+      now,
+    ).toArray();
+    for (const task of due) await this.processDelayedTrade(task);
+    await this.scheduleNextAlarm();
+  }
+
+  private async processDelayedTrade(task: DelayedTradeRow): Promise<void> {
+    const requestId = crypto.randomUUID();
+    let condition: TradeCondition;
+    try {
+      const parsed = tradeConditionSchema.safeParse(JSON.parse(task.condition_json) as unknown);
+      if (!parsed.success) throw new Error("Invalid condition");
+      condition = parsed.data;
+    } catch {
+      this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'FAILED', outcome_json = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", JSON.stringify({ error: { code: "INVALID_ARGUMENT", message: "Stored condition is invalid", requestId } }), Date.now(), task.id);
+      return;
+    }
+    const symbols = [...collectQuoteSymbols(condition)];
+    const quotes: Record<string, Record<string, number>> = {};
+    if (symbols.length > 0) {
+      const quoteResponse = await this.requestSchwab({ base: "market", path: "/quotes", query: { symbols: symbols.join(","), fields: "quote" }, requestId, tool: "delayed_trade_condition" });
+      const payload: unknown = await quoteResponse.json();
+      if (!quoteResponse.ok) {
+        this.ctx.storage.sql.exec("UPDATE delayed_trade SET next_check_at = ?, outcome_json = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Date.now() + task.poll_interval_seconds * 1000, JSON.stringify(payload), Date.now(), task.id);
+        return;
+      }
+      const result = payload !== null && typeof payload === "object" ? field(payload, "result") : undefined;
+      if (result === null || typeof result !== "object") {
+        this.ctx.storage.sql.exec("UPDATE delayed_trade SET next_check_at = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Date.now() + task.poll_interval_seconds * 1000, Date.now(), task.id);
+        return;
+      }
+      for (const symbol of symbols) {
+        const entry = field(result, symbol) ?? field(result, symbol.toUpperCase());
+        const quote = entry !== null && typeof entry === "object" ? field(entry, "quote") : undefined;
+        if (quote !== null && typeof quote === "object") {
+          const numeric: Record<string, number> = {};
+          for (const key of ["askPrice", "bidPrice", "lastPrice", "mark", "netPercentChangeInDouble", "totalVolume"] as const) {
+            const value = field(quote, key);
+            if (typeof value === "number" && Number.isFinite(value)) numeric[key] = value;
+          }
+          quotes[symbol.toUpperCase()] = numeric;
+        }
+      }
+    }
+    let matched: boolean;
+    try {
+      matched = evaluateCondition(condition, quotes, Date.now());
+    } catch {
+      this.ctx.storage.sql.exec("UPDATE delayed_trade SET next_check_at = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Date.now() + task.poll_interval_seconds * 1000, Date.now(), task.id);
+      return;
+    }
+    if (!matched) {
+      this.ctx.storage.sql.exec("UPDATE delayed_trade SET next_check_at = ?, outcome_json = NULL, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Math.min(Date.now() + task.poll_interval_seconds * 1000, task.valid_until), Date.now(), task.id);
+      return;
+    }
+    if (!tradingEnabled(this.env)) return;
+    const claimed = this.ctx.storage.sql.exec<{ id: string }>(
+      "UPDATE delayed_trade SET status = 'EXECUTING', execution_request_id = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE' RETURNING id",
+      requestId,
+      Date.now(),
+      task.id,
+    ).toArray()[0];
+    if (!claimed) return;
+    this.audit("delayed_trade_execution_started", task.id, requestId, "EXECUTING", task.intent_digest);
+    const response = await this.executeMutation(task.action, task.account_hash, task.order_id, JSON.parse(task.order_json) as { [key: string]: JsonValue }, requestId, "delayed_trade_execute");
+    const payload: unknown = await response.json();
+    const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
+    const errorCode = error !== null && typeof error === "object" ? field(error, "code") : undefined;
+    const status = response.ok ? "EXECUTED" : errorCode === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
+    this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = ?, outcome_json = ?, updated_at = ? WHERE id = ? AND status = 'EXECUTING'", status, JSON.stringify(payload), Date.now(), task.id);
+    this.audit("delayed_trade_execution_finished", task.id, requestId, status, task.intent_digest);
+  }
+
+  private async scheduleNextAlarm(): Promise<void> {
+    const next = this.ctx.storage.sql.exec<{ next_check_at: number | null }>("SELECT MIN(next_check_at) AS next_check_at FROM delayed_trade WHERE status = 'ACTIVE'").one().next_check_at;
+    if (next === null) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    await this.ctx.storage.setAlarm(tradingEnabled(this.env) ? Math.max(Date.now() + 1000, next) : Date.now() + DISABLED_ALARM_RECHECK_MS);
+  }
+
+  private executeMutation(
+    action: "PLACE" | "REPLACE" | "CANCEL",
+    accountHash: string,
+    orderId: number | null | undefined,
+    orderPayload: { [key: string]: JsonValue } | undefined,
+    requestId: string,
+    tool: string,
+  ): Promise<Response> {
+    const accountPath = `/accounts/${encodeURIComponent(accountHash)}/orders`;
+    if (action === "PLACE") return this.requestSchwab({ base: "trader", path: accountPath, requestId, tool }, "POST", orderPayload);
+    const orderPath = `${accountPath}/${String(orderId)}`;
+    return this.requestSchwab({ base: "trader", path: orderPath, requestId, tool }, action === "REPLACE" ? "PUT" : "DELETE", orderPayload);
+  }
+
   private async proxySchwab(request: Request): Promise<Response> {
     const input: unknown = await request.json();
     if (!isVaultRequest(input)) {
       return publicError({ code: "INVALID_ARGUMENT", message: "Invalid Schwab request", requestId: crypto.randomUUID() }, 400);
     }
+    return this.requestSchwab(input);
+  }
+
+  private async requestSchwab(
+    input: VaultRequest,
+    method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
+    body?: { [key: string]: JsonValue },
+  ): Promise<Response> {
     if (!input.path.startsWith("/") || input.path.startsWith("//") || input.path.includes("..")) {
       return publicError({ code: "INVALID_ARGUMENT", message: "Invalid Schwab API path", requestId: input.requestId }, 400);
     }
@@ -323,26 +804,49 @@ export class SchwabVault extends DurableObject<AppEnv> {
       const started = Date.now();
       let upstream: Response;
       try {
-        upstream = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${token.accessToken}` } });
-      } catch (error) {
+        upstream = await fetch(url, {
+          method,
+          headers: {
+            Authorization: `Bearer ${token.accessToken}`,
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      } catch {
         logEvent("schwab_api_request", {
           requestId: input.requestId,
           tool: input.tool,
+          method,
           status: "network_error",
           attempts,
           durationMs: Date.now() - started,
-          message: error instanceof Error ? error.message : "Unknown error",
         });
-        return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab API is unavailable", requestId: input.requestId, attempts }, 502);
+        return method === "GET"
+          ? publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab API is unavailable", requestId: input.requestId, attempts }, 502)
+          : publicError({ code: "EXECUTION_UNCERTAIN", message: "Schwab mutation outcome is unknown; inspect the order before retrying", requestId: input.requestId, attempts }, 502);
       }
       logEvent("schwab_api_request", {
         requestId: input.requestId,
         tool: input.tool,
+        method,
         status: upstream.status,
         attempts,
         durationMs: Date.now() - started,
       });
       if (upstream.ok) {
+        if (method !== "GET") {
+          const location = upstream.headers.get("Location");
+          const orderId = location?.match(/\/orders\/(\d+)(?:$|\?)/u)?.[1];
+          return jsonResponse({
+            result: {
+              status: "accepted",
+              httpStatus: upstream.status,
+              ...(orderId === undefined ? {} : { orderId: Number(orderId) }),
+            },
+            attempts,
+            refreshExpiresAt: token.refreshExpiresAt,
+          });
+        }
         let result: unknown;
         try {
           result = await upstream.json();
@@ -358,18 +862,29 @@ export class SchwabVault extends DurableObject<AppEnv> {
         continue;
       }
       const retryAfterMs = retryAfterDelay(upstream.headers.get("Retry-After"));
-      if ((upstream.status === 429 || upstream.status >= 500) && attempts === 1 && retryAfterMs <= MAX_INLINE_RETRY_WAIT_MS) {
+      if (method === "GET" && (upstream.status === 429 || upstream.status >= 500) && attempts === 1 && retryAfterMs <= MAX_INLINE_RETRY_WAIT_MS) {
         await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
         continue;
       }
-      const code = upstream.status === 429 ? "RATE_LIMITED" : upstream.status >= 500 ? "UPSTREAM_UNAVAILABLE" : "SCHWAB_REJECTED";
+      const code = upstream.status === 429 ? "RATE_LIMITED" : upstream.status >= 500 ? method === "GET" ? "UPSTREAM_UNAVAILABLE" : "EXECUTION_UNCERTAIN" : "SCHWAB_REJECTED";
       return publicError(
-        { code, message: `Schwab API returned HTTP ${String(upstream.status)}`, requestId: input.requestId, attempts, ...(retryAfterMs > 0 ? { retryAfterMs } : {}) },
+        {
+          code,
+          message: code === "EXECUTION_UNCERTAIN" ? "Schwab mutation outcome is unknown; inspect the order before retrying" : `Schwab API returned HTTP ${String(upstream.status)}`,
+          requestId: input.requestId,
+          attempts,
+          ...(retryAfterMs > 0 ? { retryAfterMs } : {}),
+        },
         upstream.status === 429 ? 429 : upstream.status >= 500 ? 502 : 400,
       );
     }
     return publicError(
-      { code: "UPSTREAM_UNAVAILABLE", message: "Schwab API request failed", requestId: input.requestId, attempts },
+      {
+        code: method === "GET" ? "UPSTREAM_UNAVAILABLE" : "EXECUTION_UNCERTAIN",
+        message: method === "GET" ? "Schwab API request failed" : "Schwab mutation outcome is unknown; inspect the order before retrying",
+        requestId: input.requestId,
+        attempts,
+      },
       502,
     );
   }

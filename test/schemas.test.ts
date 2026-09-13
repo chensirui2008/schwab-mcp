@@ -19,4 +19,37 @@ describe("tool input schemas", () => {
     expect(toolSchemas.getOptionChain.safeParse({ symbol: "AAPL", fromDate: "2026-02-02", toDate: "2026-02-01" }).success).toBe(false);
     expect(toolSchemas.getOrders.safeParse({ fromEnteredTime: "2026-02-02T00:00:00Z", toEnteredTime: "2026-02-01T00:00:00Z" }).success).toBe(false);
   });
+
+  it("requires a complete, bounded trade proposal", () => {
+    const base = {
+      accountHash: "a".repeat(32),
+      action: "PLACE",
+      executionMode: "IMMEDIATE",
+      orderPayload: { orderStrategyType: "SINGLE", orderLegCollection: [{ instruction: "BUY" }] },
+      userInstruction: "Buy one share",
+    };
+    expect(toolSchemas.prepareTrade.safeParse(base).success).toBe(true);
+    expect(toolSchemas.prepareTrade.safeParse({ ...base, action: "REPLACE" }).success).toBe(false);
+    expect(toolSchemas.prepareTrade.safeParse({ ...base, executionMode: "DELAYED" }).success).toBe(false);
+    expect(toolSchemas.prepareTrade.safeParse({ ...base, orderPayload: { orderStrategyType: "SINGLE" } }).success).toBe(false);
+  });
+
+  it("accepts deterministic nested time and quote conditions", () => {
+    const parsed = toolSchemas.prepareTrade.safeParse({
+      accountHash: "a".repeat(32),
+      action: "PLACE",
+      executionMode: "DELAYED",
+      orderPayload: { orderStrategyType: "SINGLE", orderLegCollection: [{ instruction: "BUY" }] },
+      userInstruction: "Buy after the threshold",
+      validUntil: "2027-01-01T00:00:00Z",
+      condition: {
+        type: "ALL",
+        conditions: [
+          { type: "TIME", operator: "AT_OR_AFTER", at: "2026-01-01T00:00:00Z" },
+          { type: "QUOTE", symbol: "AAPL", field: "lastPrice", operator: "LTE", value: 100 },
+        ],
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
 });

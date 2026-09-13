@@ -11,6 +11,7 @@ export default defineConfig({
           GITHUB_CLIENT_SECRET: "test-github-secret",
           SCHWAB_CLIENT_ID: "test-schwab-client",
           SCHWAB_CLIENT_SECRET: "test-schwab-secret",
+          ENABLE_TRADING: "true",
         },
       },
     }),

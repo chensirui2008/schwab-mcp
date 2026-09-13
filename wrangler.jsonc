@@ -11,6 +11,7 @@
     "SCHWAB_REDIRECT_URI": "https://schwab-mcp.siruichen461.workers.dev/auth/schwab/callback",
     "MARKET_DATA_BASE_URL": "https://api.schwabapi.com/marketdata/v1",
     "TRADER_BASE_URL": "https://api.schwabapi.com/trader/v1",
+    "ENABLE_TRADING": "false",
     "APP_VERSION": "0.1.0"
   },
   "kv_namespaces": [

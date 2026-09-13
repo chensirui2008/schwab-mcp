@@ -12,7 +12,12 @@ export interface AppEnv {
   SCHWAB_REDIRECT_URI: string;
   MARKET_DATA_BASE_URL: string;
   TRADER_BASE_URL: string;
+  ENABLE_TRADING: string;
   APP_VERSION: string;
+}
+
+export function tradingEnabled(env: AppEnv): boolean {
+  return env.ENABLE_TRADING === "true";
 }
 
 export function vaultStub(env: AppEnv): DurableObjectStub {

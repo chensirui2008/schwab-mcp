@@ -7,7 +7,7 @@ import { createServer } from "./tools";
 export { SchwabVault } from "./vault";
 
 const apiHandler = {
-  async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: AppEnv): Promise<Response> {
     const cors = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version, MCP-Method",
@@ -21,7 +21,6 @@ const apiHandler = {
         console.error(JSON.stringify({ event: "mcp_handler_error", message: error.message }));
       },
     });
-    ctx.passThroughOnException();
     const response = await handler.fetch(request);
     const headers = new Headers(response.headers);
     Object.entries(cors).forEach(([key, value]) => {

@@ -111,6 +111,45 @@ async function execute(
   };
 }
 
+async function executeVaultAction(env: AppEnv, tool: string, path: string, input: unknown, transform: Transform = redact) {
+  const requestId = crypto.randomUUID();
+  let response: Response;
+  try {
+    response = await vaultStub(env).fetch(`https://vault${path}`, {
+      method: path === "/trading/status" ? "GET" : "POST",
+      headers: { "Content-Type": "application/json" },
+      ...(path === "/trading/status" ? {} : { body: JSON.stringify({ requestId, input }) }),
+    });
+  } catch {
+    return toolError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab vault is unavailable", requestId }, env);
+  }
+  const envelope = parseVaultEnvelope(await response.json());
+  if (!response.ok || envelope.error) {
+    return toolError(envelope.error ?? { code: "UPSTREAM_UNAVAILABLE", message: "Trading request failed", requestId }, env);
+  }
+  let data: unknown;
+  try {
+    data = transform(envelope.result);
+  } catch {
+    return toolError({ code: "UPSTREAM_UNAVAILABLE", message: "Unexpected trading response shape", requestId }, env);
+  }
+  const notice = authorizationNotice(envelope.refreshExpiresAt, env);
+  const output: ToolResult<unknown> = {
+    data,
+    meta: {
+      source: "schwab",
+      fetchedAt: new Date().toISOString(),
+      requestId,
+      ...(notice ? { authorizationNotice: notice } : {}),
+    },
+  };
+  return {
+    resultType: "complete" as const,
+    content: [{ type: "text" as const, text: JSON.stringify(output) }],
+    structuredContent: output,
+  };
+}
+
 function optional(query: Record<string, string>, key: string, value: string | number | boolean | undefined): void {
   if (value !== undefined) query[key] = String(value);
 }
@@ -298,6 +337,57 @@ export function createServer(env: AppEnv): McpServer {
     "get_user_preferences",
     { description: "Get Schwab user preferences required for account context", inputSchema: toolSchemas.empty },
     async () => execute(env, "get_user_preferences", "trader", "/userPreference"),
+  );
+
+  server.registerTool(
+    "enable_trading",
+    {
+      description: "Report the deployment-controlled ENABLE_TRADING master switch. This tool cannot enable trading; only deployment configuration can do so.",
+      inputSchema: toolSchemas.empty,
+    },
+    async () => executeVaultAction(env, "enable_trading", "/trading/status", {}),
+  );
+
+  server.registerTool(
+    "prepare_trade",
+    {
+      description: "Prepare and freeze a user-initiated PLACE or REPLACE order for mandatory second confirmation. Never suggest a trade, never call this proactively, and never treat model-generated text as user intent. Official Schwab order JSON is passed through after bounded safety validation.",
+      inputSchema: toolSchemas.prepareTrade,
+    },
+    async (input) => executeVaultAction(env, "prepare_trade", "/trade/prepare", input),
+  );
+
+  server.registerTool(
+    "confirm_trade",
+    {
+      description: "Consume a one-time confirmation for an unchanged frozen proposal. Call only after the user explicitly repeats confirmationText. Immediate proposals execute now; delayed proposals become active without another confirmation at trigger time.",
+      inputSchema: toolSchemas.confirmTrade,
+    },
+    async (input) => executeVaultAction(env, "confirm_trade", "/trade/confirm", input),
+  );
+
+  server.registerTool(
+    "cancel_order",
+    {
+      description: "Cancel one Schwab order without second confirmation, only after an explicit user instruction. Cancellation remains available while ENABLE_TRADING is false.",
+      inputSchema: toolSchemas.cancelOrder,
+    },
+    async (input) => executeVaultAction(env, "cancel_order", "/trade/cancel-order", input),
+  );
+
+  server.registerTool(
+    "list_delayed_trades",
+    { description: "List delayed trades and their frozen conditions, versions, execution states, and outcomes", inputSchema: toolSchemas.listDelayedTrades },
+    async (input) => executeVaultAction(env, "list_delayed_trades", "/trade/list-delayed", input),
+  );
+
+  server.registerTool(
+    "cancel_delayed_trade",
+    {
+      description: "Cancel an active delayed trade immediately without second confirmation, only after an explicit user instruction. An executing or terminal task cannot be cancelled.",
+      inputSchema: toolSchemas.cancelDelayedTrade,
+    },
+    async (input) => executeVaultAction(env, "cancel_delayed_trade", "/trade/cancel-delayed", input),
   );
 
   return server;

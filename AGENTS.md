@@ -4,14 +4,20 @@
 
 - TypeScript + Cloudflare Workers；MCP 使用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 提供无协议会话的 Streamable HTTP。
 - MCP OAuth 使用 `@cloudflare/workers-oauth-provider`，注册和授权数据存入 `OAUTH_KV`；GitHub OAuth 身份仅按 numeric user ID 匹配 `ALLOWED_GITHUB_USER_ID`。
-- Schwab 凭据仅存于 SQLite-backed `SchwabVault` Durable Object，不得进入 KV、日志或 MCP 输出。
+- Schwab 凭据、交易确认状态、延迟任务和审计摘要仅存于 SQLite-backed `SchwabVault` Durable Object，不得进入 KV、日志或 MCP 输出。
 - 工具输入约束以 `src/schemas.ts` 为准；工具清单和部署步骤以 README 为准。
 
 ## 边界
 
-- Schwab 数据 API 仅允许 `GET`，禁止下单、改单和撤单。OAuth token exchange 和 Durable Object 内部 RPC 可使用非 GET 方法，但不得承载交易指令。
+- 行情和账户查询只允许 `GET`。真实建单仅允许 `POST /accounts/{hash}/orders`，改单仅允许 `PUT /accounts/{hash}/orders/{orderId}`，撤单仅允许对应 `DELETE`；其他交易写路径禁止。
+- AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用户明确交易指令；工具说明和审计摘要属于客户端策略约束，不能冒充可信客户端签名。
+- `ENABLE_TRADING` 是部署配置控制的唯一总开关，默认 `false`。关闭时禁止准备、确认、激活和触发建单/改单，已激活的延迟任务暂停保留；撤单和取消延迟任务仍允许。
+- 即时建单和改单必须先冻结订单快照，再由用户复述确认短语并提交一次性令牌；令牌五分钟过期且只能消费一次。即时撤单免二次确认，但必须携带明确用户指令。
+- 延迟交易只接受冻结的时间/Schwab 行情确定性条件。创建和任何修改必须二次确认，实际触发无需再次确认；取消免确认。每个任务必须有最长一年内的 `validUntil`。
+- 交易写请求除首次 401 后刷新 token 并重试一次外不得自动重试。网络错误或 5xx 必须标记 `EXECUTION_UNCERTAIN`，先人工查询订单状态，禁止盲目重放。
+- 订单使用官方 JSON 透传并限制大小、深度、节点数及敏感字段；当前不设置账户级名义金额、数量或日累计硬上限，因此确认预览必须原样显示冻结订单和摘要。
 - 账户工具只接受 Schwab `hashValue`。完整账号必须在序列化和日志前移除。
-- 401 只允许刷新并重试一次；429 和 5xx 只允许重试一次；其他 4xx 不重试。
+- 查询请求的 401 只允许刷新并重试一次；429 和 5xx 只允许重试一次；其他 4xx 不重试。
 - 不添加 Streamer、后台定时刷新、行情缓存或多租户逻辑，除非产品范围明确变更并同步更新本文件和 README。授权到期提醒仅通过 MCP 成功结果的 `meta.authorizationNotice` 返回，不模拟登录，也不绕过 Schwab 的交互式重新授权。
 
 ## 修改与验证

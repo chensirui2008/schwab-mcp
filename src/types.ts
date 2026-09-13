@@ -4,7 +4,12 @@ export type ErrorCode =
   | "INVALID_ARGUMENT"
   | "RATE_LIMITED"
   | "SCHWAB_REJECTED"
-  | "UPSTREAM_UNAVAILABLE";
+  | "UPSTREAM_UNAVAILABLE"
+  | "CONFIRMATION_INVALID"
+  | "CONFIRMATION_EXPIRED"
+  | "TRADE_NOT_FOUND"
+  | "TRADE_STATE_CONFLICT"
+  | "EXECUTION_UNCERTAIN";
 
 export interface ToolMeta {
   source: "schwab";
@@ -49,4 +54,32 @@ export interface VaultRequest {
   query?: Record<string, string>;
   requestId: string;
   tool: string;
+}
+
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export type TradeCondition =
+  | { type: "ALL"; conditions: TradeCondition[] }
+  | { type: "ANY"; conditions: TradeCondition[] }
+  | { type: "NOT"; condition: TradeCondition }
+  | { type: "TIME"; operator: "BEFORE" | "AT_OR_BEFORE" | "AFTER" | "AT_OR_AFTER"; at: string }
+  | {
+      type: "QUOTE";
+      symbol: string;
+      field: "askPrice" | "bidPrice" | "lastPrice" | "mark" | "netPercentChangeInDouble" | "totalVolume";
+      operator: "LT" | "LTE" | "EQ" | "GTE" | "GT";
+      value: number;
+    };
+
+export interface TradeProposalInput {
+  accountHash: string;
+  action: "PLACE" | "REPLACE";
+  executionMode: "IMMEDIATE" | "DELAYED";
+  orderId?: number;
+  orderPayload: { [key: string]: JsonValue };
+  userInstruction: string;
+  condition?: TradeCondition;
+  validUntil?: string;
+  pollIntervalSeconds?: number;
+  replacesTaskId?: string;
 }
