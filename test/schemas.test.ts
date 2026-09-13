@@ -34,6 +34,22 @@ describe("tool input schemas", () => {
     expect(toolSchemas.prepareTrade.safeParse({ ...base, orderPayload: { orderStrategyType: "SINGLE" } }).success).toBe(false);
   });
 
+  it("enforces the order payload limit in UTF-8 bytes", () => {
+    const parsed = toolSchemas.prepareTrade.safeParse({
+      accountHash: "a".repeat(32),
+      action: "PLACE",
+      executionMode: "IMMEDIATE",
+      orderPayload: {
+        orderStrategyType: "SINGLE",
+        orderLegCollection: [{ instruction: "BUY" }],
+        memoA: "汉".repeat(12_000),
+        memoB: "字".repeat(12_000),
+      },
+      userInstruction: "Buy one share",
+    });
+    expect(parsed.success).toBe(false);
+  });
+
   it("accepts deterministic nested time and quote conditions", () => {
     const parsed = toolSchemas.prepareTrade.safeParse({
       accountHash: "a".repeat(32),

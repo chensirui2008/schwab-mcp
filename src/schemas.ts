@@ -13,7 +13,7 @@ const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
 
 const orderPayload = z.record(z.string().min(1).max(128), jsonValue).superRefine((value, ctx) => {
   const encoded = JSON.stringify(value);
-  if (encoded.length > 65_536) ctx.addIssue({ code: "custom", message: "orderPayload must not exceed 64 KiB" });
+  if (new TextEncoder().encode(encoded).byteLength > 65_536) ctx.addIssue({ code: "custom", message: "orderPayload must not exceed 64 KiB" });
   if (typeof value.orderStrategyType !== "string") {
     ctx.addIssue({ code: "custom", message: "orderPayload.orderStrategyType is required" });
   }

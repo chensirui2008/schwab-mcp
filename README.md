@@ -32,7 +32,7 @@
 
 AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用户明确提出的交易指令，`confirm_trade` 只能在用户原样复述返回的 `confirmationText` 后调用。这个约束由 MCP 工具说明、冻结摘要和审计记录落实，但 MCP 服务端无法看到原始聊天角色，因此它不是可信客户端签名，也不能从密码学上证明一句话由用户输入。
 
-账户参数只接受 Schwab `hashValue`。官方 Schwab Order JSON 会透传给 Trader API，但会先限制为 64 KiB、最多 16 层和 2048 个节点，并拒绝完整账号、authorization、token 及原型污染键。服务端不设置单笔名义金额、数量或日累计硬上限；风险判断依赖每次确认时展示的完整冻结快照。
+账户参数只接受 Schwab `hashValue`。官方 Schwab Order JSON 会透传给 Trader API，但会先按 UTF-8 编码限制为 64 KiB、最多 16 层和 2048 个节点，并拒绝完整账号、authorization、token 及原型污染键。服务端不设置单笔名义金额、数量或日累计硬上限；风险判断依赖每次确认时展示的完整冻结快照。
 
 ## 总开关
 
@@ -57,7 +57,7 @@ AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用�
 
 1. 客户端把自然语言条件翻译为下述确定性条件树，连同订单、`validUntil` 和轮询间隔调用 `prepare_trade`。
 2. 用户在发出指令时完成同样的二次确认；`confirm_trade` 只激活任务。
-3. Durable Object alarm 检查冻结的时间和 Schwab 行情条件。命中后直接执行，不再询问。
+3. Durable Object alarm 检查冻结的时间和 Schwab 行情条件。命中后会在原子认领时再次检查 `validUntil`，仅在仍有效时直接执行，不再询问；异常行情结构会失败关闭并记录可关联事件。
 4. 修改任务时传入 `replacesTaskId`，生成新版本并重新确认；旧版本只在新版本确认后取消。取消活动任务不要求二次确认。
 
 支持的条件节点：

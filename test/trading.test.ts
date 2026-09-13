@@ -61,7 +61,10 @@ async function confirm(vault: DurableObjectStub, proposal: Awaited<ReturnType<ty
   });
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("trade confirmation state machine", () => {
   it("does not place until exact one-time confirmation and cannot consume twice", async () => {
@@ -182,5 +185,59 @@ describe("trade confirmation state machine", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain("/quotes?symbols=AAPL&fields=quote");
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
+  });
+
+  it("fails closed when a successful quote response has an invalid shape", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    const fetchMock = vi.fn(() => Response.json("unexpected"));
+    vi.stubGlobal("fetch", fetchMock);
+    const proposal = await prepare(vault, {
+      executionMode: "DELAYED",
+      condition: { type: "QUOTE", symbol: "AAPL", field: "lastPrice", operator: "LTE", value: 100 },
+      validUntil: new Date(Date.now() + 120_000).toISOString(),
+      pollIntervalSeconds: 15,
+    });
+    expect((await confirm(vault, proposal)).status).toBe(200);
+    expect(await runDurableObjectAlarm(vault)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const listed = await vault.fetch("https://vault/trade/list-delayed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId: crypto.randomUUID(), input: {} }),
+    });
+    expect(await listed.json()).toMatchObject({ result: [{ status: "FAILED", outcome: { error: { code: "UPSTREAM_UNAVAILABLE" } } }] });
+  });
+
+  it("does not execute after validUntil passes while quotes are being fetched", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        now += 120_000;
+        return Response.json({ AAPL: { quote: { lastPrice: 99.5 } } });
+      }
+      return new Response(null, { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const proposal = await prepare(vault, {
+      executionMode: "DELAYED",
+      condition: { type: "QUOTE", symbol: "AAPL", field: "lastPrice", operator: "LTE", value: 100 },
+      validUntil: new Date(now + 60_000).toISOString(),
+      pollIntervalSeconds: 15,
+    });
+    expect((await confirm(vault, proposal)).status).toBe(200);
+    expect(await runDurableObjectAlarm(vault)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const listed = await vault.fetch("https://vault/trade/list-delayed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId: crypto.randomUUID(), input: {} }),
+    });
+    expect(await listed.json()).toMatchObject({ result: [{ status: "EXPIRED" }] });
   });
 });

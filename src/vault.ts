@@ -692,7 +692,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       }
       const result = payload !== null && typeof payload === "object" ? field(payload, "result") : undefined;
       if (result === null || typeof result !== "object") {
-        this.ctx.storage.sql.exec("UPDATE delayed_trade SET next_check_at = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Date.now() + task.poll_interval_seconds * 1000, Date.now(), task.id);
+        this.failDelayedCondition(task, requestId, "Schwab returned an invalid quote response");
         return;
       }
       for (const symbol of symbols) {
@@ -712,7 +712,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     try {
       matched = evaluateCondition(condition, quotes, Date.now());
     } catch {
-      this.ctx.storage.sql.exec("UPDATE delayed_trade SET next_check_at = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Date.now() + task.poll_interval_seconds * 1000, Date.now(), task.id);
+      this.failDelayedCondition(task, requestId, "Schwab quote response is missing a required numeric field");
       return;
     }
     if (!matched) {
@@ -720,13 +720,18 @@ export class SchwabVault extends DurableObject<AppEnv> {
       return;
     }
     if (!tradingEnabled(this.env)) return;
+    const executionNow = Date.now();
     const claimed = this.ctx.storage.sql.exec<{ id: string }>(
-      "UPDATE delayed_trade SET status = 'EXECUTING', execution_request_id = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE' RETURNING id",
+      "UPDATE delayed_trade SET status = 'EXECUTING', execution_request_id = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE' AND valid_until > ? RETURNING id",
       requestId,
-      Date.now(),
+      executionNow,
       task.id,
+      executionNow,
     ).toArray()[0];
-    if (!claimed) return;
+    if (!claimed) {
+      this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'EXPIRED', updated_at = ? WHERE id = ? AND status = 'ACTIVE' AND valid_until <= ?", executionNow, task.id, executionNow);
+      return;
+    }
     this.audit("delayed_trade_execution_started", task.id, requestId, "EXECUTING", task.intent_digest);
     const response = await this.executeMutation(task.action, task.account_hash, task.order_id, JSON.parse(task.order_json) as { [key: string]: JsonValue }, requestId, "delayed_trade_execute");
     const payload: unknown = await response.json();
@@ -735,6 +740,19 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const status = response.ok ? "EXECUTED" : errorCode === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
     this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = ?, outcome_json = ?, updated_at = ? WHERE id = ? AND status = 'EXECUTING'", status, JSON.stringify(payload), Date.now(), task.id);
     this.audit("delayed_trade_execution_finished", task.id, requestId, status, task.intent_digest);
+  }
+
+  private failDelayedCondition(task: DelayedTradeRow, requestId: string, message: string): void {
+    const now = Date.now();
+    const outcome = { error: { code: "UPSTREAM_UNAVAILABLE", message, requestId } };
+    const failed = this.ctx.storage.sql.exec<{ id: string }>(
+      "UPDATE delayed_trade SET status = 'FAILED', outcome_json = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE' RETURNING id",
+      JSON.stringify(outcome),
+      now,
+      task.id,
+    ).toArray()[0];
+    logEvent("schwab_response_invalid", { requestId, tool: "delayed_trade_condition" });
+    if (failed) this.audit("delayed_trade_condition_failed", task.id, requestId, "FAILED", task.intent_digest);
   }
 
   private async scheduleNextAlarm(): Promise<void> {
