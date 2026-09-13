@@ -24,5 +24,6 @@
 
 - 修复根因，不吞错或伪造空结果；上游响应结构异常须显式失败并记录事件。新增错误须映射到稳定的公开错误码。
 - 日志须脱敏，关键路径包含可关联的 `requestId`；禁止记录 token、authorization code、请求头和完整账号。
+- `.github/workflows/deploy.yml` 仅在推送 `main` 时运行完整验证并部署 `wrangler.jsonc` 中的 Worker；CI 只使用 `CLOUDFLARE_ACCOUNT_ID` 和最小权限的 `CLOUDFLARE_API_TOKEN`，不得把 Worker Secrets 放入 GitHub Actions。
 - TypeScript 或运行配置变更运行 `npm run typecheck`、`npm run lint` 和相关测试；跨模块或鉴权边界变更运行 `npm test`。Worker 绑定配置变更再运行 `npm run types`。纯文档修改检查命令、链接和描述，不要求运行完整代码测试。
 - 大规模重构或实验先建分支。每个独立功能使用独立提交。

@@ -145,6 +145,17 @@ npm run deploy
 
 首次部署必须保持 `ENABLE_TRADING: "false"`，完成 OAuth 和查询验证后再决定是否修改配置并二次部署。一次成功部署、模拟测试或 MCP 工具可见都不证明真实 Schwab 建单已验证。
 
+### GitHub Actions 自动部署
+
+仓库的 `.github/workflows/deploy.yml` 会在代码推送到 `main` 后依次执行 `npm ci`、`npm run validate` 和 `npm run deploy`。只有类型生成、类型检查、lint 和全部测试通过后，才会把 `wrangler.jsonc` 定义的 `schwab-mcp` Worker 部署到 Cloudflare；同一时间只允许一个生产部署运行，已开始的部署不会被后续推送取消。
+
+在 GitHub 仓库的 `Settings` → `Secrets and variables` → `Actions` 中配置：
+
+- `CLOUDFLARE_ACCOUNT_ID`：目标 Cloudflare 账户 ID；
+- `CLOUDFLARE_API_TOKEN`：仅授予部署该 Worker 及其现有绑定所需权限的 Cloudflare API Token。
+
+不要把 `GITHUB_CLIENT_SECRET`、`SCHWAB_CLIENT_ID` 或 `SCHWAB_CLIENT_SECRET` 写入 GitHub Actions。它们应继续作为 Worker Secrets 由 Cloudflare 保存，部署不会读取或覆盖这些值。工作流成功只证明验证与部署命令完成，不证明 Schwab OAuth、查询或真实交易已经端到端验证。
+
 部署后访问以下地址完成 Schwab 授权：
 
 ```text
