@@ -34,6 +34,19 @@ describe("tool input schemas", () => {
     expect(toolSchemas.prepareTrade.safeParse({ ...base, orderPayload: { orderStrategyType: "SINGLE" } }).success).toBe(false);
   });
 
+  it("keeps direct placement strictly limited to immediate PLACE input", () => {
+    const direct = {
+      sessionCapability: "x".repeat(43),
+      executionKey: crypto.randomUUID(),
+      accountHash: "a".repeat(32),
+      orderPayload: { orderStrategyType: "SINGLE", orderLegCollection: [{ instruction: "BUY" }] },
+      userInstruction: "Buy one share now",
+    };
+    expect(toolSchemas.placeOrderDirect.safeParse(direct).success).toBe(true);
+    expect(toolSchemas.placeOrderDirect.safeParse({ ...direct, action: "REPLACE", orderId: 42 }).success).toBe(false);
+    expect(toolSchemas.placeOrderDirect.safeParse({ ...direct, executionMode: "DELAYED" }).success).toBe(false);
+  });
+
   it("enforces the order payload limit in UTF-8 bytes", () => {
     const parsed = toolSchemas.prepareTrade.safeParse({
       accountHash: "a".repeat(32),

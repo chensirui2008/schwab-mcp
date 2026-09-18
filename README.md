@@ -26,21 +26,24 @@
 - `enable_trading`：只读取部署配置控制的总开关，不能通过 MCP 开启
 - `prepare_trade`：冻结即时或延迟建单/改单快照并签发一次性确认令牌
 - `confirm_trade`：消费确认令牌；即时任务立即提交，延迟任务只激活
+- `enable_session_direct_trading`：按用户明确指令为当前 agent session 签发临时直下能力
+- `place_order_direct`：使用 session 能力直接提交即时 `PLACE`，不经过逐单确认
+- `disable_session_direct_trading`：立即关闭该 session 的直下能力
 - `cancel_order`：按明确用户指令撤单，不要求二次确认
 - `list_delayed_trades`
 - `cancel_delayed_trade`：立即取消仍处于 `ACTIVE` 的任务
 
-AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用户明确提出的交易指令，`confirm_trade` 只能在用户原样复述返回的 `confirmationText` 后调用。这个约束由 MCP 工具说明、冻结摘要和审计记录落实，但 MCP 服务端无法看到原始聊天角色，因此它不是可信客户端签名，也不能从密码学上证明一句话由用户输入。
+AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用户明确提出的交易指令，`confirm_trade` 只能在用户原样复述返回的 `confirmationText` 后调用；session 直下模式也必须先由用户明确要求开启，且每次 `place_order_direct` 仍须对应一条明确的用户下单指令。这个约束由 MCP 工具说明、冻结摘要和审计记录落实，但 MCP 服务端无法看到原始聊天角色，因此它不是可信客户端签名，也不能从密码学上证明一句话由用户输入。
 
-账户参数只接受 Schwab `hashValue`。官方 Schwab Order JSON 会透传给 Trader API，但会先按 UTF-8 编码限制为 64 KiB、最多 16 层和 2048 个节点，并拒绝完整账号、authorization、token 及原型污染键。服务端不设置单笔名义金额、数量或日累计硬上限；风险判断依赖每次确认时展示的完整冻结快照。
+账户参数只接受 Schwab `hashValue`。官方 Schwab Order JSON 会透传给 Trader API，但会先按 UTF-8 编码限制为 64 KiB、最多 16 层和 2048 个节点，并拒绝完整账号、authorization、token 及原型污染键。服务端不设置单笔名义金额、数量或日累计硬上限；普通流程依赖每次确认时展示的完整冻结快照，session 直下模式则明确放弃该逐单预览门槛。
 
 ## 总开关
 
-`ENABLE_TRADING` 是唯一总开关，默认值为 `false`。只有把部署配置改为严格小写的 `true` 并重新部署后，才能准备、确认、激活或触发建单/改单。MCP 工具不能修改这个值。
+`ENABLE_TRADING` 是唯一总开关，默认值为 `false`。只有把部署配置改为严格小写的 `true` 并重新部署后，才能准备、确认、开启 session 直下、直下建单、激活或触发建单/改单。MCP 工具不能修改这个值。
 
 关闭总开关时：
 
-- 新的建单/改单准备和确认失败关闭；
+- 新的建单/改单准备、确认、session 直下开启和直下建单失败关闭；
 - 已确认的延迟任务保持 `ACTIVE`，停止读取条件和提交订单，每 15 分钟检查一次部署配置；
 - `cancel_order` 和 `cancel_delayed_trade` 仍可使用，确保可以降险。
 
@@ -68,9 +71,17 @@ AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用�
 
 单个条件树最多引用 50 个代码，轮询间隔为 15 秒到 1 小时，`validUntil` 必须在未来一年内。AI 只负责在确认前把条件冻结成这套可审计规则；实际执行阶段不调用模型，不允许开放式新闻判断或任意代码。
 
+## Agent session 直下模式
+
+当前 Streamable HTTP 入口按请求创建 `McpServer`，服务端看不到 Codex/ChatGPT agent session 的结束事件。因此 session 直下模式使用一枚只返回一次的不透明 `sessionCapability` 关联状态：客户端只应把它保留在当前 agent session 内，并在正常结束时调用 `disable_session_direct_trading`。Durable Object 只保存能力值的 SHA-256 摘要，不把明文写入数据库、日志或审计记录。
+
+开启后仅 `place_order_direct` 可绕过逐单确认，并且只支持即时 `PLACE`。即时 `REPLACE`、全部延迟建单/改单仍必须使用 `prepare_trade` 与 `confirm_trade`；撤单规则不变。能力连续 30 分钟无使用即失效，每次有效直下会续期 30 分钟，但自开启起最长 8 小时。若客户端未发送关闭通知，自动过期是断线后的兜底，不能保证与聊天窗口关闭在同一瞬间发生。
+
+每次直下必须提供新的 UUID `executionKey`。同一 session 内以相同 `executionKey` 和相同订单重放时只返回已持久化结果，不会再次提交；同一键绑定不同订单会失败关闭。若执行仍在进行或结果无法确定，返回 `EXECUTION_UNCERTAIN`，必须先查询订单状态。
+
 ## 写入与幂等
 
-建单使用 `POST /accounts/{accountHash}/orders`，改单使用 `PUT /accounts/{accountHash}/orders/{orderId}`，撤单使用对应 `DELETE`。交易写入会先持久化 `EXECUTING`，再访问 Schwab；Durable Object alarm 即使至少执行一次，也不会自动重复提交同一个任务。
+建单使用 `POST /accounts/{accountHash}/orders`，改单使用 `PUT /accounts/{accountHash}/orders/{orderId}`，撤单使用对应 `DELETE`。交易写入会先持久化 `EXECUTING`，再访问 Schwab；Durable Object alarm 即使至少执行一次，也不会自动重复提交同一个任务。直下建单另以 `executionKey` 原子认领并保存结果，防止相同调用重放造成重复订单。
 
 交易写入只允许首次 401 后刷新 token 并重试一次。429、其他 4xx 不重试；网络错误或 5xx 也不重试，并返回 `EXECUTION_UNCERTAIN`。出现该状态时必须先用 `get_orders` 或 `get_order` 核实实际订单，禁止直接重放。查询请求仍维持原有规则：401、429、5xx 各最多重试一次。
 
@@ -81,13 +92,13 @@ flowchart LR
   C[MCP client] -->|OAuth 2.1 + Streamable HTTP| W[Cloudflare Worker /mcp]
   W --> O[Workers OAuth Provider + OAUTH_KV]
   W --> V[SchwabVault Durable Object]
-  V -->|GET queries; confirmed POST/PUT; explicit DELETE| S[Schwab REST API]
+  V -->|GET queries; confirmed or session-authorized POST; confirmed PUT; explicit DELETE| S[Schwab REST API]
   V -->|SQLite alarm| V
   U[Service owner] -->|GitHub numeric ID allowlist| W
   U -->|Schwab OAuth callback| V
 ```
 
-每个 MCP 请求创建新的 `McpServer`。Schwab token、到期时间、一次性 OAuth state、确认提案、延迟任务和仅含摘要的交易审计记录放在单个 owner `SchwabVault` Durable Object 中。对象会合并并发 refresh、在 access token 到期前五分钟刷新，并通过 SQLite 条件更新原子消费确认令牌。确认令牌的明文只返回一次，持久化时只保存 SHA-256 摘要。
+每个 MCP 请求创建新的 `McpServer`。Schwab token、到期时间、一次性 OAuth state、确认提案、agent-session 直下能力摘要、直下执行记录、延迟任务和仅含摘要的交易审计记录放在单个 owner `SchwabVault` Durable Object 中。对象会合并并发 refresh、在 access token 到期前五分钟刷新，并通过 SQLite 条件更新原子消费确认令牌和认领直下请求。确认令牌与 session 能力明文都只返回一次，持久化时只保存 SHA-256 摘要。
 
 ## 本地配置
 
@@ -130,7 +141,7 @@ npm run lint
 npm test
 ```
 
-测试使用 Vitest 和 Cloudflare Workers 测试池，覆盖 OAuth state、GitHub numeric ID 白名单、令牌脱敏、refresh 并发与重试、交易 schema、敏感字段拒绝、一次性确认、防重放、写请求不重试和 Durable Object alarm 延迟执行。测试中的 Schwab 写请求全部是模拟响应，不会访问真实账户。
+测试使用 Vitest 和 Cloudflare Workers 测试池，覆盖 OAuth state、GitHub numeric ID 白名单、令牌脱敏、refresh 并发与重试、交易 schema、敏感字段拒绝、一次性确认、session 直下显式开启/关闭与过期、`executionKey` 防重放、写请求不重试和 Durable Object alarm 延迟执行。测试中的 Schwab 写请求全部是模拟响应，不会访问真实账户。
 
 ## 部署
 
@@ -187,4 +198,4 @@ Workers structured logs 记录：
 npx wrangler tail schwab-mcp --format json
 ```
 
-错误通过 MCP `isError: true` 返回稳定错误码。除原有 `AUTH_REQUIRED`、`REAUTHORIZATION_REQUIRED`、`INVALID_ARGUMENT`、`RATE_LIMITED`、`SCHWAB_REJECTED`、`UPSTREAM_UNAVAILABLE` 外，交易流程还会返回 `CONFIRMATION_INVALID`、`CONFIRMATION_EXPIRED`、`TRADE_NOT_FOUND`、`TRADE_STATE_CONFLICT` 和 `EXECUTION_UNCERTAIN`。`AUTH_REQUIRED` 和 `REAUTHORIZATION_REQUIRED` 会附带 `reconnectUrl`；成功结果在授权剩余不足 24 小时时附带 `meta.authorizationNotice`。上游错误不会转换为空结果。
+错误通过 MCP `isError: true` 返回稳定错误码。除原有 `AUTH_REQUIRED`、`REAUTHORIZATION_REQUIRED`、`INVALID_ARGUMENT`、`RATE_LIMITED`、`SCHWAB_REJECTED`、`UPSTREAM_UNAVAILABLE` 外，交易流程还会返回 `CONFIRMATION_INVALID`、`CONFIRMATION_EXPIRED`、`TRADE_NOT_FOUND`、`TRADE_STATE_CONFLICT`、`DIRECT_TRADING_SESSION_INVALID` 和 `EXECUTION_UNCERTAIN`。`AUTH_REQUIRED` 和 `REAUTHORIZATION_REQUIRED` 会附带 `reconnectUrl`；成功结果在授权剩余不足 24 小时时附带 `meta.authorizationNotice`。上游错误不会转换为空结果。

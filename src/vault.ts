@@ -11,6 +11,8 @@ const REFRESH_TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_INLINE_RETRY_WAIT_MS = 2000;
 const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 const DISABLED_ALARM_RECHECK_MS = 15 * 60 * 1000;
+const DIRECT_TRADING_IDLE_TTL_MS = 30 * 60 * 1000;
+const DIRECT_TRADING_MAX_TTL_MS = 8 * 60 * 60 * 1000;
 
 interface ProposalRow {
   [key: string]: string | number | null;
@@ -48,6 +50,21 @@ interface DelayedTradeRow {
   execution_request_id: string | null;
   outcome_json: string | null;
   updated_at: number;
+}
+
+interface DirectTradingSessionRow {
+  [key: string]: string | number | null;
+  id: string;
+  idle_expires_at: number;
+  absolute_expires_at: number;
+}
+
+interface DirectTradeExecutionRow {
+  [key: string]: string | number | null;
+  intent_digest: string;
+  status: string;
+  outcome_json: string | null;
+  response_status: number | null;
 }
 
 export function retryAfterDelay(header: string | null, now = Date.now()): number {
@@ -180,6 +197,29 @@ export class SchwabVault extends DurableObject<AppEnv> {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_delayed_trade_due ON delayed_trade(status, next_check_at);
+      CREATE TABLE IF NOT EXISTS direct_trading_session (
+        id TEXT PRIMARY KEY,
+        capability_hash TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL,
+        idle_expires_at INTEGER NOT NULL,
+        absolute_expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_direct_trading_session_expiry
+        ON direct_trading_session(status, idle_expires_at, absolute_expires_at);
+      CREATE TABLE IF NOT EXISTS direct_trade_execution (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        intent_digest TEXT NOT NULL,
+        instruction_digest TEXT NOT NULL,
+        status TEXT NOT NULL,
+        outcome_json TEXT,
+        response_status INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS trade_audit (
         id TEXT PRIMARY KEY,
         event TEXT NOT NULL,
@@ -226,6 +266,15 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
     if (request.method === "POST" && url.pathname === "/trade/confirm") {
       return this.confirmTrade(request);
+    }
+    if (request.method === "POST" && url.pathname === "/trade/session/enable") {
+      return this.enableSessionDirectTrading(request);
+    }
+    if (request.method === "POST" && url.pathname === "/trade/session/disable") {
+      return this.disableSessionDirectTrading(request);
+    }
+    if (request.method === "POST" && url.pathname === "/trade/place-direct") {
+      return this.placeOrderDirect(request);
     }
     if (request.method === "POST" && url.pathname === "/trade/cancel-order") {
       return this.cancelOrder(request);
@@ -416,6 +465,154 @@ export class SchwabVault extends DurableObject<AppEnv> {
 
   private tradingDisabled(requestId: string): Response {
     return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trading is disabled by deployment configuration", requestId }, 409);
+  }
+
+  private expireDirectTradingSessions(now: number): void {
+    this.ctx.storage.sql.exec(
+      "UPDATE direct_trading_session SET status = 'EXPIRED', updated_at = ? WHERE status = 'ACTIVE' AND (idle_expires_at <= ? OR absolute_expires_at <= ?)",
+      now,
+      now,
+      now,
+    );
+  }
+
+  private async enableSessionDirectTrading(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    if (!tradingEnabled(this.env)) return this.tradingDisabled(requestId);
+    const parsed = toolSchemas.enableSessionDirectTrading.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid direct-trading session request", requestId }, 400);
+
+    const now = Date.now();
+    this.expireDirectTradingSessions(now);
+    const sessionId = crypto.randomUUID();
+    const sessionCapability = randomToken();
+    const idleExpiresAt = now + DIRECT_TRADING_IDLE_TTL_MS;
+    const absoluteExpiresAt = now + DIRECT_TRADING_MAX_TTL_MS;
+    const instructionDigest = await sha256(parsed.data.userInstruction);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO direct_trading_session
+       (id, capability_hash, status, idle_expires_at, absolute_expires_at, created_at, last_used_at, updated_at)
+       VALUES (?, ?, 'ACTIVE', ?, ?, ?, ?, ?)`,
+      sessionId,
+      await sha256(sessionCapability),
+      idleExpiresAt,
+      absoluteExpiresAt,
+      now,
+      now,
+      now,
+    );
+    this.audit("direct_trading_session_enabled", sessionId, requestId, "ACTIVE", undefined, instructionDigest);
+    return jsonResponse({
+      result: {
+        sessionCapability,
+        status: "ACTIVE",
+        scope: "IMMEDIATE_PLACE_ONLY",
+        idleExpiresAt: new Date(idleExpiresAt).toISOString(),
+        absoluteExpiresAt: new Date(absoluteExpiresAt).toISOString(),
+        warning: "Keep sessionCapability inside this agent session. It authorizes immediate PLACE orders without per-order confirmation and is never stored in plaintext.",
+      },
+    });
+  }
+
+  private async disableSessionDirectTrading(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    const parsed = toolSchemas.disableSessionDirectTrading.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid direct-trading session request", requestId }, 400);
+    const now = Date.now();
+    this.expireDirectTradingSessions(now);
+    const disabled = this.ctx.storage.sql.exec<{ id: string }>(
+      "UPDATE direct_trading_session SET status = 'DISABLED', updated_at = ? WHERE capability_hash = ? AND status = 'ACTIVE' RETURNING id",
+      now,
+      await sha256(parsed.data.sessionCapability),
+    ).toArray()[0];
+    if (!disabled) return publicError({ code: "DIRECT_TRADING_SESSION_INVALID", message: "Direct-trading session is invalid or inactive", requestId }, 403);
+    this.audit("direct_trading_session_disabled", disabled.id, requestId, "DISABLED");
+    return jsonResponse({ result: { status: "DISABLED" } });
+  }
+
+  private async claimDirectTradingSession(sessionCapability: string, requestId: string): Promise<DirectTradingSessionRow | Response> {
+    const now = Date.now();
+    this.expireDirectTradingSessions(now);
+    const claimed = this.ctx.storage.sql.exec<DirectTradingSessionRow>(
+      `UPDATE direct_trading_session
+       SET last_used_at = ?, idle_expires_at = CASE WHEN ? < absolute_expires_at THEN ? ELSE absolute_expires_at END, updated_at = ?
+       WHERE capability_hash = ? AND status = 'ACTIVE' AND idle_expires_at > ? AND absolute_expires_at > ?
+       RETURNING id, idle_expires_at, absolute_expires_at`,
+      now,
+      now + DIRECT_TRADING_IDLE_TTL_MS,
+      now + DIRECT_TRADING_IDLE_TTL_MS,
+      now,
+      await sha256(sessionCapability),
+      now,
+      now,
+    ).toArray()[0];
+    return claimed ?? publicError({ code: "DIRECT_TRADING_SESSION_INVALID", message: "Direct-trading session is invalid or inactive", requestId }, 403);
+  }
+
+  private async placeOrderDirect(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    if (!tradingEnabled(this.env)) return this.tradingDisabled(requestId);
+    const parsed = toolSchemas.placeOrderDirect.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid direct order", requestId }, 400);
+    try {
+      assertSafeOrderPayload(parsed.data.orderPayload);
+    } catch {
+      return publicError({ code: "INVALID_ARGUMENT", message: "Unsafe order payload", requestId }, 400);
+    }
+
+    const session = await this.claimDirectTradingSession(parsed.data.sessionCapability, requestId);
+    if (session instanceof Response) return session;
+    const intent: { [key: string]: JsonValue } = {
+      accountHash: parsed.data.accountHash,
+      action: "PLACE",
+      executionMode: "IMMEDIATE",
+      orderPayload: parsed.data.orderPayload,
+    };
+    const intentDigest = await sha256(canonicalJson(intent));
+    const instructionDigest = await sha256(parsed.data.userInstruction);
+    const now = Date.now();
+    const inserted = this.ctx.storage.sql.exec<{ id: string }>(
+      `INSERT OR IGNORE INTO direct_trade_execution
+       (id, session_id, intent_digest, instruction_digest, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'EXECUTING', ?, ?) RETURNING id`,
+      parsed.data.executionKey,
+      session.id,
+      intentDigest,
+      instructionDigest,
+      now,
+      now,
+    ).toArray()[0];
+    if (!inserted) {
+      const existing = this.ctx.storage.sql.exec<DirectTradeExecutionRow>(
+        "SELECT intent_digest, status, outcome_json, response_status FROM direct_trade_execution WHERE id = ? AND session_id = ?",
+        parsed.data.executionKey,
+        session.id,
+      ).toArray()[0];
+      if (!existing || existing.intent_digest !== intentDigest) {
+        return publicError({ code: "TRADE_STATE_CONFLICT", message: "executionKey is already bound to another direct order", requestId }, 409);
+      }
+      if (existing.outcome_json !== null) return jsonResponse(JSON.parse(existing.outcome_json) as unknown, existing.response_status ?? 200);
+      return publicError({ code: "EXECUTION_UNCERTAIN", message: "Direct order execution is already in progress or its outcome is unknown; verify order status before any new submission", requestId, attempts: 1 }, 502);
+    }
+
+    this.audit("direct_trade_execution_started", parsed.data.executionKey, requestId, "EXECUTING", intentDigest, instructionDigest);
+    const response = await this.executeMutation("PLACE", parsed.data.accountHash, undefined, parsed.data.orderPayload, requestId, "place_order_direct");
+    const payload: unknown = await response.json();
+    const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
+    const status = response.ok ? "EXECUTED" : error !== null && typeof error === "object" && field(error, "code") === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
+    this.ctx.storage.sql.exec(
+      "UPDATE direct_trade_execution SET status = ?, outcome_json = ?, response_status = ?, updated_at = ? WHERE id = ? AND status = 'EXECUTING'",
+      status,
+      JSON.stringify(payload),
+      response.status,
+      Date.now(),
+      parsed.data.executionKey,
+    );
+    this.audit("direct_trade_execution_finished", parsed.data.executionKey, requestId, status, intentDigest);
+    return jsonResponse(payload, response.status);
   }
 
   private async prepareTrade(request: Request): Promise<Response> {

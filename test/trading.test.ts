@@ -61,6 +61,34 @@ async function confirm(vault: DurableObjectStub, proposal: Awaited<ReturnType<ty
   });
 }
 
+async function enableDirectTrading(vault: DurableObjectStub): Promise<string> {
+  const response = await vault.fetch("https://vault/trade/session/enable", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requestId: crypto.randomUUID(), input: { userInstruction: "Enable direct placement for this agent session" } }),
+  });
+  expect(response.status).toBe(200);
+  const payload = await response.json<{ result: { sessionCapability: string } }>();
+  return payload.result.sessionCapability;
+}
+
+function placeDirect(vault: DurableObjectStub, sessionCapability: string, executionKey = crypto.randomUUID()): Promise<Response> {
+  return vault.fetch("https://vault/trade/place-direct", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requestId: crypto.randomUUID(),
+      input: {
+        sessionCapability,
+        executionKey,
+        accountHash: "a".repeat(32),
+        orderPayload,
+        userInstruction: "Buy one AAPL share now",
+      },
+    }),
+  });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -239,5 +267,108 @@ describe("trade confirmation state machine", () => {
       body: JSON.stringify({ requestId: crypto.randomUUID(), input: {} }),
     });
     expect(await listed.json()).toMatchObject({ result: [{ status: "EXPIRED" }] });
+  });
+});
+
+describe("agent-session direct placement", () => {
+  it("requires explicit session enablement and places without a confirmation proposal", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Response>(() =>
+      new Response(null, { status: 201, headers: { Location: "/trader/v1/accounts/hash/orders/9001" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const invalid = await placeDirect(vault, "x".repeat(43));
+    expect(invalid.status).toBe(403);
+    expect(await invalid.json()).toMatchObject({ error: { code: "DIRECT_TRADING_SESSION_INVALID" } });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const sessionCapability = await enableDirectTrading(vault);
+    expect(sessionCapability).toHaveLength(43);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const placed = await placeDirect(vault, sessionCapability);
+    expect(placed.status).toBe(200);
+    expect(await placed.json()).toMatchObject({ result: { status: "accepted", orderId: 9001 } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
+  });
+
+  it("uses executionKey to prevent duplicate direct placement", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    const fetchMock = vi.fn(() => new Response(null, { status: 201, headers: { Location: "/trader/v1/accounts/hash/orders/9002" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const sessionCapability = await enableDirectTrading(vault);
+    const executionKey = crypto.randomUUID();
+
+    const first = await placeDirect(vault, sessionCapability, executionKey);
+    const replay = await placeDirect(vault, sessionCapability, executionKey);
+    expect(first.status).toBe(200);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ result: { orderId: 9002 } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("expires after 30 minutes of inactivity", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const sessionCapability = await enableDirectTrading(vault);
+    now += 30 * 60 * 1000 + 1;
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      requestUrl(input).endsWith("/v1/oauth/token")
+        ? Response.json({ access_token: "refreshed-access", refresh_token: "refreshed-refresh", expires_in: 1800 })
+        : new Response(null, { status: 201 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const expired = await placeDirect(vault, sessionCapability);
+    expect(expired.status).toBe(403);
+    expect(await expired.json()).toMatchObject({ error: { code: "DIRECT_TRADING_SESSION_INVALID" } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("renews the idle deadline on use but never exceeds the eight-hour maximum", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    const startedAt = Date.now();
+    let now = startedAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const sessionCapability = await enableDirectTrading(vault);
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      requestUrl(input).endsWith("/v1/oauth/token")
+        ? Response.json({ access_token: "refreshed-access", refresh_token: "refreshed-refresh", expires_in: 1800 })
+        : new Response(null, { status: 201 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    now = startedAt + 20 * 60 * 1000;
+    expect((await placeDirect(vault, sessionCapability)).status).toBe(200);
+    now = startedAt + 40 * 60 * 1000;
+    expect((await placeDirect(vault, sessionCapability)).status).toBe(200);
+    now = startedAt + 8 * 60 * 60 * 1000;
+    expect((await placeDirect(vault, sessionCapability)).status).toBe(403);
+    expect(fetchMock.mock.calls.filter(([input]) => !requestUrl(input).endsWith("/v1/oauth/token"))).toHaveLength(2);
+  });
+
+  it("can be explicitly disabled and does not expose the capability in the result", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    const sessionCapability = await enableDirectTrading(vault);
+    const disabled = await vault.fetch("https://vault/trade/session/disable", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId: crypto.randomUUID(), input: { sessionCapability } }),
+    });
+    expect(disabled.status).toBe(200);
+    expect(JSON.stringify(await disabled.json())).not.toContain(sessionCapability);
+
+    const fetchMock = vi.fn(() => new Response(null, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect((await placeDirect(vault, sessionCapability)).status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

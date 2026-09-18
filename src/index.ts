@@ -18,7 +18,7 @@ const apiHandler = {
       legacy: "stateless",
       responseMode: "auto",
       onerror(error) {
-        console.error(JSON.stringify({ event: "mcp_handler_error", message: error.message }));
+        console.error(JSON.stringify({ event: "mcp_handler_error", errorType: error.name }));
       },
     });
     const response = await handler.fetch(request);

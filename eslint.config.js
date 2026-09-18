@@ -2,7 +2,7 @@ import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default [
-  { ignores: ["node_modules", "dist", "env.d.ts", "worker-configuration.d.ts", "eslint.config.js", "vitest.config.ts"] },
+  { ignores: ["node_modules", "dist", ".delta/**", "env.d.ts", "worker-configuration.d.ts", "eslint.config.js", "vitest.config.ts"] },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {

@@ -1,6 +1,15 @@
 import type { JsonValue, TradeCondition } from "./types";
 
-const SENSITIVE_ORDER_KEYS = new Set(["accountNumber", "access_token", "accessToken", "authorization", "refresh_token", "refreshToken"]);
+const SENSITIVE_ORDER_KEYS = new Set([
+  "accountNumber",
+  "access_token",
+  "accessToken",
+  "authorization",
+  "confirmationToken",
+  "refresh_token",
+  "refreshToken",
+  "sessionCapability",
+]);
 
 function assertSafe(value: JsonValue, depth: number, counter: { nodes: number }): void {
   counter.nodes += 1;

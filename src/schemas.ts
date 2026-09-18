@@ -6,6 +6,7 @@ const isoDate = z.iso.date();
 const isoDateTime = z.iso.datetime({ offset: true });
 const accountHash = z.string().min(16).max(256).regex(/^[A-Za-z0-9_-]+$/);
 const uuid = z.uuid();
+const sessionCapability = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 
 const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([z.null(), z.boolean(), z.number(), z.string().max(16_384), z.array(jsonValue).max(256), z.record(z.string().min(1).max(128), jsonValue)]),
@@ -133,6 +134,17 @@ export const toolSchemas = {
     confirmationToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
     confirmationText: z.string().trim().min(1).max(256),
   }),
+  enableSessionDirectTrading: z.object({
+    userInstruction: z.string().trim().min(1).max(4000),
+  }).strict(),
+  disableSessionDirectTrading: z.object({ sessionCapability }).strict(),
+  placeOrderDirect: z.object({
+    sessionCapability,
+    executionKey: uuid,
+    accountHash,
+    orderPayload,
+    userInstruction: z.string().trim().min(1).max(4000),
+  }).strict(),
   cancelOrder: z.object({ accountHash, orderId: z.number().int().positive(), userInstruction: z.string().trim().min(1).max(4000) }),
   listDelayedTrades: z.object({ status: z.enum(["ACTIVE", "EXECUTING", "EXECUTED", "FAILED", "EXECUTION_UNCERTAIN", "CANCELLED", "EXPIRED"]).optional() }),
   cancelDelayedTrade: z.object({ taskId: uuid, userInstruction: z.string().trim().min(1).max(4000) }),

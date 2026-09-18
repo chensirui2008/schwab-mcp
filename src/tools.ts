@@ -367,6 +367,33 @@ export function createServer(env: AppEnv): McpServer {
   );
 
   server.registerTool(
+    "enable_session_direct_trading",
+    {
+      description: "Enable immediate PLACE orders without per-order confirmation for this agent session only, after an explicit user instruction. Returns a sensitive sessionCapability that expires after 30 minutes of inactivity and after 8 hours at the latest. Never call proactively; never log or echo the capability beyond the one enable result.",
+      inputSchema: toolSchemas.enableSessionDirectTrading,
+    },
+    async (input) => executeVaultAction(env, "enable_session_direct_trading", "/trade/session/enable", input),
+  );
+
+  server.registerTool(
+    "disable_session_direct_trading",
+    {
+      description: "Immediately disable a direct-trading session capability. This remains available even when ENABLE_TRADING is false.",
+      inputSchema: toolSchemas.disableSessionDirectTrading,
+    },
+    async (input) => executeVaultAction(env, "disable_session_direct_trading", "/trade/session/disable", input),
+  );
+
+  server.registerTool(
+    "place_order_direct",
+    {
+      description: "Place one immediate user-initiated Schwab order without per-order confirmation using an explicitly enabled agent-session capability. Supports PLACE only: no REPLACE or delayed execution. Generate one executionKey per user order and reuse it only when retrying the identical tool call. Never suggest or initiate a trade proactively.",
+      inputSchema: toolSchemas.placeOrderDirect,
+    },
+    async (input) => executeVaultAction(env, "place_order_direct", "/trade/place-direct", input),
+  );
+
+  server.registerTool(
     "cancel_order",
     {
       description: "Cancel one Schwab order without second confirmation, only after an explicit user instruction. Cancellation remains available while ENABLE_TRADING is false.",

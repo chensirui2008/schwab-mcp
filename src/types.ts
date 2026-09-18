@@ -9,6 +9,7 @@ export type ErrorCode =
   | "CONFIRMATION_EXPIRED"
   | "TRADE_NOT_FOUND"
   | "TRADE_STATE_CONFLICT"
+  | "DIRECT_TRADING_SESSION_INVALID"
   | "EXECUTION_UNCERTAIN";
 
 export interface ToolMeta {
