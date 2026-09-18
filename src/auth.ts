@@ -4,6 +4,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
+import { grantedScopes, OAUTH_AUTHORIZATION_VERSION, TRADE_SCOPE } from "./oauth-access";
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 const FLOW_COOKIE = "__Host-schwab-oauth";
@@ -115,7 +116,11 @@ app.get("/", (c) =>
     version: c.env.APP_VERSION,
     transport: "streamable-http",
     endpoint: "/mcp",
-    readonly: true,
+    readonly: false,
+    oauthScopes: {
+      read: "schwab.read",
+      trade: "schwab.trade",
+    },
   }),
 );
 
@@ -124,11 +129,14 @@ app.get("/authorize", async (c) => {
   const client = await c.env.OAUTH_PROVIDER.lookupClient(authRequest.clientId);
   if (!client) return c.text("Invalid OAuth client", 400);
   const origin = new URL(c.req.url).origin;
+  const requestsTrading = authRequest.scope.includes(TRADE_SCOPE);
   const state = await saveState(c.env, "consent", { action: "mcp_authorize", origin, authRequest } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   return c.html(html`<!doctype html><meta charset="utf-8"><title>Schwab MCP 授权</title>
-    <h1>允许连接只读 Schwab MCP？</h1><p>客户端：${client.clientName ?? client.clientId}</p>
-    <p>回调地址：${authRequest.redirectUri}</p><p>此客户端将能读取行情、账户余额、持仓和订单记录。</p>
+    <h1>${requestsTrading ? "允许连接可交易 Schwab MCP？" : "允许连接只读 Schwab MCP？"}</h1><p>客户端：${client.clientName ?? client.clientId}</p>
+    <p>回调地址：${authRequest.redirectUri}</p><p>${requestsTrading
+      ? "此客户端将能读取账户数据，并使用交易工具准备、确认、提交或撤销真实订单。每笔交易仍受部署总开关及相应确认或 session 能力约束。"
+      : "此客户端将只能读取行情、账户余额、持仓和订单记录，不能看到或调用交易工具。"}</p>
     <form method="post" action="/authorize/approve"><input type="hidden" name="state" value="${state}"><button type="submit">继续 GitHub 身份验证并授权</button></form>`);
 });
 
@@ -168,9 +176,9 @@ app.get("/auth/github/callback", async (c) => {
     const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
       request: payload.authRequest,
       userId: String(user.id),
-      metadata: { label: "Personal Schwab read-only MCP" },
-      scope: payload.authRequest.scope,
-      props: { userId: String(user.id), username: user.login },
+      metadata: { label: payload.authRequest.scope.includes(TRADE_SCOPE) ? "Personal Schwab trading MCP" : "Personal Schwab read-only MCP" },
+      scope: grantedScopes(payload.authRequest.scope),
+      props: { userId: String(user.id), username: user.login, authorizationVersion: OAUTH_AUTHORIZATION_VERSION },
     });
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
     return c.redirect(redirectTo);

@@ -2,6 +2,7 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { AuthHandler } from "./auth";
 import type { AppEnv } from "./env";
+import { READ_SCOPE, resolveMcpAccess, TRADE_SCOPE } from "./oauth-access";
 import { createServer } from "./tools";
 
 export { SchwabVault } from "./vault";
@@ -14,7 +15,8 @@ const apiHandler = {
       "Access-Control-Allow-Methods": "POST, OPTIONS",
     };
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    const handler = createMcpHandler(() => createServer(env), {
+    const access = await resolveMcpAccess(request, env);
+    const handler = createMcpHandler(() => createServer(env, access), {
       legacy: "stateless",
       responseMode: "auto",
       onerror(error) {
@@ -37,4 +39,5 @@ export default new OAuthProvider({
   apiRoute: "/mcp",
   apiHandler,
   defaultHandler: AuthHandler,
+  scopesSupported: [READ_SCOPE, TRADE_SCOPE],
 });

@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
+import type { McpAccess } from "./oauth-access";
 import { accountHashes, redact } from "./redaction";
 import { toolSchemas } from "./schemas";
 import type { AuthorizationNotice, PublicError, ToolResult, VaultRequest } from "./types";
@@ -154,7 +155,7 @@ function optional(query: Record<string, string>, key: string, value: string | nu
   if (value !== undefined) query[key] = String(value);
 }
 
-export function createServer(env: AppEnv): McpServer {
+export function createServer(env: AppEnv, access: McpAccess = { canTrade: false }): McpServer {
   const server = new McpServer({ name: "schwab-mcp", version: env.APP_VERSION });
 
   server.registerTool(
@@ -338,6 +339,8 @@ export function createServer(env: AppEnv): McpServer {
     { description: "Get Schwab user preferences required for account context", inputSchema: toolSchemas.empty },
     async () => execute(env, "get_user_preferences", "trader", "/userPreference"),
   );
+
+  if (!access.canTrade) return server;
 
   server.registerTool(
     "enable_trading",

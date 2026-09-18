@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppEnv } from "../src/env";
 import { tradingEnabled } from "../src/env";
-import { authorizationNotice } from "../src/tools";
+import { authorizationNotice, createServer } from "../src/tools";
 
 const env = {
   SCHWAB_REDIRECT_URI: "https://example.com/auth/schwab/callback",
@@ -30,5 +30,30 @@ describe("trading master switch", () => {
     expect(tradingEnabled({ ENABLE_TRADING: "true" } as AppEnv)).toBe(true);
     expect(tradingEnabled({ ENABLE_TRADING: "false" } as AppEnv)).toBe(false);
     expect(tradingEnabled({ ENABLE_TRADING: "TRUE" } as AppEnv)).toBe(false);
+  });
+});
+
+describe("OAuth-scoped tool exposure", () => {
+  const tradingTools = [
+    "enable_trading",
+    "prepare_trade",
+    "confirm_trade",
+    "enable_session_direct_trading",
+    "disable_session_direct_trading",
+    "place_order_direct",
+    "cancel_order",
+    "list_delayed_trades",
+    "cancel_delayed_trade",
+  ];
+
+  it("does not register trading tools for legacy or read-only grants", () => {
+    const server = createServer(env, { canTrade: false });
+    expect(server.toolInputSchemaJson("get_quotes")).toBeDefined();
+    for (const tool of tradingTools) expect(server.toolInputSchemaJson(tool)).toBeUndefined();
+  });
+
+  it("registers trading tools only for a trade-authorized token", () => {
+    const server = createServer(env, { canTrade: true });
+    for (const tool of tradingTools) expect(server.toolInputSchemaJson(tool)).toBeDefined();
   });
 });

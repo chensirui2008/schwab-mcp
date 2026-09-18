@@ -4,6 +4,7 @@
 
 - TypeScript + Cloudflare Workers；MCP 使用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 提供无协议会话的 Streamable HTTP。
 - MCP OAuth 使用 `@cloudflare/workers-oauth-provider`，注册和授权数据存入 `OAUTH_KV`；GitHub OAuth 身份仅按 numeric user ID 匹配 `ALLOWED_GITHUB_USER_ID`。
+- MCP OAuth 默认授予 `schwab.read`；全部交易工具只向同时具有当前 `schwab.trade` scope 和新版明确交易同意标记的 token 注册。旧 grant、无 scope token、downscope token 均必须失败关闭为只读，并重新授权后才能获得交易工具。
 - Schwab 凭据、交易确认状态、session 直下能力摘要、直下执行记录、延迟任务和审计摘要仅存于 SQLite-backed `SchwabVault` Durable Object，不得进入 KV 或日志。session 能力明文只允许在开启结果中返回一次，数据库仅保存 SHA-256 摘要。
 - 工具输入约束以 `src/schemas.ts` 为准；工具清单和部署步骤以 README 为准。
 

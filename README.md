@@ -33,6 +33,8 @@
 - `list_delayed_trades`
 - `cancel_delayed_trade`：立即取消仍处于 `ACTIVE` 的任务
 
+OAuth 默认只授予 `schwab.read`，只读 token 不会看到或调用上述交易工具。客户端必须在授权请求中明确申请 `schwab.trade`，授权页会清楚提示其可准备、确认、提交和撤销真实订单；只有完成这次新版明确同意、且当前 access token 仍包含 `schwab.trade` 时，服务端才注册交易工具。修复前签发的旧 grant 即使曾携带同名 scope，也会按只读处理，必须重新授权；被 downscope 的 token 同样不能交易。
+
 AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用户明确提出的交易指令，`confirm_trade` 只能在用户原样复述返回的 `confirmationText` 后调用；session 直下模式也必须先由用户明确要求开启，且每次 `place_order_direct` 仍须对应一条明确的用户下单指令。这个约束由 MCP 工具说明、冻结摘要和审计记录落实，但 MCP 服务端无法看到原始聊天角色，因此它不是可信客户端签名，也不能从密码学上证明一句话由用户输入。
 
 账户参数只接受 Schwab `hashValue`。官方 Schwab Order JSON 会透传给 Trader API，但会先按 UTF-8 编码限制为 64 KiB、最多 16 层和 2048 个节点，并拒绝完整账号、authorization、token 及原型污染键。服务端不设置单笔名义金额、数量或日累计硬上限；普通流程依赖每次确认时展示的完整冻结快照，session 直下模式则明确放弃该逐单预览门槛。
@@ -98,7 +100,7 @@ flowchart LR
   U -->|Schwab OAuth callback| V
 ```
 
-每个 MCP 请求创建新的 `McpServer`。Schwab token、到期时间、一次性 OAuth state、确认提案、agent-session 直下能力摘要、直下执行记录、延迟任务和仅含摘要的交易审计记录放在单个 owner `SchwabVault` Durable Object 中。对象会合并并发 refresh、在 access token 到期前五分钟刷新，并通过 SQLite 条件更新原子消费确认令牌和认领直下请求。确认令牌与 session 能力明文都只返回一次，持久化时只保存 SHA-256 摘要。
+每个 MCP 请求会解包已经过 OAuth Provider 验证的当前 access token，并同时检查 grant 的新版明确同意标记与 token 的有效 scope，再创建对应的 `McpServer`。Schwab token、到期时间、一次性 OAuth state、确认提案、agent-session 直下能力摘要、直下执行记录、延迟任务和仅含摘要的交易审计记录放在单个 owner `SchwabVault` Durable Object 中。对象会合并并发 refresh、在 access token 到期前五分钟刷新，并通过 SQLite 条件更新原子消费确认令牌和认领直下请求。确认令牌与 session 能力明文都只返回一次，持久化时只保存 SHA-256 摘要。
 
 ## 本地配置
 
@@ -141,7 +143,7 @@ npm run lint
 npm test
 ```
 
-测试使用 Vitest 和 Cloudflare Workers 测试池，覆盖 OAuth state、GitHub numeric ID 白名单、令牌脱敏、refresh 并发与重试、交易 schema、敏感字段拒绝、一次性确认、session 直下显式开启/关闭与过期、`executionKey` 防重放、写请求不重试和 Durable Object alarm 延迟执行。测试中的 Schwab 写请求全部是模拟响应，不会访问真实账户。
+测试使用 Vitest 和 Cloudflare Workers 测试池，覆盖 OAuth state、GitHub numeric ID 白名单、交易 scope 与旧 grant 失败关闭、令牌脱敏、refresh 并发与重试、交易 schema、敏感字段拒绝、一次性确认、session 直下显式开启/关闭与过期、`executionKey` 防重放、写请求不重试和 Durable Object alarm 延迟执行。测试中的 Schwab 写请求全部是模拟响应，不会访问真实账户。
 
 ## 部署
 
