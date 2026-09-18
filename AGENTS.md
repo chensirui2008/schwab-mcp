@@ -1,5 +1,11 @@
 # schwab-mcp 工程约束
 
+## Cloudflare MCP
+
+- 本项目的 Cloudflare MCP 配置位于本地 `.mcp.json`，包含 API、文档、Bindings、Builds 和 Observability 远程服务器。
+- MCP 服务器通过 Cloudflare OAuth 授权；不得把 API token、OAuth token 或其他凭据写入仓库、`wrangler.jsonc`、日志或文档。
+- `.mcp.json` 只包含公开服务器 URL，可以纳入项目配置；任何 API token、OAuth token 或其他凭据仍不得写入该文件。生产部署仍使用 Wrangler 和 Cloudflare Worker Secrets。
+
 ## 架构
 
 - TypeScript + Cloudflare Workers；MCP 使用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 提供无协议会话的 Streamable HTTP。

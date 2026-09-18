@@ -106,6 +106,12 @@ flowchart LR
 
 需要 Node.js 20 或更新版本。
 
+### Cloudflare MCP
+
+本项目可在支持项目级 MCP 配置的客户端中使用 `.mcp.json` 连接 Cloudflare 官方 MCP：API、文档、Workers Bindings、Workers Builds 和 Observability。配置只包含公开服务器 URL，不包含任何凭据；首次调用 Cloudflare 工具时，客户端会引导完成 Cloudflare OAuth 授权。
+
+`.mcp.json` 只保存公开服务器 URL，可以随项目共享；不要在其中加入任何凭据。若配置文件不存在，可按 Cloudflare 官方 Codex 指令重新添加 `https://mcp.cloudflare.com/mcp`，并按需添加 `https://docs.mcp.cloudflare.com/mcp` 等产品服务器。
+
 ```bash
 npm install
 cp .dev.vars.example .dev.vars
