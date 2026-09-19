@@ -1,0 +1,45 @@
+// For format details, see https://aka.ms/devcontainer.json or https://containers.dev
+{
+  "name": "schwab-mcp",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22-bookworm",
+
+  // Features to add to the dev container
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  // Forward Cloudflare Workers local dev server port (wrangler dev)
+  "forwardPorts": [8787],
+  "portsAttributes": {
+    "8787": {
+      "label": "Wrangler Dev",
+      "onAutoForward": "notify"
+    }
+  },
+
+  // Lifecycle scripts: initialize .dev.vars if missing, install dependencies, and generate Cloudflare Worker types
+  "postCreateCommand": "bash -c '[ -f .dev.vars ] || cp .dev.vars.example .dev.vars; npm install && (npm run types || true)'",
+
+  // VS Code customizations
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "vitest.explorer",
+        "github.vscode-github-actions"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        },
+        "typescript.tsdk": "node_modules/typescript/lib"
+      }
+    }
+  },
+
+  // Set default user to non-root node user
+  "remoteUser": "node"
+}
