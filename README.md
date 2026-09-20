@@ -1,209 +1,455 @@
 # Schwab MCP on Cloudflare Workers
 
-这是一个单用户远程 MCP。它把 Charles Schwab 的生产 REST 行情、账户查询以及受确认保护的真实建单、改单、撤单能力暴露为 Streamable HTTP MCP，并运行在 Cloudflare Workers。MCP 客户端通过 Worker 自己签发的 OAuth 令牌访问 `/mcp`；GitHub OAuth 只用于确认服务拥有者身份，Schwab OAuth 凭据、交易状态和延迟任务只保存在 SQLite-backed Durable Object 中。
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-black)](https://modelcontextprotocol.io/)
+[![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
 
-## 工具与交易边界
+这是一个运行在 **Cloudflare Workers** 上的**个人专用（单用户）高安全性远程 Model Context Protocol (MCP) 服务**。它将 Charles Schwab 生产环境的官方 REST 行情、账户资产查询，以及经过严格安全防护的真实建单、改单与撤单能力封装为标准的 **Streamable HTTP MCP** 接口（暴露在 `/mcp` 端点）。
 
-查询工具：
+本服务以**零信任安全、严格的数据隔离与防幻觉交易保护**为核心设计原则：客户端访问通过 Worker 自建的 OAuth 2.1 服务鉴权，仅限绑定的不可变 GitHub 用户 ID 访问；Schwab 敏感凭据、交易状态、条件任务完全隔离在持久化 SQLite-backed Durable Object (`SchwabVault`) 中。
 
-- `schwab_connection_status`
-- `get_quotes`
-- `get_price_history`
-- `get_option_chain`
-- `get_option_expiration_chain`
-- `get_market_hours`
-- `get_movers`
-- `search_instruments`
-- `list_accounts`
-- `get_account`
-- `get_orders`
-- `get_order`
-- `get_transactions`
-- `get_user_preferences`
+---
 
-交易工具：
+## 目录
 
-- `enable_trading`：只读取部署配置控制的总开关，不能通过 MCP 开启
-- `prepare_trade`：冻结即时或延迟建单/改单快照并签发一次性确认令牌
-- `confirm_trade`：消费确认令牌；即时任务立即提交，延迟任务只激活
-- `enable_session_direct_trading`：按用户明确指令为当前 agent session 签发临时直下能力
-- `place_order_direct`：使用 session 能力直接提交即时 `PLACE`，不经过逐单确认
-- `disable_session_direct_trading`：立即关闭该 session 的直下能力
-- `cancel_order`：按明确用户指令撤单，不要求二次确认
-- `list_delayed_trades`
-- `cancel_delayed_trade`：立即取消仍处于 `ACTIVE` 的任务
+- [核心架构与设计原则](#核心架构与设计原则)
+- [系统架构图](#系统架构图)
+- [工具清单与参数规格](#工具清单与参数规格)
+  - [只读查询工具 (14 个)](#1-只读查询工具-14-个)
+  - [交易控制工具 (9 个)](#2-交易控制工具-9-个)
+- [安全边界与交易防护机制](#安全边界与交易防护机制)
+  - [1. 部署总开关 (ENABLE_TRADING)](#1-部署总开关-enable_trading)
+  - [2. AI 零主动交易原则 (Anti-Hallucination)](#2-ai-零主动交易原则-anti-hallucination)
+  - [3. 默认二次确认机制 (Two-Phase Confirmation)](#3-默认二次确认机制-two-phase-confirmation)
+  - [4. Agent Session 临时直下模式 (Session Direct Trading)](#4-agent-session-临时直下模式-session-direct-trading)
+  - [5. 确定性延迟条件交易 (Delayed Conditional Orders)](#5-确定性延迟条件交易-delayed-conditional-orders)
+  - [6. 写请求网络防重放与不确定状态 (EXECUTION_UNCERTAIN)](#6-写请求网络防重放与不确定状态-execution_uncertain)
+  - [7. 报文深度安全校验与敏感数据脱敏](#7-报文深度安全校验与敏感数据脱敏)
+- [本地开发与配置](#本地开发与配置)
+  - [环境准备](#环境准备)
+  - [本地配置文件](#本地配置文件)
+  - [本地 Cloudflare MCP 支持 (.mcp.json)](#本地-cloudflare-mcp-支持-mcpjson)
+- [自动化验证与测试](#自动化验证与测试)
+- [生产部署指南](#生产部署指南)
+  - [步骤 1：创建 Cloudflare 资源与 Secrets](#步骤-1创建-cloudflare-资源与-secrets)
+  - [步骤 2：执行首次只读部署](#步骤-2执行首次只读部署)
+  - [步骤 3：配置 GitHub Actions 自动化部署流水线](#步骤-3配置-github-actions-自动化部署流水线)
+  - [步骤 4：完成 Schwab 账户首次授权绑定](#步骤-4完成-schwab-账户首次授权绑定)
+- [MCP 客户端接入配置](#mcp-客户端接入配置)
+- [错误码对照与运维排错](#错误码对照与运维排错)
+  - [公开错误码字典](#公开错误码字典)
+  - [授权到期预警通知](#授权到期预警通知)
+  - [实时结构化日志监控](#实时结构化日志监控)
 
-OAuth 默认只授予 `schwab.read`，只读 token 不会看到或调用上述交易工具。客户端必须在授权请求中明确申请 `schwab.trade`，授权页会清楚提示其可准备、确认、提交和撤销真实订单；只有完成这次新版明确同意、且当前 access token 仍包含 `schwab.trade` 时，服务端才注册交易工具。修复前签发的旧 grant 即使曾携带同名 scope，也会按只读处理，必须重新授权；被 downscope 的 token 同样不能交易。
+---
 
-AI 不得主动建议、发起或诱导交易。`prepare_trade` 只能响应用户明确提出的交易指令，`confirm_trade` 只能在用户原样复述返回的 `confirmationText` 后调用；session 直下模式也必须先由用户明确要求开启，且每次 `place_order_direct` 仍须对应一条明确的用户下单指令。这个约束由 MCP 工具说明、冻结摘要和审计记录落实，但 MCP 服务端无法看到原始聊天角色，因此它不是可信客户端签名，也不能从密码学上证明一句话由用户输入。
+## 核心架构与设计原则
 
-账户参数只接受 Schwab `hashValue`。官方 Schwab Order JSON 会透传给 Trader API，但会先按 UTF-8 编码限制为 64 KiB、最多 16 层和 2048 个节点，并拒绝完整账号、authorization、token 及原型污染键。服务端不设置单笔名义金额、数量或日累计硬上限；普通流程依赖每次确认时展示的完整冻结快照，session 直下模式则明确放弃该逐单预览门槛。
+1. **协议规范与无状态会话**：
+   采用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 端点提供无协议会话（stateless per-request）的 Streamable HTTP 服务。跨域请求原生支持 CORS。
+2. **OAuth 2.1 + GitHub 身份白名单**：
+   使用 `@cloudflare/workers-oauth-provider` 实现 MCP 客户端动态注册与授权。OAuth 授权流程必须通过 GitHub OAuth 确认服务拥有者身份，仅当不可变 GitHub 数字 ID 完全匹配环境变量 `ALLOWED_GITHUB_USER_ID` 时才予放行。
+3. **动态 Scope 与最小权限原则**：
+   - 默认权限为 `schwab.read`。只读 Token 在任何情况下均**完全看不到也无法调用**任何交易工具。
+   - 交易工具只向在授权阶段显式勾选同意 `schwab.trade` 权限、且当前 Access Token 依然保有该权限的客户端注册。
+   - 任何旧版本授权 Grant、无 scope 令牌、或降级（downscope）令牌均**自动失败关闭（Fail-Closed）为只读**，必须重新进行完整授权才能获得交易工具。
+4. **SQLite 物理级凭据与状态隔离**：
+   Schwab OAuth Token、刷新时间、一次性确认提案、Session 直下能力哈希、延迟条件订单及脱敏交易审计摘要**严格存储于 SQLite-backed `SchwabVault` Durable Object 内**。凭据和原始订单明文严禁进入 KV 存储或日志。
+5. **Session 直下凭证单次暴露与哈希存储**：
+   Session 直下能力明文令牌仅在 `enable_session_direct_trading` 响应中返回一次，Durable Object 内部只持久化其 SHA-256 哈希摘要，日志与审计记录永不记录明文。
 
-## 总开关
+---
 
-`ENABLE_TRADING` 是唯一总开关，默认值为 `false`。只有把部署配置改为严格小写的 `true` 并重新部署后，才能准备、确认、开启 session 直下、直下建单、激活或触发建单/改单。MCP 工具不能修改这个值。
-
-关闭总开关时：
-
-- 新的建单/改单准备、确认、session 直下开启和直下建单失败关闭；
-- 已确认的延迟任务保持 `ACTIVE`，停止读取条件和提交订单，每 15 分钟检查一次部署配置；
-- `cancel_order` 和 `cancel_delayed_trade` 仍可使用，确保可以降险。
-
-## 二次确认流程
-
-即时建单或改单：
-
-1. 客户端以 `executionMode: "IMMEDIATE"` 调用 `prepare_trade`。
-2. 服务端持久化不可变订单快照、原始用户指令摘要和 `intentDigest`，返回五分钟有效的 `confirmationToken` 与 `confirmationText`。
-3. 用户必须原样复述 `confirmationText`。
-4. 客户端调用 `confirm_trade`；服务端原子消费令牌后才向 Schwab 提交。令牌不能重放。
-
-延迟建单或改单：
-
-1. 客户端把自然语言条件翻译为下述确定性条件树，连同订单、`validUntil` 和轮询间隔调用 `prepare_trade`。
-2. 用户在发出指令时完成同样的二次确认；`confirm_trade` 只激活任务。
-3. Durable Object alarm 检查冻结的时间和 Schwab 行情条件。命中后会在原子认领时再次检查 `validUntil`，仅在仍有效时直接执行，不再询问；异常行情结构会失败关闭并记录可关联事件。
-4. 修改任务时传入 `replacesTaskId`，生成新版本并重新确认；旧版本只在新版本确认后取消。取消活动任务不要求二次确认。
-
-支持的条件节点：
-
-- `ALL`、`ANY`、`NOT`
-- `TIME`：`BEFORE`、`AT_OR_BEFORE`、`AFTER`、`AT_OR_AFTER`
-- `QUOTE`：比较 `askPrice`、`bidPrice`、`lastPrice`、`mark`、`netPercentChangeInDouble` 或 `totalVolume`
-
-单个条件树最多引用 50 个代码，轮询间隔为 15 秒到 1 小时，`validUntil` 必须在未来一年内。AI 只负责在确认前把条件冻结成这套可审计规则；实际执行阶段不调用模型，不允许开放式新闻判断或任意代码。
-
-## Agent session 直下模式
-
-当前 Streamable HTTP 入口按请求创建 `McpServer`，服务端看不到 Codex/ChatGPT agent session 的结束事件。因此 session 直下模式使用一枚只返回一次的不透明 `sessionCapability` 关联状态：客户端只应把它保留在当前 agent session 内，并在正常结束时调用 `disable_session_direct_trading`。Durable Object 只保存能力值的 SHA-256 摘要，不把明文写入数据库、日志或审计记录。
-
-开启后仅 `place_order_direct` 可绕过逐单确认，并且只支持即时 `PLACE`。即时 `REPLACE`、全部延迟建单/改单仍必须使用 `prepare_trade` 与 `confirm_trade`；撤单规则不变。能力连续 30 分钟无使用即失效，每次有效直下会续期 30 分钟，但自开启起最长 8 小时。若客户端未发送关闭通知，自动过期是断线后的兜底，不能保证与聊天窗口关闭在同一瞬间发生。
-
-每次直下必须提供新的 UUID `executionKey`。同一 session 内以相同 `executionKey` 和相同订单重放时只返回已持久化结果，不会再次提交；同一键绑定不同订单会失败关闭。若执行仍在进行或结果无法确定，返回 `EXECUTION_UNCERTAIN`，必须先查询订单状态。
-
-## 写入与幂等
-
-建单使用 `POST /accounts/{accountHash}/orders`，改单使用 `PUT /accounts/{accountHash}/orders/{orderId}`，撤单使用对应 `DELETE`。交易写入会先持久化 `EXECUTING`，再访问 Schwab；Durable Object alarm 即使至少执行一次，也不会自动重复提交同一个任务。直下建单另以 `executionKey` 原子认领并保存结果，防止相同调用重放造成重复订单。
-
-交易写入只允许首次 401 后刷新 token 并重试一次。429、其他 4xx 不重试；网络错误或 5xx 也不重试，并返回 `EXECUTION_UNCERTAIN`。出现该状态时必须先用 `get_orders` 或 `get_order` 核实实际订单，禁止直接重放。查询请求仍维持原有规则：401、429、5xx 各最多重试一次。
-
-## 运行结构
+## 系统架构图
 
 ```mermaid
-flowchart LR
-  C[MCP client] -->|OAuth 2.1 + Streamable HTTP| W[Cloudflare Worker /mcp]
-  W --> O[Workers OAuth Provider + OAUTH_KV]
-  W --> V[SchwabVault Durable Object]
-  V -->|GET queries; confirmed or session-authorized POST; confirmed PUT; explicit DELETE| S[Schwab REST API]
-  V -->|SQLite alarm| V
-  U[Service owner] -->|GitHub numeric ID allowlist| W
-  U -->|Schwab OAuth callback| V
+flowchart TD
+  subgraph ClientSide ["客户端环境"]
+    Client["MCP Client (Cursor / Claude Desktop / Codex)"]
+  end
+
+  subgraph CloudflareEdge ["Cloudflare Workers 边缘网络"]
+    Router["Worker Router (/mcp, /authorize, /auth/*)"]
+    OAuthProvider["@cloudflare/workers-oauth-provider"]
+    KV[("OAUTH_KV (Client & Grant Metadata)")]
+    
+    subgraph StorageDO ["单个 Owner: SchwabVault Durable Object"]
+      DO["Durable Object Runtime"]
+      SQLite[("DO 内置 SQLite 存储\n- Schwab Tokens & Expiry\n- 确认提案 (Proposals)\n- Session 直下哈希摘要\n- 延迟条件任务 (Delayed Tasks)\n- 脱敏交易审计记录")]
+      Alarm["DO Alarm 调度器\n(自动刷新 Token / 轮询延迟条件)"]
+    end
+  end
+
+  subgraph Upstream ["外部认证与交易服务"]
+    GitHub["GitHub OAuth (数字 ID 白名单校验)"]
+    SchwabAPI["Charles Schwab REST APIs\n- Market Data API (/marketdata/v1)\n- Trader API (/trader/v1)"]
+  end
+
+  Client -->|Streamable HTTP POST /mcp\nBearer Token| Router
+  Router -->|解包验证 Access Token| OAuthProvider
+  OAuthProvider <-->|持久化 Client / Token| KV
+  Router -->|校验 trade scope 与同意标记| DO
+  DO -->|GET 行情与账户查询\n受控 POST / PUT / DELETE 交易| SchwabAPI
+  Alarm -->|条件满足时原子认领触发| DO
+
+  User["服务拥有者 (Browser)"] -->|发起 MCP 授权 /authorize| Router
+  Router -->|重定向 GitHub 身份核验| GitHub
+  User -->|绑定 Schwab 凭据 /auth/schwab/connect| Router
+  Router -->|Schwab OAuth Callback 换票| SchwabAPI
+  Router -->|安全持久化 Token| DO
 ```
 
-每个 MCP 请求会解包已经过 OAuth Provider 验证的当前 access token，并同时检查 grant 的新版明确同意标记与 token 的有效 scope，再创建对应的 `McpServer`。Schwab token、到期时间、一次性 OAuth state、确认提案、agent-session 直下能力摘要、直下执行记录、延迟任务和仅含摘要的交易审计记录放在单个 owner `SchwabVault` Durable Object 中。对象会合并并发 refresh、在 access token 到期前五分钟刷新，并通过 SQLite 条件更新原子消费确认令牌和认领直下请求。确认令牌与 session 能力明文都只返回一次，持久化时只保存 SHA-256 摘要。
+---
 
-## 本地配置
+## 工具清单与参数规格
 
-需要 Node.js 20 或更新版本。
+系统共注册 **23 个 MCP 工具**，输入约束严格以 `src/schemas.ts` 的 Zod 校验为准。
 
-### Cloudflare MCP
+### 1. 只读查询工具 (14 个)
 
-本项目可在支持项目级 MCP 配置的客户端中使用 `.mcp.json` 连接 Cloudflare 官方 MCP：API、文档、Workers Bindings、Workers Builds 和 Observability。配置只包含公开服务器 URL，不包含任何凭据；首次调用 Cloudflare 工具时，客户端会引导完成 Cloudflare OAuth 授权。
+所有工具均支持在只读模式 (`schwab.read`) 下调用，严格遵循只读 HTTP `GET`：
 
-`.mcp.json` 只保存公开服务器 URL，可以随项目共享；不要在其中加入任何凭据。若配置文件不存在，可按 Cloudflare 官方 Codex 指令重新添加 `https://mcp.cloudflare.com/mcp`，并按需添加 `https://docs.mcp.cloudflare.com/mcp` 等产品服务器。
+| 工具名称 | 功能描述 | 关键参数与格式要求 |
+| :--- | :--- | :--- |
+| `schwab_connection_status` | 检查 Schwab 账户授权连接状态及有效期限 | 无参数。成功返回连接状态、过期时间及刷新链接。 |
+| `get_quotes` | 批量获取实时行情快照 | `symbols`: 1~50 个股票/ETF/指数代码数组；<br>`fields`: 可选字段过滤 (`quote`, `fundamental`, `reference`, `extended`, `regular`)；<br>`indicative`: 可选布尔值。 |
+| `get_price_history` | 获取标的 OHLCV K线历史数据 | `symbol`: 标的代码；<br>`periodType`: `day` \| `month` \| `year` \| `ytd`；<br>`frequencyType`: `minute` \| `daily` \| `weekly` \| `monthly`；<br>`frequency`: 聚合频率整数；<br>`startDate` / `endDate`: 可选毫秒时间戳 (须满足 start <= end)；<br>`needExtendedHoursData` / `needPreviousClose`: 可选布尔值。 |
+| `get_option_chain` | 获取期权链合约、实时报价与 Greeks 希腊字母 | `symbol`: 标的代码；<br>`contractType`: `CALL` \| `PUT` \| `ALL`；<br>`strikeCount`: 1~100 档位行权价；<br>`strategy`: `SINGLE`, `VERTICAL`, `CALENDAR`, `STRADDLE` 等；<br>`fromDate` / `toDate`: `YYYY-MM-DD` 格式。 |
+| `get_option_expiration_chain` | 获取标的期权的所有到期日列表 | `symbol`: 标的代码。 |
+| `get_market_hours` | 查询指定市场指定日期的交易开放时间 | `markets`: 市场类型数组 (可选 `equity`, `option`, `bond`, `future`, `forex`，1~5 项)；<br>`date`: 可选 `YYYY-MM-DD` 格式。 |
+| `get_movers` | 获取主要指数或市场的涨跌幅榜异动标的 | `index`: `$DJI` \| `$COMPX` \| `$SPX` \| `NYSE` \| `NASDAQ` \| `OTCBB` 等；<br>`sort`: `VOLUME` \| `TRADES` \| `PERCENT_CHANGE_UP` \| `PERCENT_CHANGE_DOWN`；<br>`frequency`: 聚合频率 (`0`, `1`, `5`, `10`, `30`, `60`)。 |
+| `search_instruments` | 模糊搜索标的代码或证券基本面定义 | `symbol`: 标的代码关键字；<br>`projection`: `symbol-search` \| `symbol-regex` \| `desc-search` \| `desc-regex` \| `search` \| `fundamental`。 |
+| `list_accounts` | 获取绑定的账户哈希列表 (自动剔除真实账号) | 无参数。仅返回 Schwab 专用 `hashValue` 列表。 |
+| `get_account` | 获取指定哈希账户的实时余额与持仓信息 | `accountHash`: 16~256 字符的账户哈希值；<br>`includePositions`: 可选布尔值，是否包含当前持仓详情。 |
+| `get_orders` | 获取跨关联账户的订单执行记录 | `fromEnteredTime`: ISO-8601 带时区时间戳 (例如 `2026-09-01T00:00:00Z`)；<br>`toEnteredTime`: ISO-8601 带时区时间戳；<br>`maxResults`: 可选整数，最大 3000；<br>`status`: 可选订单状态过滤。 |
+| `get_order` | 查询单笔订单的最新执行明细 | `accountHash`: 账户哈希；<br>`orderId`: 正整数订单编号。 |
+| `get_transactions` | 查询指定账户的历史资金流水与交割明细 | `accountHash`: 账户哈希；<br>`startDate` / `endDate`: `YYYY-MM-DD` 日期；<br>`types`: 可选交易类型；<br>`symbol`: 可选标的代码过滤。 |
+| `get_user_preferences` | 获取账户上下文偏好设置与交易权限 | 无参数。 |
+
+### 2. 交易控制工具 (9 个)
+
+> [!WARNING]
+> 仅当客户端持有有效 `schwab.trade` Scope、完成新版授权同意确认，且部署配置 `ENABLE_TRADING` 为 `true` 时，以下工具才被激活并暴露给客户端。
+
+| 工具名称 | 功能描述 | 关键参数与格式要求 |
+| :--- | :--- | :--- |
+| `enable_trading` | 查询部署配置中的交易总开关状态 | 无参数。**注意：此工具为只读查询，MCP 无法在线开启总开关，必须通过修改部署配置并重新部署。** |
+| `prepare_trade` | 冻结即时或延迟交易快照，生成一次性二次确认令牌 | `accountHash`: 目标账户哈希；<br>`action`: `PLACE` (新建) \| `REPLACE` (修改)；<br>`executionMode`: `IMMEDIATE` (即时) \| `DELAYED` (延迟条件)；<br>`orderId`: 修改订单时必填订单 ID，新建订单禁止传入；<br>`orderPayload`: 官方 Schwab Order JSON（最大 64 KiB，严格深度限制）；<br>`userInstruction`: 用户明确交易指令文字 (1~4000 字符)；<br>`condition` / `validUntil` / `pollIntervalSeconds` / `replacesTaskId`: 延迟订单必填条件参数。 |
+| `confirm_trade` | 提交复述文本并消费一次性确认令牌 | `proposalId`: 提案 UUID；<br>`confirmationToken`: 43 字符一次性令牌；<br>`confirmationText`: 必须完全一致复述由 `prepare_trade` 生成的确认确认句。 |
+| `enable_session_direct_trading` | 在用户明确指令下开启当前 Agent 会话直下能力 | `userInstruction`: 明确的用户开启指令。<br>返回敏感 `sessionCapability` (43 字符)，全局仅返回一次。 |
+| `place_order_direct` | 使用 Session 直下能力提交即时建单 (绕过逐单确认) | `sessionCapability`: 43 字符 Session 令牌；<br>`executionKey`: 客户端生成的幂等 UUID；<br>`accountHash`: 账户哈希；<br>`orderPayload`: 订单载荷；<br>`userInstruction`: 当前单笔下单的明确用户指令。 |
+| `disable_session_direct_trading` | 立即注销并作废 Session 直下能力 | `sessionCapability`: 43 字符 Session 令牌。 |
+| `cancel_order` | 撤销 Schwab 市场中的活动订单 | `accountHash`: 账户哈希；<br>`orderId`: 订单 ID；<br>`userInstruction`: 明确的用户撤单指令。**无需二次确认，允许在交易总开关关闭时运行以快速降险。** |
+| `list_delayed_trades` | 查询已持久化的延迟条件任务列表及状态 | `status`: 可选过滤状态 (`ACTIVE`, `EXECUTING`, `EXECUTED`, `FAILED`, `EXECUTION_UNCERTAIN`, `CANCELLED`, `EXPIRED`)。 |
+| `cancel_delayed_trade` | 立即取消处于 `ACTIVE` 状态的延迟任务 | `taskId`: 任务 UUID；<br>`userInstruction`: 明确的用户取消指令。**无需二次确认。** |
+
+---
+
+## 安全边界与交易防护机制
+
+### 1. 部署总开关 (`ENABLE_TRADING`)
+
+- `ENABLE_TRADING` 是配置在 `wrangler.jsonc`（或 Cloudflare 部署环境变量）中的**绝对最高控制权总开关**，默认值为 `false`。
+- **总开关为 `false` 时**：
+  - 严禁准备 (`prepare_trade`)、严禁确认 (`confirm_trade`)、严禁开启 Session 直下 (`enable_session_direct_trading`)、严禁提交直下订单 (`place_order_direct`)；
+  - 已经处于 `ACTIVE` 的延迟任务全部**暂停条件检查与订单触发**，Durable Object alarm 降频为每 15 分钟检查一次配置状态；
+  - 撤单操作 `cancel_order` 与 `cancel_delayed_trade` **保持可用**，确保在发生意外或风险收敛时能及时撤回敞口。
+- **开启方式**：必须在 `wrangler.jsonc` 中将 `ENABLE_TRADING` 设为小写的 `"true"` 并执行 `npm run deploy`。MCP 工具本身无权在线修改该值。
+
+### 2. AI 零主动交易原则 (Anti-Hallucination)
+
+- AI **严禁**主动发起交易建议、诱导交易或自动撮合。
+- `prepare_trade`、`enable_session_direct_trading` 以及每一次 `place_order_direct` 必须严格由用户输入明确意图触发，且必须将用户的原始输入作为 `userInstruction` 传入。
+- 工具说明、冻结快照与数据库审计记录会同步存储意图摘要 (`intentDigest`)；AI 生成的分析文本不能冒充用户指令签名。
+
+### 3. 默认二次确认机制 (Two-Phase Confirmation)
+
+为防止大语言模型产生幻觉误发订单，默认即时下单与所有订单修改必须执行两阶段确认：
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor User as 用户
+  participant AI as AI Agent (MCP Client)
+  participant Vault as SchwabVault (Durable Object)
+  participant Schwab as Schwab Trader API
+
+  User->>AI: "以 100 美元限价买入 1 股 AAPL"
+  AI->>Vault: prepare_trade(orderPayload, userInstruction, ...)
+  Note over Vault: 校验订单结构 (<=64KB, 深度<=16)<br/>冻结快照，写入 SQLite 提案表<br/>生成不可伪造的 confirmationText<br/>签发 5 分钟有效的 confirmationToken
+  Vault-->>AI: 返回 { proposalId, confirmationToken, confirmationText }
+  AI-->>User: 展示冻结订单快照与复述提示句<br/>"请确认复述：[确认以限价 100 购买 AAPL 1 股]"
+  User->>AI: "确认以限价 100 购买 AAPL 1 股"
+  AI->>Vault: confirm_trade(proposalId, confirmationToken, confirmationText)
+  Note over Vault: 原子校验 confirmationToken 哈希<br/>原子校验 confirmationText 一致性<br/>单次消费令牌 (不可重放)<br/>状态置为 EXECUTING
+  Vault->>Schwab: POST /accounts/{hash}/orders
+  Schwab-->>Vault: HTTP 201 Created
+  Note over Vault: 更新状态为 EXECUTED 并落入审计日志
+  Vault-->>AI: 返回订单提交结果
+  AI-->>User: 告知订单提交成功
+```
+
+- **不可变快照**：订单一旦进入 `prepare_trade` 即在 SQLite 中被冻结，任何改动均须重新准备并生成新的令牌。
+- **单次消费与防重放**：`confirmationToken` 有效期为 5 分钟，在数据库条件事务中原子消费，消费后立即作废，杜绝并发重放。
+
+### 4. Agent Session 临时直下模式 (Session Direct Trading)
+
+由于 MCP 采用无状态 Streamable HTTP，服务端无法获知客户端聊天窗口何时关闭。本服务提供了一套严格约束的会话级即时直下机制：
+
+- **能力范围**：**仅限即时新建单 (`IMMEDIATE` + `PLACE`)**。即时改单 (`REPLACE`) 以及任何延迟条件单必须回到二次确认流程。
+- **单次可见性**：调用 `enable_session_direct_trading` 成功后，明文 `sessionCapability` (43 字符) **仅返回一次**。Durable Object 内部仅保存其 SHA-256 哈希值，日志及返回结果绝不再暴露明文。
+- **自动失效与续期**：
+  - **30 分钟闲置失效**：若连续 30 分钟无有效调用，该 Capability 自动失效；
+  - **调用自动续期**：每次成功调用 `place_order_direct`，闲置计时器自动顺延 30 分钟；
+  - **8 小时硬上限**：自初次签发起，绝对生命周期最长为 8 小时，到期强制作废。
+- **幂等认领 (`executionKey`)**：
+  - 每次直下调用客户端必须生成全新的 UUID 作为 `executionKey`；
+  - 同一 Session 内若发生网络抖动或重试，**相同 `executionKey` 且订单载荷完全一致的请求不会重复提交**，直接返回先前已持久化的执行结果；若相同键绑定了不同订单载荷，则直接失败关闭。
+
+### 5. 确定性延迟条件交易 (Delayed Conditional Orders)
+
+延迟交易仅支持可穷举、确定性的逻辑判断，杜绝开放式非确定性模型推理：
+
+- **支持的条件节点 (AST 结构)**：
+  - 组合节点：`ALL` (全部满足)、`ANY` (任意满足)、`NOT` (逻辑非)；
+  - 时间节点：`TIME`，支持比较操作符 `BEFORE`, `AT_OR_BEFORE`, `AFTER`, `AT_OR_AFTER`；
+  - 行情节点：`QUOTE`，支持字段 `askPrice`, `bidPrice`, `lastPrice`, `mark`, `netPercentChangeInDouble`, `totalVolume`，支持操作符 `LT`, `LTE`, `EQ`, `GTE`, `GT`。
+- **执行规则**：
+  - 单个条件树引用的标的总数不得超过 50 个；
+  - `validUntil` 必须指定且在未来 1 年以内；
+  - 轮询间隔 `pollIntervalSeconds` 介于 15 秒至 3600 秒（1小时）之间；
+  - 条件监控由 Durable Object Alarm 驱动。当条件达成时，在 SQLite 事务中原子校验 `validUntil`，若仍有效则直接提交订单，不需二次询问用户；
+  - 若上游行情格式异常或缺失必需数字字段，任务**立即失败关闭**，标记 `FAILED` 并记录结构化事件，严禁模糊猜测。
+
+### 6. 写请求网络防重放与不确定状态 (`EXECUTION_UNCERTAIN`)
+
+- **写路径限制**：真实写请求仅允许 `POST /accounts/{hash}/orders` (建单)、`PUT /accounts/{hash}/orders/{orderId}` (改单) 与 `DELETE /accounts/{hash}/orders/{orderId}` (撤单)。
+- **重试原则**：
+  - 交易写入请求在遭遇首次 401 Unauthorized 时，会自动刷新 Schwab Access Token 并**重试一次**；
+  - 遭遇 429、其他 4xx、网络超时或 5xx 时，**严禁自动重试**；
+  - 若在发出写入请求后遇到网络断开或 5xx，系统将订单状态置为 **`EXECUTION_UNCERTAIN`** 并记录 `requestId`。此时**绝对禁止盲目重放订单**，客户端和用户必须先通过 `get_orders` 或 `get_order` 手动排查真实成交情况。
+
+### 7. 报文深度安全校验与敏感数据脱敏
+
+- **载荷大小限制**：官方 Schwab Order JSON 经 UTF-8 编码后体积不得超过 **64 KiB**。
+- **结构防溢出**：JSON 递归深度不得超过 **16 层**，总节点数量不得超过 **2048 个**。
+- **敏感关键字阻断**：载荷中如果含有 `accountNumber`, `access_token`, `authorization`, `confirmationToken`, `sessionCapability`, `__proto__`, `constructor` 等字段，将直接触发校验拦截并阻断。
+- **账户脱敏**：对外只接受 Schwab 生成的不可逆 `accountHash` (`hashValue`)，明文账号在序列化输出和日志中会被强制剔除。
+
+---
+
+## 本地开发与配置
+
+### 环境准备
+
+- **Node.js**: 20.0.0 或更高版本 (推荐 Node.js 22 LTS)
+- **Cloudflare 账户**: 拥有 Workers 与 Durable Objects 权限
+- **GitHub 账户**: 创建用于身份校验的 GitHub OAuth App
+- **Charles Schwab Developer 账户**: 拥有 Approved 状态的 Schwab Developer App
+
+### 本地配置文件
+
+1. 安装依赖：
+   ```bash
+   npm install
+   ```
+
+2. 准备本地秘密变量：
+   ```bash
+   cp .dev.vars.example .dev.vars
+   ```
+   编辑 `.dev.vars`（此文件已被 `.gitignore` 排除，仅用于本地 `wrangler dev`）：
+   ```ini
+   GITHUB_CLIENT_SECRET="你的 GitHub OAuth App Client Secret"
+   SCHWAB_CLIENT_ID="你的 Schwab App App Key"
+   SCHWAB_CLIENT_SECRET="你的 Schwab App Secret"
+   ```
+
+3. 调整 `wrangler.jsonc` 中的环境变量：
+   - `GITHUB_CLIENT_ID`: 你的 GitHub OAuth App Client ID；
+   - `ALLOWED_GITHUB_USER_ID`: 你的不可变 GitHub 数字 ID（可通过 `curl -s https://api.github.com/users/<你的用户名> | grep '"id":'` 查询）；
+   - `SCHWAB_REDIRECT_URI`: 生产/测试回调地址，格式如 `https://<worker-name>.<subdomain>.workers.dev/auth/schwab/callback`；
+   - `ENABLE_TRADING`: 本地开发验证初期请**严格保持为 `"false"`**。
+
+4. GitHub OAuth App 回调地址配置：
+   - **Authorization callback URL**:
+     `https://<worker-name>.<subdomain>.workers.dev/auth/github/callback`
+     （本地联调时如使用本地隧道，请对应替换协议与域名）。
+
+5. Schwab App 回调地址配置：
+   - **Callback URL**: 必须与 `SCHWAB_REDIRECT_URI` 完全一致（包含大小写、端口及路径）。
+
+### 本地 Cloudflare MCP 支持 (`.mcp.json`)
+
+项目根目录的 `.mcp.json` 配置了 Cloudflare 官方远程 MCP 服务（Bindings、Builds、Docs、Observability 等）。该文件只包含公开 URL，完全不含凭据。支持项目级 MCP 的客户端会在初次使用时引导完成 Cloudflare OAuth 授权。
+
+---
+
+## 自动化验证与测试
+
+本项目采用严苛的代码质量与类型保障机制，在提交前请运行统一验证命令：
 
 ```bash
-npm install
-cp .dev.vars.example .dev.vars
+npm run validate
 ```
 
-编辑 `wrangler.jsonc`：
+该命令将按顺序执行：
+1. `npm run types`: 同步 Cloudflare Workers 运行时环境类型 (`env.d.ts`)；
+2. `npm run typecheck`: TypeScript 严格类型检查 (`tsc --noEmit`)；
+3. `npm run lint`: ESLint 代码规范扫描；
+4. `npm run test`: Vitest 运行覆盖完整的单元与集成测试。
 
-1. 把 `GITHUB_CLIENT_ID` 换成 GitHub OAuth App 的 Client ID。
-2. 把 `ALLOWED_GITHUB_USER_ID` 换成你不可变的 GitHub numeric user ID。
-3. `SCHWAB_REDIRECT_URI` 已按当前账户子域名配置为 `https://schwab-mcp.siruichen461.workers.dev/auth/schwab/callback`。
-4. 创建 KV namespace，然后把返回的 ID 写入 `OAUTH_KV`：
+> [!NOTE]
+> 测试套件深度利用 `@cloudflare/vitest-pool-workers` 在真实 Workers 隔离沙箱内模拟 Durable Object 运行时、SQLite 数据表流转、Alarm 唤醒与 API 边界断言。所有 Schwab 外部调用在测试中均为沙盒 Mock，不会产生任何实际网络费用或交易操作。
 
+---
+
+## 生产部署指南
+
+### 步骤 1：创建 Cloudflare 资源与 Secrets
+
+1. 创建 OAuth 存储专用的 KV Namespace：
+   ```bash
+   npx wrangler kv namespace create OAUTH_KV
+   ```
+   将终端输出的 `id` 填入 `wrangler.jsonc` 的 `kv_namespaces` 列表中：
+   ```jsonc
+   "kv_namespaces": [
+     {
+       "binding": "OAUTH_KV",
+       "id": "<你的 KV Namespace ID>"
+     }
+   ]
+   ```
+
+2. 上传 Worker 运行时私密凭据：
+   ```bash
+   npx wrangler secret put GITHUB_CLIENT_SECRET
+   npx wrangler secret put SCHWAB_CLIENT_ID
+   npx wrangler secret put SCHWAB_CLIENT_SECRET
+   ```
+
+### 步骤 2：执行首次只读部署
+
+确认 `wrangler.jsonc` 中 `ENABLE_TRADING` 为 `"false"`，然后执行：
 ```bash
-npx wrangler kv namespace create OAUTH_KV
-```
-
-5. `ENABLE_TRADING` 保持 `false` 完成只读验证。只有准备开放真实交易时才改为 `true` 并重新部署；不要把它当作 MCP 参数或秘密令牌。
-
-本地秘密只放在 `.dev.vars`：`GITHUB_CLIENT_SECRET`、`SCHWAB_CLIENT_ID`、`SCHWAB_CLIENT_SECRET`。`.dev.vars` 已被 Git 忽略。
-
-GitHub OAuth App 的 callback URL 必须是：
-
-```text
-https://schwab-mcp.siruichen461.workers.dev/auth/github/callback
-```
-
-Schwab Production App 的 callback URL 必须和 `SCHWAB_REDIRECT_URI` 完全一致，包括协议、主机、路径和大小写。
-
-## 验证
-
-```bash
-npm run types
-npm run typecheck
-npm run lint
-npm test
-```
-
-测试使用 Vitest 和 Cloudflare Workers 测试池，覆盖 OAuth state、GitHub numeric ID 白名单、交易 scope 与旧 grant 失败关闭、令牌脱敏、refresh 并发与重试、交易 schema、敏感字段拒绝、一次性确认、session 直下显式开启/关闭与过期、`executionKey` 防重放、写请求不重试和 Durable Object alarm 延迟执行。测试中的 Schwab 写请求全部是模拟响应，不会访问真实账户。
-
-## 部署
-
-先把生产秘密写入 Cloudflare：
-
-```bash
-npx wrangler secret put GITHUB_CLIENT_SECRET
-npx wrangler secret put SCHWAB_CLIENT_ID
-npx wrangler secret put SCHWAB_CLIENT_SECRET
 npm run deploy
 ```
 
-首次部署必须保持 `ENABLE_TRADING: "false"`，完成 OAuth 和查询验证后再决定是否修改配置并二次部署。一次成功部署、模拟测试或 MCP 工具可见都不证明真实 Schwab 建单已验证。
+部署完成后，Worker 会生成分配的子域名，例如：
+`https://schwab-mcp.siruichen461.workers.dev`
 
-### GitHub Actions 自动部署
+### 步骤 3：配置 GitHub Actions 自动化部署流水线
 
-仓库的 `.github/workflows/deploy.yml` 会在代码推送到 `main` 后依次执行 `npm ci`、`npm run validate` 和 `npm run deploy`。只有类型生成、类型检查、lint 和全部测试通过后，才会把 `wrangler.jsonc` 定义的 `schwab-mcp` Worker 部署到 Cloudflare；同一时间只允许一个生产部署运行，已开始的部署不会被后续推送取消。
+仓库已配置自动化工作流 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)，当代码合并或推送到 `main` 分支时自动触发全量类型、代码校验并部署。
 
-在 GitHub 仓库的 `Settings` → `Secrets and variables` → `Actions` 中配置：
+请在 GitHub 仓库 **Settings** → **Secrets and variables** → **Actions** 中添加：
+- `CLOUDFLARE_ACCOUNT_ID`: 你的 Cloudflare 账户 ID；
+- `CLOUDFLARE_API_TOKEN`: 具备该 Worker 编辑与部署最小权限的 Cloudflare API Token。
 
-- `CLOUDFLARE_ACCOUNT_ID`：目标 Cloudflare 账户 ID；
-- `CLOUDFLARE_API_TOKEN`：仅授予部署该 Worker 及其现有绑定所需权限的 Cloudflare API Token。
+> [!CAUTION]
+> 严禁把 `GITHUB_CLIENT_SECRET`、`SCHWAB_CLIENT_ID` 或 `SCHWAB_CLIENT_SECRET` 上传到 GitHub Actions Secrets！这三项凭据仅应保存在 Cloudflare Worker Secrets 中。
 
-不要把 `GITHUB_CLIENT_SECRET`、`SCHWAB_CLIENT_ID` 或 `SCHWAB_CLIENT_SECRET` 写入 GitHub Actions。它们应继续作为 Worker Secrets 由 Cloudflare 保存，部署不会读取或覆盖这些值。工作流成功只证明验证与部署命令完成，不证明 Schwab OAuth、查询或真实交易已经端到端验证。
+### 步骤 4：完成 Schwab 账户首次授权绑定
 
-部署后访问以下地址完成 Schwab 授权：
-
+部署成功后，服务拥有者需使用浏览器访问：
 ```text
-https://schwab-mcp.siruichen461.workers.dev/auth/schwab/connect
+https://<your-worker-domain>/auth/schwab/connect
+```
+**授权流程**：
+1. 页面重定向至 GitHub 进行身份验证，核对访问者的 GitHub 数字 ID 是否在白名单中；
+2. 身份核验通过后，重定向至 Charles Schwab 官方登录授权页面；
+3. 登录并选择允许关联的证券账户，授权完成后 Schwab 回调 `/auth/schwab/callback`；
+4. Worker 将换取的 Token 及刷新信息保存至 `SchwabVault` Durable Object，完成初始化。
+
+---
+
+## MCP 客户端接入配置
+
+MCP 统一端点地址为：
+```text
+https://<your-worker-domain>/mcp
 ```
 
-远程 MCP 地址是：
+### 1. Claude Desktop 接入示例
 
-```text
-https://schwab-mcp.siruichen461.workers.dev/mcp
+在 `claude_desktop_config.json` 中配置远程 Streamable HTTP MCP（支持 OAuth 2.1 鉴权）：
+
+```json
+{
+  "mcpServers": {
+    "schwab": {
+      "url": "https://<your-worker-domain>/mcp"
+    }
+  }
+}
 ```
+首次连接时，客户端会自动打开系统浏览器，引导你完成 OAuth 2.1 授权并登录 GitHub 确认拥有者身份。
 
-`/health` 只返回运行状态和版本，不返回 Schwab 连接状态或账户数据。
+### 2. Cursor / VS Code / Codex 接入
 
-## 日志与排错
+在支持 Remote MCP 的工具配置中，添加 HTTP / SSE 连接：
+- **Name**: `schwab-mcp`
+- **Type**: `Streamable HTTP`
+- **URL**: `https://<your-worker-domain>/mcp`
+- **Authorization Flow**: 自动重定向至 `https://<your-worker-domain>/authorize`
 
-Workers structured logs 记录：
+---
 
-- `event`
-- `requestId`
-- `tool`
-- `status`
-- `attempts`
-- `durationMs`
+## 错误码对照与运维排错
 
-主要事件为 `schwab_api_request`、`schwab_token_refresh`、`schwab_response_invalid`、`github_oauth_failed`、`schwab_oauth_failed` 和 `mcp_handler_error`。交易审计只保存指令摘要、意图摘要、状态、实体 ID 和 `requestId`。日志不记录订单 JSON、请求头、OAuth code、access token、refresh token 或完整账号。查看生产日志：
+### 公开错误码字典
+
+当工具发生错误时，MCP 会返回 `isError: true`，并在 `structuredContent.error` 中携带统一规范的错误载荷：
+
+| 错误码 (`code`) | 产生原因 | 应对措施 |
+| :--- | :--- | :--- |
+| `AUTH_REQUIRED` | 未初始化绑定 Schwab 凭据 | 访问返回体中的 `reconnectUrl` 进行首次 OAuth 绑定。 |
+| `REAUTHORIZATION_REQUIRED` | 凭据失效（如超过 7 天无活动导致 Refresh Token 过期） | 访问返回体中的 `reconnectUrl` 重新完成 Schwab 网页授权。 |
+| `INVALID_ARGUMENT` | 参数未通过 Zod 校验（格式不符、大小超限、缺少必填字段） | 检查输入参数是否符合 `src/schemas.ts` 规范要求。 |
+| `RATE_LIMITED` | 达到 Schwab API 频率限制（HTTP 429） | 遵循 `retryAfterMs` 稍后重试，减少短时间内的并发请求。 |
+| `SCHWAB_REJECTED` | Schwab 业务端明确拒绝（如非交易时段无效报价、代码不存在） | 检查订单参数或查询标的代码。 |
+| `UPSTREAM_UNAVAILABLE` | Schwab 网关 5xx 故障、网络断开或 Durable Object 故障 | 稍后重试，若为查询请求会自动尝试重试一次。 |
+| `CONFIRMATION_INVALID` | 确认令牌错误、意图哈希不匹配或确认文本未精确复述 | 检查用户输入的确认文本是否与 `prepare_trade` 返回的完全一致。 |
+| `CONFIRMATION_EXPIRED` | 二次确认令牌超过 5 分钟有效期 | 令牌已作废，必须重新发起 `prepare_trade`。 |
+| `TRADE_NOT_FOUND` | 指定的提案 UUID 或延迟任务 ID 在数据库中不存在 | 检查传入的 ID 是否正确。 |
+| `TRADE_STATE_CONFLICT` | 提案已被消费、延迟任务已处于终止状态或被认领 | 刷新延迟任务列表 (`list_delayed_trades`) 检查最新状态。 |
+| `DIRECT_TRADING_SESSION_INVALID` | Session 直下能力不存在、已闲置超时（30m）或已达最大寿命（8h） | 重新向用户请求指令并调用 `enable_session_direct_trading`。 |
+| `EXECUTION_UNCERTAIN` | **建单/改单写入过程中遭遇网络中断或 5xx** | **严禁盲目重发！** 必须先调用 `get_orders` 人工核实订单是否已提交。 |
+
+### 授权到期预警通知
+
+当 Schwab 授权剩余有效时间不足 **24 小时** 时，所有查询与交易工具的成功响应体中均会自动附带预警通知元数据：
+```json
+{
+  "meta": {
+    "authorizationNotice": {
+      "code": "REAUTHORIZATION_DUE_SOON",
+      "message": "Schwab authorization expires within 24 hours; reconnect to avoid interruption",
+      "refreshExpiresAt": "2026-09-21T12:00:00.000Z",
+      "reconnectUrl": "https://<your-worker-domain>/auth/schwab/connect"
+    }
+  }
+}
+```
+客户端可感知该通知并适时提示用户提前续期，防止交易中断。
+
+### 实时结构化日志监控
+
+生产环境已启用 Cloudflare Workers Observability，可通过 Wrangler 实时流式捕获结构化事件日志：
 
 ```bash
 npx wrangler tail schwab-mcp --format json
 ```
 
-错误通过 MCP `isError: true` 返回稳定错误码。除原有 `AUTH_REQUIRED`、`REAUTHORIZATION_REQUIRED`、`INVALID_ARGUMENT`、`RATE_LIMITED`、`SCHWAB_REJECTED`、`UPSTREAM_UNAVAILABLE` 外，交易流程还会返回 `CONFIRMATION_INVALID`、`CONFIRMATION_EXPIRED`、`TRADE_NOT_FOUND`、`TRADE_STATE_CONFLICT`、`DIRECT_TRADING_SESSION_INVALID` 和 `EXECUTION_UNCERTAIN`。`AUTH_REQUIRED` 和 `REAUTHORIZATION_REQUIRED` 会附带 `reconnectUrl`；成功结果在授权剩余不足 24 小时时附带 `meta.authorizationNotice`。上游错误不会转换为空结果。
+结构化日志标准字段：
+- `event`: 核心事件类型 (`schwab_api_request`, `schwab_token_refresh`, `schwab_response_invalid`, `github_oauth_failed`, `schwab_oauth_failed`, `mcp_handler_error` 等)；
+- `requestId`: 全链路可关联的 UUID 追踪编号；
+- `tool`: 被调用的 MCP 工具名称；
+- `status`: 请求状态码；
+- `attempts`: 当前重试次数；
+- `durationMs`: 执行耗时。
+
+> [!NOTE]
+> 日志脱敏过滤器会自动过滤请求头、授权凭据、OAuth Code、Access Token、Refresh Token、完整订单报文及真实证券账号，确保审计过程绝无敏感数据外泄。
