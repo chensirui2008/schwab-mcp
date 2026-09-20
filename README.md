@@ -266,6 +266,8 @@ sequenceDiagram
    SCHWAB_CLIENT_SECRET="你的 Schwab App Secret"
    ```
 
+   `wrangler.jsonc` 的 `secrets.required` 只记录上述三个 Secret 的名称，用于本地启动、类型生成和部署前的缺失检查，不包含任何密钥值。`.dev.vars*` 和 `.env*` 已被 Git 忽略；两种格式二选一，不要同时使用。本地文件不会自动上传到生产环境。
+
 3. 调整 `wrangler.jsonc` 中的环境变量：
    - `GITHUB_CLIENT_ID`: 你的 GitHub OAuth App Client ID；
    - `ALLOWED_GITHUB_USER_ID`: 你的不可变 GitHub 数字 ID（可通过 `curl -s https://api.github.com/users/<你的用户名> | grep '"id":'` 查询）；
@@ -329,6 +331,8 @@ npm run validate
    npx wrangler secret put SCHWAB_CLIENT_ID
    npx wrangler secret put SCHWAB_CLIENT_SECRET
    ```
+
+   上述命令会交互式读取密钥，不要把密钥值写入命令行、仓库或 GitHub Actions。`wrangler secret put` 会创建并立即部署新版本；若需要先暂存版本再发布，使用 `wrangler versions secret put <NAME>` 后再显式部署该版本。已配置的生产 Secret 无需因本次 `secrets.required` 声明重新上传；可先用 `npx wrangler secret list` 只读检查名称。
 
 ### 步骤 2：执行首次只读部署
 

@@ -5,6 +5,7 @@
 - 本项目的 Cloudflare MCP 配置位于本地 `.mcp.json`，包含 API、文档、Bindings、Builds 和 Observability 远程服务器。
 - MCP 服务器通过 Cloudflare OAuth 授权；不得把 API token、OAuth token 或其他凭据写入仓库、`wrangler.jsonc`、日志或文档。
 - `.mcp.json` 只包含公开服务器 URL，可以纳入项目配置；任何 API token、OAuth token 或其他凭据仍不得写入该文件。生产部署仍使用 Wrangler 和 Cloudflare Worker Secrets。
+- `wrangler.jsonc` 的 `secrets.required` 只声明 `GITHUB_CLIENT_SECRET`、`SCHWAB_CLIENT_ID` 和 `SCHWAB_CLIENT_SECRET` 三个必需 Secret 名称，不得写入值。本地值仅放入已忽略的 `.dev.vars` 或环境专用变体；生产值仅通过 Cloudflare Worker Secrets 配置。
 
 ## 架构
 

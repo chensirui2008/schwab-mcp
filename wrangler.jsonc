@@ -14,6 +14,13 @@
     "ENABLE_TRADING": "true",
     "APP_VERSION": "0.1.0"
   },
+  "secrets": {
+    "required": [
+      "GITHUB_CLIENT_SECRET",
+      "SCHWAB_CLIENT_ID",
+      "SCHWAB_CLIENT_SECRET"
+    ]
+  },
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
