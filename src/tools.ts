@@ -155,6 +155,13 @@ function optional(query: Record<string, string>, key: string, value: string | nu
   if (value !== undefined) query[key] = String(value);
 }
 
+export function transactionDateRange(startDate: string, endDate: string): { startDate: string; endDate: string } {
+  return {
+    startDate: `${startDate}T00:00:00.000Z`,
+    endDate: `${endDate}T23:59:59.999Z`,
+  };
+}
+
 export function createServer(env: AppEnv, access: McpAccess = { canTrade: false }): McpServer {
   const server = new McpServer({ name: "schwab-mcp", version: env.APP_VERSION });
 
@@ -327,7 +334,7 @@ export function createServer(env: AppEnv, access: McpAccess = { canTrade: false 
       inputSchema: toolSchemas.getTransactions,
     },
     async ({ accountHash: hash, startDate, endDate, types, symbol: transactionSymbol }) => {
-      const query: Record<string, string> = { startDate, endDate };
+      const query: Record<string, string> = transactionDateRange(startDate, endDate);
       optional(query, "types", types);
       optional(query, "symbol", transactionSymbol);
       return execute(env, "get_transactions", "trader", `/accounts/${encodeURIComponent(hash)}/transactions`, query);

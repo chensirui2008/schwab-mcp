@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppEnv } from "../src/env";
 import { tradingEnabled } from "../src/env";
-import { authorizationNotice, createServer } from "../src/tools";
+import { authorizationNotice, createServer, transactionDateRange } from "../src/tools";
 
 const env = {
   SCHWAB_REDIRECT_URI: "https://example.com/auth/schwab/callback",
@@ -30,6 +30,15 @@ describe("trading master switch", () => {
     expect(tradingEnabled({ ENABLE_TRADING: "true" } as AppEnv)).toBe(true);
     expect(tradingEnabled({ ENABLE_TRADING: "false" } as AppEnv)).toBe(false);
     expect(tradingEnabled({ ENABLE_TRADING: "TRUE" } as AppEnv)).toBe(false);
+  });
+});
+
+describe("transaction date range", () => {
+  it("converts date-only input to an inclusive UTC range for Schwab", () => {
+    expect(transactionDateRange("2026-09-15", "2026-09-16")).toEqual({
+      startDate: "2026-09-15T00:00:00.000Z",
+      endDate: "2026-09-16T23:59:59.999Z",
+    });
   });
 });
 

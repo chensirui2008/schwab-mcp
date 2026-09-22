@@ -124,7 +124,7 @@ flowchart TD
 | `get_account` | 获取指定哈希账户的实时余额与持仓信息 | `accountHash`: 16~256 字符的账户哈希值；<br>`includePositions`: 可选布尔值，是否包含当前持仓详情。 |
 | `get_orders` | 获取跨关联账户的订单执行记录 | `fromEnteredTime`: ISO-8601 带时区时间戳 (例如 `2026-09-01T00:00:00Z`)；<br>`toEnteredTime`: ISO-8601 带时区时间戳；<br>`maxResults`: 可选整数，最大 3000；<br>`status`: 可选订单状态过滤。 |
 | `get_order` | 查询单笔订单的最新执行明细 | `accountHash`: 账户哈希；<br>`orderId`: 正整数订单编号。 |
-| `get_transactions` | 查询指定账户的历史资金流水与交割明细 | `accountHash`: 账户哈希；<br>`startDate` / `endDate`: `YYYY-MM-DD` 日期；<br>`types`: 可选交易类型；<br>`symbol`: 可选标的代码过滤。 |
+| `get_transactions` | 查询指定账户的历史资金流水与交割明细 | `accountHash`: 账户哈希；<br>`startDate` / `endDate`: `YYYY-MM-DD` 日期；请求 Schwab 时自动转换为覆盖完整起止日的 UTC ISO-8601 时间范围；<br>`types`: 可选交易类型；<br>`symbol`: 可选标的代码过滤。 |
 | `get_user_preferences` | 获取账户上下文偏好设置与交易权限 | 无参数。 |
 
 ### 2. 交易控制工具 (9 个)
