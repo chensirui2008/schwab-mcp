@@ -5,8 +5,7 @@
 
   // Features to add to the dev container
   "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/aqua/devcontainer-antigravity-cli/antigravity-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {}
   },
 
   // Forward Cloudflare Workers local dev server port (wrangler dev)
@@ -29,8 +28,7 @@
         "esbenp.prettier-vscode",
         "vitest.explorer",
         "github.vscode-github-actions",
-        "openai.chatgpt",
-        "Google.google-antigravity"
+        "openai.chatgpt"
       ],
       "settings": {
         "editor.formatOnSave": true,
