@@ -1,7 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import type { AppEnv } from "./env";
-import { vaultStub } from "./env";
-import type { McpAccess } from "./oauth-access";
+import { tradingEnabled, vaultStub } from "./env";
 import { accountHashes, redact } from "./redaction";
 import { toolSchemas } from "./schemas";
 import type { AuthorizationNotice, PublicError, ToolResult, VaultRequest } from "./types";
@@ -162,7 +161,19 @@ export function transactionDateRange(startDate: string, endDate: string): { star
   };
 }
 
-export function createServer(env: AppEnv, access: McpAccess = { canTrade: false }): McpServer {
+export function tradingDiagnostics(env: AppEnv) {
+  const deploymentTradingEnabled = tradingEnabled(env);
+  return {
+    oauthTradeScopeRequired: false,
+    tradingToolsRegistered: true,
+    deploymentTradingEnabled,
+    effectiveTradingState: deploymentTradingEnabled ? "ENABLED" : "DISABLED_BY_DEPLOYMENT",
+    cancellationAvailableWhenDisabled: true,
+    protection: "Trading mutations still require explicit user instructions and the applicable confirmation or session capability.",
+  };
+}
+
+export function createServer(env: AppEnv): McpServer {
   const server = new McpServer({ name: "schwab-mcp", version: env.APP_VERSION });
 
   server.registerTool(
@@ -182,6 +193,21 @@ export function createServer(env: AppEnv, access: McpAccess = { canTrade: false 
           requestId,
           ...(notice ? { authorizationNotice: notice } : {}),
         },
+      };
+      return { resultType: "complete" as const, content: [{ type: "text" as const, text: JSON.stringify(output) }], structuredContent: output };
+    },
+  );
+
+  server.registerTool(
+    "get_trading_diagnostics",
+    {
+      description: "Diagnose trading availability without changing configuration or placing an order. Always visible to authenticated MCP clients.",
+      inputSchema: toolSchemas.empty,
+    },
+    () => {
+      const output: ToolResult<ReturnType<typeof tradingDiagnostics>> = {
+        data: tradingDiagnostics(env),
+        meta: { source: "deployment", fetchedAt: new Date().toISOString(), requestId: crypto.randomUUID() },
       };
       return { resultType: "complete" as const, content: [{ type: "text" as const, text: JSON.stringify(output) }], structuredContent: output };
     },
@@ -346,8 +372,6 @@ export function createServer(env: AppEnv, access: McpAccess = { canTrade: false 
     { description: "Get Schwab user preferences required for account context", inputSchema: toolSchemas.empty },
     async () => execute(env, "get_user_preferences", "trader", "/userPreference"),
   );
-
-  if (!access.canTrade) return server;
 
   server.registerTool(
     "enable_trading",

@@ -16,7 +16,7 @@
 - [核心架构与设计原则](#核心架构与设计原则)
 - [系统架构图](#系统架构图)
 - [工具清单与参数规格](#工具清单与参数规格)
-  - [只读查询工具 (14 个)](#1-只读查询工具-14-个)
+  - [只读与诊断工具 (15 个)](#1-只读与诊断工具-15-个)
   - [交易控制工具 (9 个)](#2-交易控制工具-9-个)
 - [安全边界与交易防护机制](#安全边界与交易防护机制)
   - [1. 部署总开关 (ENABLE_TRADING)](#1-部署总开关-enable_trading)
@@ -50,10 +50,10 @@
    采用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 端点提供无协议会话（stateless per-request）的 Streamable HTTP 服务。跨域请求原生支持 CORS。
 2. **OAuth 2.1 + GitHub 身份白名单**：
    使用 `@cloudflare/workers-oauth-provider` 实现 MCP 客户端动态注册与授权。OAuth 授权流程必须通过 GitHub OAuth 确认服务拥有者身份，仅当不可变 GitHub 数字 ID 完全匹配环境变量 `ALLOWED_GITHUB_USER_ID` 时才予放行。
-3. **动态 Scope 与最小权限原则**：
-   - 默认权限为 `schwab.read`。只读 Token 在任何情况下均**完全看不到也无法调用**任何交易工具。
-   - 交易工具只向在授权阶段显式勾选同意 `schwab.trade` 权限、且当前 Access Token 依然保有该权限的客户端注册。
-   - 任何旧版本授权 Grant、无 scope 令牌、或降级（downscope）令牌均**自动失败关闭（Fail-Closed）为只读**，必须重新进行完整授权才能获得交易工具。
+3. **单一 OAuth 身份边界**：
+   - MCP OAuth 仅使用 `schwab.read` 作为服务访问 scope；它表示客户端已通过 OAuth 与 GitHub owner 白名单身份校验，不再另设 `schwab.trade` 工具暴露门槛。
+   - 所有通过身份校验的 MCP 客户端都会看到交易工具；真实交易是否允许由唯一部署总开关 `ENABLE_TRADING` 决定，并继续受明确用户指令、二次确认或 session 能力约束。
+   - `get_trading_diagnostics` 始终可见，用于明确报告交易工具注册状态、部署总开关和有效交易状态，避免权限失败时静默隐藏工具。
 4. **SQLite 物理级凭据与状态隔离**：
    Schwab OAuth Token、刷新时间、一次性确认提案、Session 直下能力哈希、延迟条件订单及脱敏交易审计摘要**严格存储于 SQLite-backed `SchwabVault` Durable Object 内**。凭据和原始订单明文严禁进入 KV 存储或日志。
 5. **Session 直下凭证单次暴露与哈希存储**：
@@ -89,7 +89,7 @@ flowchart TD
   Client -->|Streamable HTTP POST /mcp\nBearer Token| Router
   Router -->|解包验证 Access Token| OAuthProvider
   OAuthProvider <-->|持久化 Client / Token| KV
-  Router -->|校验 trade scope 与同意标记| DO
+  Router -->|通过身份校验后调用工具| DO
   DO -->|GET 行情与账户查询\n受控 POST / PUT / DELETE 交易| SchwabAPI
   Alarm -->|条件满足时原子认领触发| DO
 
@@ -104,15 +104,16 @@ flowchart TD
 
 ## 工具清单与参数规格
 
-系统共注册 **23 个 MCP 工具**，输入约束严格以 `src/schemas.ts` 的 Zod 校验为准。
+系统共注册 **24 个 MCP 工具**，输入约束严格以 `src/schemas.ts` 的 Zod 校验为准。
 
-### 1. 只读查询工具 (14 个)
+### 1. 只读与诊断工具 (15 个)
 
-所有工具均支持在只读模式 (`schwab.read`) 下调用，严格遵循只读 HTTP `GET`：
+这些工具不执行交易写操作；其中 Schwab 查询严格使用只读 HTTP `GET`，部署诊断仅读取当前 Worker 配置：
 
 | 工具名称 | 功能描述 | 关键参数与格式要求 |
 | :--- | :--- | :--- |
 | `schwab_connection_status` | 检查 Schwab 账户授权连接状态及有效期限 | 无参数。成功返回连接状态、过期时间及刷新链接。 |
+| `get_trading_diagnostics` | 诊断交易工具与部署总开关状态 | 无参数。始终可见；返回交易工具是否注册、`ENABLE_TRADING` 是否开启及有效交易状态，不修改配置、不提交订单。 |
 | `get_quotes` | 批量获取实时行情快照 | `symbols`: 1~50 个股票/ETF/指数代码数组；<br>`fields`: 可选字段过滤 (`quote`, `fundamental`, `reference`, `extended`, `regular`)；<br>`indicative`: 可选布尔值。 |
 | `get_price_history` | 获取标的 OHLCV K线历史数据 | `symbol`: 标的代码；<br>`periodType`: `day` \| `month` \| `year` \| `ytd`；<br>`frequencyType`: `minute` \| `daily` \| `weekly` \| `monthly`；<br>`frequency`: 聚合频率整数；<br>`startDate` / `endDate`: 可选毫秒时间戳 (须满足 start <= end)；<br>`needExtendedHoursData` / `needPreviousClose`: 可选布尔值。 |
 | `get_option_chain` | 获取期权链合约、实时报价与 Greeks 希腊字母 | `symbol`: 标的代码；<br>`contractType`: `CALL` \| `PUT` \| `ALL`；<br>`strikeCount`: 1~100 档位行权价；<br>`strategy`: `SINGLE`, `VERTICAL`, `CALENDAR`, `STRADDLE` 等；<br>`fromDate` / `toDate`: `YYYY-MM-DD` 格式。 |
@@ -130,7 +131,7 @@ flowchart TD
 ### 2. 交易控制工具 (9 个)
 
 > [!WARNING]
-> 仅当客户端持有有效 `schwab.trade` Scope、完成新版授权同意确认，且部署配置 `ENABLE_TRADING` 为 `true` 时，以下工具才被激活并暴露给客户端。
+> 以下工具向所有通过 OAuth 与 GitHub owner 白名单身份校验的 MCP 客户端注册。`ENABLE_TRADING` 是允许准备、确认、开启 session 直下及提交订单的唯一部署总开关；关闭时相关调用失败关闭，但撤单、关闭 session 和取消延迟任务仍可用于降险。
 
 | 工具名称 | 功能描述 | 关键参数与格式要求 |
 | :--- | :--- | :--- |

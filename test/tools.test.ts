@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppEnv } from "../src/env";
 import { tradingEnabled } from "../src/env";
-import { authorizationNotice, createServer, transactionDateRange } from "../src/tools";
+import { authorizationNotice, createServer, tradingDiagnostics, transactionDateRange } from "../src/tools";
 
 const env = {
   SCHWAB_REDIRECT_URI: "https://example.com/auth/schwab/callback",
@@ -42,7 +42,7 @@ describe("transaction date range", () => {
   });
 });
 
-describe("OAuth-scoped tool exposure", () => {
+describe("authenticated tool exposure", () => {
   const tradingTools = [
     "enable_trading",
     "prepare_trade",
@@ -55,14 +55,23 @@ describe("OAuth-scoped tool exposure", () => {
     "cancel_delayed_trade",
   ];
 
-  it("does not register trading tools for legacy or read-only grants", () => {
-    const server = createServer(env, { canTrade: false });
-    expect(server.toolInputSchemaJson("get_quotes")).toBeDefined();
-    for (const tool of tradingTools) expect(server.toolInputSchemaJson(tool)).toBeUndefined();
+  it("registers diagnostics and trading tools for every authenticated MCP client", () => {
+    const server = createServer(env);
+    expect(server.toolInputSchemaJson("get_trading_diagnostics")).toBeDefined();
+    for (const tool of tradingTools) expect(server.toolInputSchemaJson(tool)).toBeDefined();
   });
 
-  it("registers trading tools only for a trade-authorized token", () => {
-    const server = createServer(env, { canTrade: true });
-    for (const tool of tradingTools) expect(server.toolInputSchemaJson(tool)).toBeDefined();
+  it("reports the deployment switch without an OAuth trade gate", () => {
+    expect(tradingDiagnostics({ ENABLE_TRADING: "true" } as AppEnv)).toMatchObject({
+      oauthTradeScopeRequired: false,
+      tradingToolsRegistered: true,
+      deploymentTradingEnabled: true,
+      effectiveTradingState: "ENABLED",
+    });
+    expect(tradingDiagnostics({ ENABLE_TRADING: "false" } as AppEnv)).toMatchObject({
+      deploymentTradingEnabled: false,
+      effectiveTradingState: "DISABLED_BY_DEPLOYMENT",
+      cancellationAvailableWhenDisabled: true,
+    });
   });
 });

@@ -13,7 +13,7 @@ export type ErrorCode =
   | "EXECUTION_UNCERTAIN";
 
 export interface ToolMeta {
-  source: "schwab";
+  source: "schwab" | "deployment";
   fetchedAt: string;
   requestId: string;
   authorizationNotice?: AuthorizationNotice;

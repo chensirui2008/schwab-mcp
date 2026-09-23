@@ -11,9 +11,9 @@
 
 - TypeScript + Cloudflare Workers；MCP 使用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 提供无协议会话的 Streamable HTTP。
 - MCP OAuth 使用 `@cloudflare/workers-oauth-provider`，注册和授权数据存入 `OAUTH_KV`；GitHub OAuth 身份仅按 numeric user ID 匹配 `ALLOWED_GITHUB_USER_ID`。
-- MCP OAuth 默认授予 `schwab.read`；全部交易工具只向同时具有当前 `schwab.trade` scope 和新版明确交易同意标记的 token 注册。旧 grant、无 scope token、downscope token 均必须失败关闭为只读，并重新授权后才能获得交易工具。
+- MCP OAuth 使用单一 `schwab.read` 服务访问 scope，并继续通过 GitHub numeric user ID 白名单限制 owner；不再使用独立 `schwab.trade` scope 或授权版本标记隐藏交易工具。所有通过身份校验的客户端都会注册交易工具，实际交易由 `ENABLE_TRADING`、明确用户指令以及确认/session 能力共同约束。
 - Schwab 凭据、交易确认状态、session 直下能力摘要、直下执行记录、延迟任务和审计摘要仅存于 SQLite-backed `SchwabVault` Durable Object，不得进入 KV 或日志。session 能力明文只允许在开启结果中返回一次，数据库仅保存 SHA-256 摘要。
-- 工具输入约束以 `src/schemas.ts` 为准；工具清单和部署步骤以 README 为准。`get_transactions` 对外接受 `YYYY-MM-DD`，调用 Schwab 前必须转换为覆盖完整起止日的 UTC ISO-8601 时间范围。
+- `get_trading_diagnostics` 必须始终向已认证客户端注册，并只读报告工具注册状态、`ENABLE_TRADING` 与有效交易状态，不得读取或返回 token、Secret 或账户数据。工具输入约束以 `src/schemas.ts` 为准；工具清单和部署步骤以 README 为准。`get_transactions` 对外接受 `YYYY-MM-DD`，调用 Schwab 前必须转换为覆盖完整起止日的 UTC ISO-8601 时间范围。
 
 ## 边界
 
