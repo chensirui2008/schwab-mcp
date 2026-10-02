@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Dependencies and generated types are restored with the orb snapshot.
+# Local Workers tests need no external services or authentication to reconnect.
+# Do not install dependencies or authenticate production services on resume.

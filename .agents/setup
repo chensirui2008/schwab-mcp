@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+# Amp's base image supplies Node.js and npm. Dependencies require Node.js 22+.
+echo "Checking the orb toolchain"
+node -e 'if (Number(process.versions.node.split(".")[0]) < 22) { throw new Error("Node.js 22 or newer is required"); }'
+node --version
+npm --version
+
+echo "Installing locked dependencies (using the restored npm cache when available)"
+time npm ci --prefer-offline --no-audit --no-fund
+
+echo "Preparing local placeholder configuration"
+if [[ ! -f .dev.vars ]]; then
+  cp -- .dev.vars.example .dev.vars
+fi
+
+echo "Generating Cloudflare Worker types"
+time npm run types
