@@ -1,7 +1,7 @@
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { html } from "hono/html";
+import { renderAuthorizePage, renderSchwabConnectedPage } from "./auth-ui";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
 import { READ_SCOPE } from "./oauth-access";
@@ -130,10 +130,8 @@ app.get("/authorize", async (c) => {
   const origin = new URL(c.req.url).origin;
   const state = await saveState(c.env, "consent", { action: "mcp_authorize", origin, authRequest } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
-  return c.html(html`<!doctype html><meta charset="utf-8"><title>Schwab MCP 授权</title>
-    <h1>允许连接 Schwab MCP？</h1><p>客户端：${client.clientName ?? client.clientId}</p>
-    <p>回调地址：${authRequest.redirectUri}</p><p>通过身份校验的客户端将能读取账户数据并看到交易工具。真实交易仍受部署总开关、明确用户指令以及逐单确认或 session 能力约束。</p>
-    <form method="post" action="/authorize/approve"><input type="hidden" name="state" value="${state}"><button type="submit">继续 GitHub 身份验证并授权</button></form>`);
+  const clientName = client.clientName ?? client.clientId;
+  return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state }));
 });
 
 app.post("/authorize/approve", async (c) => {
@@ -212,7 +210,7 @@ app.get("/auth/schwab/callback", async (c) => {
     });
     if (!saved.ok) throw new Error("Schwab token response was invalid");
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
-    return c.html("<!doctype html><meta charset=utf-8><title>Schwab connected</title><h1>Schwab 已连接</h1><p>可以关闭此页面并返回 MCP 客户端。</p>");
+    return c.html(renderSchwabConnectedPage());
   } catch (error) {
     console.error(JSON.stringify({ event: "schwab_oauth_failed", message: error instanceof Error ? error.message : "Unknown error" }));
     return c.text("Schwab authorization failed", 400);
