@@ -347,7 +347,7 @@ npm run deploy
 
 **0.2.0 升级与重新授权**：此版本启用 `AUTHORIZATION_VERSION = "client-permissions-v1"`。部署后，所有此前的 MCP access token、refresh token 和未兑换的 authorization code 都失效：访问 `/mcp` 返回 HTTP 401 `invalid_token`，旧 code 或 refresh token 换票返回 HTTP 400 `invalid_grant`。每个客户端必须重新打开授权页，选择权限并完成 GitHub 身份校验；旧 grant 不会在刷新时自动升级。已注册的客户端可复用原 client ID，无需删除 KV。Schwab 账户绑定、已有延迟交易任务及交易确认规则保持不变，无需重新绑定 Schwab。
 
-之后需要再次全量过期 MCP 授权时，修改 `src/oauth-access.ts` 中的 `AUTHORIZATION_VERSION` 后部署；普通 `APP_VERSION` 更新不会自动作废当前授权。对同一客户端重新授权以修改权限时，OAuth provider 会撤销该客户端的旧 grant 和 token；其他客户端的授权不受影响。
+之后需要再次全量过期 MCP 授权时，修改 `src/oauth-access.ts` 中的 `AUTHORIZATION_VERSION` 后部署；普通 `APP_VERSION` 更新不会自动作废当前授权。对同一客户端重新授权以修改权限时，服务先显式撤销该客户端的旧 grant 和 token，全部撤销成功后才签发新授权；其他客户端的授权不受影响。若查询或撤销旧授权失败，返回 HTTP 503 `temporarily_unavailable` 和可关联的 `requestId`，不会签发新授权；权限修改尚未完成，旧授权可能仍有效，需要重新发起授权流程。
 
 ### 步骤 3：配置 GitHub Actions 自动化部署流水线
 

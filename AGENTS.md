@@ -13,6 +13,7 @@
 - MCP OAuth 使用 `@cloudflare/workers-oauth-provider`，注册和授权数据存入 `OAUTH_KV`；GitHub OAuth 身份仅按 numeric user ID 匹配 `ALLOWED_GITHUB_USER_ID`。
 - MCP OAuth 使用单一 `schwab.read` 服务访问 scope，并继续通过 GitHub numeric user ID 白名单限制 owner。每个客户端在授权页独立选择 `read_only`（默认）或 `full_access`；选择只能通过绑定浏览器的一次性 consent state 传入 GitHub 身份校验流程，最终持久化在 OAuth grant 的加密 props 中。只读客户端不注册任何交易控制工具，完整访问客户端注册所有工具，实际交易仍由 `ENABLE_TRADING`、明确用户指令以及原有确认/session 能力共同约束。
 - `src/oauth-access.ts` 的 `AUTHORIZATION_VERSION` 标记当前 MCP 授权政策；MCP 请求及 authorization code/refresh token 换票都必须验证版本和权限字段，旧版或缺失字段失败关闭并要求重新授权，不能在刷新时自动升级旧 grant。需要全量重新授权时显式更新此标记；普通版本更新不自动作废有效 grant。MCP 授权更新不清除 Schwab 凭据或已有延迟交易任务。
+- 同一客户端重新授权时，必须显式撤销其全部旧 grant 和 token，撤销全部成功后才能签发新授权；查询或撤销失败返回 HTTP 503 `temporarily_unavailable` 并记录脱敏 `requestId`，不得依赖 OAuth provider 忽略撤销错误的自动清理来保证权限降级成功。
 - Schwab 凭据、交易确认状态、session 直下能力摘要、直下执行记录、延迟任务和审计摘要仅存于 SQLite-backed `SchwabVault` Durable Object，不得进入 KV 或日志。session 能力明文只允许在开启结果中返回一次，数据库仅保存 SHA-256 摘要。
 - `get_trading_diagnostics` 必须始终向已认证客户端注册，并只读报告工具注册状态、`ENABLE_TRADING` 与有效交易状态，不得读取或返回 token、Secret 或账户数据。工具输入约束以 `src/schemas.ts` 为准；工具清单和部署步骤以 README 为准。`get_transactions` 对外接受 `YYYY-MM-DD`，调用 Schwab 前必须转换为覆盖完整起止日的 UTC ISO-8601 时间范围。
 

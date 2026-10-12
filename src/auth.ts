@@ -1,4 +1,4 @@
-import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
+import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { renderAuthorizePage, renderSchwabConnectedPage } from "./auth-ui";
@@ -29,6 +29,21 @@ interface GitHubStatePayload {
 
 export function isAllowedGitHubUser(userId: number, allowedUserId: string): boolean {
   return String(userId) === allowedUserId;
+}
+
+async function revokeClientGrants(provider: OAuthHelpers, userId: string, clientId: string): Promise<void> {
+  const grantIds: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await provider.listUserGrants(userId, { limit: 50, ...(cursor ? { cursor } : {}) });
+    for (const grant of page.items) {
+      if (grant.clientId === clientId) grantIds.push(grant.id);
+    }
+    cursor = page.cursor;
+  } while (cursor);
+  // CompleteAuthorization's automatic revocation ignores failures. Revoke first
+  // and issue the replacement only after every previous grant is revoked.
+  for (const grantId of grantIds) await provider.revokeGrant(grantId, userId);
 }
 
 function randomState(): string {
@@ -189,9 +204,21 @@ app.get("/auth/github/callback", async (c) => {
     if (payload.authorizationVersion !== AUTHORIZATION_VERSION || !isPermissionLevel(payload.permissionLevel)) {
       return c.text("Authorization expired; restart authorization", 400);
     }
+    try {
+      await revokeClientGrants(c.env.OAUTH_PROVIDER, String(user.id), payload.authRequest.clientId);
+    } catch {
+      const requestId = crypto.randomUUID();
+      console.error(JSON.stringify({ event: "mcp_authorization_revocation_failed", requestId }));
+      return c.json({
+        error: "temporarily_unavailable",
+        error_description: "Unable to revoke previous client authorizations; restart authorization",
+        requestId,
+      }, 503);
+    }
     const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
       request: payload.authRequest,
       userId: String(user.id),
+      revokeExistingGrants: false,
       metadata: { label: "Personal Schwab MCP", permissionLevel: payload.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION },
       scope: [READ_SCOPE],
       props: {
