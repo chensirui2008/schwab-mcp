@@ -50,10 +50,10 @@
    采用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 端点提供无协议会话（stateless per-request）的 Streamable HTTP 服务。跨域请求原生支持 CORS。
 2. **OAuth 2.1 + GitHub 身份白名单**：
    使用 `@cloudflare/workers-oauth-provider` 实现 MCP 客户端动态注册与授权。OAuth 授权流程必须通过 GitHub OAuth 确认服务拥有者身份，仅当不可变 GitHub 数字 ID 完全匹配环境变量 `ALLOWED_GITHUB_USER_ID` 时才予放行。
-3. **单一 OAuth 身份边界**：
-   - MCP OAuth 仅使用 `schwab.read` 作为服务访问 scope；它表示客户端已通过 OAuth 与 GitHub owner 白名单身份校验，不再另设 `schwab.trade` 工具暴露门槛。
-   - 所有通过身份校验的 MCP 客户端都会看到交易工具；真实交易是否允许由唯一部署总开关 `ENABLE_TRADING` 决定，并继续受明确用户指令、二次确认或 session 能力约束。
-   - `get_trading_diagnostics` 始终可见，用于明确报告交易工具注册状态、部署总开关和有效交易状态，避免权限失败时静默隐藏工具。
+3. **每客户端 OAuth 权限边界**：
+   - MCP OAuth 使用 `schwab.read` 服务访问 scope。每个客户端在授权页独立选择**只读（Read only，默认）**或**完整访问（Full access）**，选择随一次性浏览器 state 传入 GitHub owner 校验流程，存入 grant 的加密 props，并在刷新 token 后保持。
+   - 只读客户端仅注册账户、行情与诊断工具；全部 9 个交易控制工具不向模型暴露，直接指定交易工具名调用同样失败。完整访问客户端注册所有工具，真实交易仍受部署总开关 `ENABLE_TRADING`、明确用户指令、二次确认或原有 session 能力约束，撤单例外保持。
+   - `get_trading_diagnostics` 始终可见，返回当前客户端的 `permissionLevel`、交易工具注册状态、部署总开关和有效交易状态。只读授权的有效交易状态为 `DISABLED_BY_PERMISSION`。
 4. **SQLite 物理级凭据与状态隔离**：
    Schwab OAuth Token、刷新时间、一次性确认提案、Session 直下能力哈希、延迟条件订单及脱敏交易审计摘要**严格存储于 SQLite-backed `SchwabVault` Durable Object 内**。凭据和原始订单明文严禁进入 KV 存储或日志。
 5. **Session 直下凭证单次暴露与哈希存储**：
@@ -131,7 +131,7 @@ flowchart TD
 ### 2. 交易控制工具 (9 个)
 
 > [!WARNING]
-> 以下工具向所有通过 OAuth 与 GitHub owner 白名单身份校验的 MCP 客户端注册。`ENABLE_TRADING` 是允许准备、确认、开启 session 直下及提交订单的唯一部署总开关；关闭时相关调用失败关闭，但撤单、关闭 session 和取消延迟任务仍可用于降险。
+> 以下工具仅向选择**完整访问**并通过 OAuth 与 GitHub owner 白名单校验的 MCP 客户端注册。`ENABLE_TRADING` 是允许准备、确认、开启 session 直下及提交订单的唯一部署总开关；关闭时相关调用失败关闭，但完整访问客户端仍可撤单、关闭 session 和取消延迟任务以降险。
 
 | 工具名称 | 功能描述 | 关键参数与格式要求 |
 | :--- | :--- | :--- |
@@ -345,6 +345,10 @@ npm run deploy
 部署完成后，Worker 会生成分配的子域名，例如：
 `https://schwab-mcp.siruichen461.workers.dev`
 
+**0.2.0 升级与重新授权**：此版本启用 `AUTHORIZATION_VERSION = "client-permissions-v1"`。部署后，所有此前的 MCP access token、refresh token 和未兑换的 authorization code 都失效：访问 `/mcp` 返回 HTTP 401 `invalid_token`，旧 code 或 refresh token 换票返回 HTTP 400 `invalid_grant`。每个客户端必须重新打开授权页，选择权限并完成 GitHub 身份校验；旧 grant 不会在刷新时自动升级。已注册的客户端可复用原 client ID，无需删除 KV。Schwab 账户绑定、已有延迟交易任务及交易确认规则保持不变，无需重新绑定 Schwab。
+
+之后需要再次全量过期 MCP 授权时，修改 `src/oauth-access.ts` 中的 `AUTHORIZATION_VERSION` 后部署；普通 `APP_VERSION` 更新不会自动作废当前授权。对同一客户端重新授权以修改权限时，OAuth provider 会撤销该客户端的旧 grant 和 token；其他客户端的授权不受影响。
+
 ### 步骤 3：配置 GitHub Actions 自动化部署流水线
 
 仓库已配置自动化工作流 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)，当代码合并或推送到 `main` 分支时自动触发全量类型、代码校验并部署。
@@ -390,7 +394,7 @@ https://<your-worker-domain>/mcp
   }
 }
 ```
-首次连接时，客户端会自动打开系统浏览器，引导你完成 OAuth 2.1 授权并登录 GitHub 确认拥有者身份。
+首次连接时，客户端会自动打开系统浏览器。请为当前客户端选择**只读**或**完整访问**，然后登录 GitHub 确认拥有者身份。修改某个客户端的权限时，重新发起该客户端的授权流程。
 
 ### 2. Cursor / VS Code / Codex 接入
 

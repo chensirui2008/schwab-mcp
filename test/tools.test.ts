@@ -55,23 +55,38 @@ describe("authenticated tool exposure", () => {
     "cancel_delayed_trade",
   ];
 
-  it("registers diagnostics and trading tools for every authenticated MCP client", () => {
-    const server = createServer(env);
+  it("registers all trading tools for full-access clients", () => {
+    const server = createServer(env, "full_access");
     expect(server.toolInputSchemaJson("get_trading_diagnostics")).toBeDefined();
     for (const tool of tradingTools) expect(server.toolInputSchemaJson(tool)).toBeDefined();
   });
 
+  it("exposes read tools and diagnostics but omits every trading tool for read-only clients", () => {
+    const server = createServer(env, "read_only");
+    expect(server.toolInputSchemaJson("get_trading_diagnostics")).toBeDefined();
+    expect(server.toolInputSchemaJson("get_quotes")).toBeDefined();
+    expect(server.toolInputSchemaJson("get_account")).toBeDefined();
+    for (const tool of tradingTools) expect(server.toolInputSchemaJson(tool)).toBeUndefined();
+    expect(createServer(env).toolInputSchemaJson("prepare_trade")).toBeUndefined();
+  });
+
   it("reports the deployment switch without an OAuth trade gate", () => {
-    expect(tradingDiagnostics({ ENABLE_TRADING: "true" } as AppEnv)).toMatchObject({
+    expect(tradingDiagnostics({ ENABLE_TRADING: "true" } as AppEnv, "full_access")).toMatchObject({
       oauthTradeScopeRequired: false,
       tradingToolsRegistered: true,
       deploymentTradingEnabled: true,
       effectiveTradingState: "ENABLED",
     });
-    expect(tradingDiagnostics({ ENABLE_TRADING: "false" } as AppEnv)).toMatchObject({
+    expect(tradingDiagnostics({ ENABLE_TRADING: "false" } as AppEnv, "full_access")).toMatchObject({
       deploymentTradingEnabled: false,
       effectiveTradingState: "DISABLED_BY_DEPLOYMENT",
       cancellationAvailableWhenDisabled: true,
+    });
+    expect(tradingDiagnostics({ ENABLE_TRADING: "true" } as AppEnv, "read_only")).toMatchObject({
+      permissionLevel: "read_only",
+      tradingToolsRegistered: false,
+      effectiveTradingState: "DISABLED_BY_PERMISSION",
+      cancellationAvailableWhenDisabled: false,
     });
   });
 });

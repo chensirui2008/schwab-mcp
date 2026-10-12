@@ -12,7 +12,7 @@
     "MARKET_DATA_BASE_URL": "https://api.schwabapi.com/marketdata/v1",
     "TRADER_BASE_URL": "https://api.schwabapi.com/trader/v1",
     "ENABLE_TRADING": "true",
-    "APP_VERSION": "0.1.0"
+    "APP_VERSION": "0.2.0"
   },
   "secrets": {
     "required": [
