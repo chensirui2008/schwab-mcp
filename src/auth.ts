@@ -1,14 +1,17 @@
-import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
+import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { renderAuthorizePage, renderSchwabConnectedPage } from "./auth-ui";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
-import { READ_SCOPE } from "./oauth-access";
+import { AUTHORIZATION_VERSION, isPermissionLevel, READ_SCOPE } from "./oauth-access";
+import type { AuthorizationProps, PermissionLevel } from "./oauth-access";
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 const FLOW_COOKIE = "__Host-schwab-oauth";
 const FLOW_COOKIE_OPTIONS = { secure: true, httpOnly: true, sameSite: "Lax" as const, path: "/", maxAge: STATE_TTL_MS / 1000 };
+
+class InvalidOAuthStateError extends Error {}
 
 interface GitHubUser {
   id: number;
@@ -20,10 +23,27 @@ interface GitHubStatePayload {
   action: "mcp_authorize" | "schwab_connect";
   origin: string;
   authRequest?: AuthRequest;
+  permissionLevel?: PermissionLevel;
+  authorizationVersion?: string;
 }
 
 export function isAllowedGitHubUser(userId: number, allowedUserId: string): boolean {
   return String(userId) === allowedUserId;
+}
+
+async function revokeClientGrants(provider: OAuthHelpers, userId: string, clientId: string): Promise<void> {
+  const grantIds: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await provider.listUserGrants(userId, { limit: 50, ...(cursor ? { cursor } : {}) });
+    for (const grant of page.items) {
+      if (grant.clientId === clientId) grantIds.push(grant.id);
+    }
+    cursor = page.cursor;
+  } while (cursor);
+  // CompleteAuthorization's automatic revocation ignores failures. Revoke first
+  // and issue the replacement only after every previous grant is revoked.
+  for (const grantId of grantIds) await provider.revokeGrant(grantId, userId);
 }
 
 function randomState(): string {
@@ -48,7 +68,8 @@ async function consumeState<T>(env: AppEnv, state: string, kind: string): Promis
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ state, kind }),
   });
-  if (!response.ok) throw new Error("Invalid or expired OAuth state");
+  if (response.status === 400) throw new InvalidOAuthStateError("Invalid or expired OAuth state");
+  if (!response.ok) throw new Error("Unable to consume OAuth state");
   const envelope: unknown = await response.json();
   if (envelope === null || typeof envelope !== "object" || !("payload" in envelope)) {
     throw new Error("Invalid OAuth state payload");
@@ -128,7 +149,9 @@ app.get("/authorize", async (c) => {
   const client = await c.env.OAUTH_PROVIDER.lookupClient(authRequest.clientId);
   if (!client) return c.text("Invalid OAuth client", 400);
   const origin = new URL(c.req.url).origin;
-  const state = await saveState(c.env, "consent", { action: "mcp_authorize", origin, authRequest } satisfies GitHubStatePayload);
+  const state = await saveState(c.env, "consent", {
+    action: "mcp_authorize", origin, authRequest, authorizationVersion: AUTHORIZATION_VERSION,
+  } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   const clientName = client.clientName ?? client.clientId;
   return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state }));
@@ -138,8 +161,19 @@ app.post("/authorize/approve", async (c) => {
   const form = await c.req.parseBody();
   const state = form.state;
   if (typeof state !== "string" || getCookie(c, FLOW_COOKIE) !== state) return c.text("Invalid consent state", 400);
-  const payload = await consumeState<GitHubStatePayload>(c.env, state, "consent");
-  const githubState = await saveState(c.env, "github", payload);
+  const permissionLevel = form.permissionLevel;
+  if (!isPermissionLevel(permissionLevel)) return c.text("Invalid permission level", 400);
+  let payload: GitHubStatePayload;
+  try {
+    payload = await consumeState<GitHubStatePayload>(c.env, state, "consent");
+  } catch (error) {
+    if (!(error instanceof InvalidOAuthStateError)) throw error;
+    return c.text("Invalid or expired consent state", 400);
+  }
+  if (payload.action !== "mcp_authorize" || payload.authorizationVersion !== AUTHORIZATION_VERSION) {
+    return c.text("Authorization expired; restart authorization", 400);
+  }
+  const githubState = await saveState(c.env, "github", { ...payload, permissionLevel });
   setCookie(c, FLOW_COOKIE, githubState, FLOW_COOKIE_OPTIONS);
   return c.redirect(githubAuthorizationUrl(c.env, payload.origin, githubState));
 });
@@ -167,12 +201,30 @@ app.get("/auth/github/callback", async (c) => {
       return c.redirect(schwab.url);
     }
     if (!payload.authRequest) return c.text("Missing MCP authorization request", 400);
+    if (payload.authorizationVersion !== AUTHORIZATION_VERSION || !isPermissionLevel(payload.permissionLevel)) {
+      return c.text("Authorization expired; restart authorization", 400);
+    }
+    try {
+      await revokeClientGrants(c.env.OAUTH_PROVIDER, String(user.id), payload.authRequest.clientId);
+    } catch {
+      const requestId = crypto.randomUUID();
+      console.error(JSON.stringify({ event: "mcp_authorization_revocation_failed", requestId }));
+      return c.json({
+        error: "temporarily_unavailable",
+        error_description: "Unable to revoke previous client authorizations; restart authorization",
+        requestId,
+      }, 503);
+    }
     const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
       request: payload.authRequest,
       userId: String(user.id),
-      metadata: { label: "Personal Schwab MCP" },
+      revokeExistingGrants: false,
+      metadata: { label: "Personal Schwab MCP", permissionLevel: payload.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION },
       scope: [READ_SCOPE],
-      props: { userId: String(user.id), username: user.login },
+      props: {
+        userId: String(user.id), username: user.login,
+        permissionLevel: payload.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION,
+      } satisfies AuthorizationProps,
     });
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
     return c.redirect(redirectTo);

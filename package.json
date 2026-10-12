@@ -1,6 +1,6 @@
 {
   "name": "schwab-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
     "validate": "npm run types && npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.8.1",
+    "@cloudflare/workers-oauth-provider": "^0.8.3",
     "@modelcontextprotocol/server": "^2.0.0",
     "hono": "^4.12.27",
     "zod": "^4.5.4"

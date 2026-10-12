@@ -30,6 +30,11 @@ describe("OAuth UI rendering", () => {
     expect(htmlString).toContain('action="/authorize/approve"');
     expect(htmlString).toContain('name="state" value="test-state-123"');
     expect(htmlString).toContain("继续 GitHub 身份验证并授权");
+    expect(htmlString).toContain('value="read_only" form="authorize-form" required checked');
+    expect(htmlString).toContain('value="full_access" form="authorize-form" required');
+    expect(htmlString).toContain('id="authorize-form"');
+    expect(htmlString).toContain("Read only");
+    expect(htmlString).toContain("Full access");
   });
 
   it("renders the Schwab connected success page", () => {

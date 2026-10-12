@@ -426,6 +426,44 @@ const COMMON_STYLES = `
     margin-top: 24px;
   }
 
+  .permission-options {
+    border: 0;
+    margin-top: 18px;
+  }
+
+  .permission-options legend {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .permission-option {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px;
+    margin-top: 8px;
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    background: var(--panel-bg);
+    cursor: pointer;
+    font-size: 12.5px;
+  }
+
+  .permission-option:has(input:checked) {
+    border-color: var(--brand-blue);
+  }
+
+  .permission-option:focus-within {
+    outline: 2px solid var(--brand-blue);
+    outline-offset: 2px;
+  }
+
+  .permission-option input {
+    margin-top: 4px;
+    accent-color: var(--brand-blue);
+  }
+
   .pill-btn {
     display: inline-flex;
     align-items: center;
@@ -546,10 +584,28 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
           </div>
           <div class="policy-content">
             <div class="policy-title">受控交易工具与安全防护</div>
-            <div class="policy-desc">通过身份校验的客户端将能读取账户数据并看到交易工具。真实交易仍受部署总开关、明确用户指令以及逐单确认或 session 能力约束。</div>
+            <div class="policy-desc">仅完整访问客户端可看到交易工具。真实交易仍受部署总开关、明确用户指令以及二次确认约束；保留显式开启的 session 直下模式和撤单例外。</div>
           </div>
         </div>
       </div>
+
+      <fieldset class="permission-options">
+        <legend>选择此客户端的权限</legend>
+        <label class="permission-option">
+          <input type="radio" name="permissionLevel" value="read_only" form="authorize-form" required checked>
+          <span>
+            <span class="policy-title">只读 · Read only</span><br>
+            <span class="policy-desc">允许读取账户与行情；不向模型暴露交易工具。</span>
+          </span>
+        </label>
+        <label class="permission-option">
+          <input type="radio" name="permissionLevel" value="full_access" form="authorize-form" required>
+          <span>
+            <span class="policy-title">完整访问 · Full access</span><br>
+            <span class="policy-desc">向模型暴露所有工具；保留现有二次确认、session 直下模式和撤单规则。</span>
+          </span>
+        </label>
+      </fieldset>
 
       <div class="security-notice">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -563,7 +619,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
       </div>
     </div>
 
-    <form class="action-form" method="post" action="/authorize/approve">
+    <form id="authorize-form" class="action-form" method="post" action="/authorize/approve">
       <input type="hidden" name="state" value="${props.state}">
       <button type="submit" class="pill-btn">
         <svg viewBox="0 0 24 24">
