@@ -6,12 +6,12 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "vars": {
-    "GITHUB_CLIENT_ID": "Ov23liW2n6FLZm3U4FPE",
-    "ALLOWED_GITHUB_USER_ID": "91513186",
-    "SCHWAB_REDIRECT_URI": "https://schwab-mcp.siruichen461.workers.dev/auth/schwab/callback",
+    "GITHUB_CLIENT_ID": "replace-with-your-github-client-id",
+    "ALLOWED_GITHUB_USER_ID": "replace-with-your-numeric-github-user-id",
+    "SCHWAB_REDIRECT_URI": "https://<your-worker-name>.<your-subdomain>.workers.dev/auth/schwab/callback",
     "MARKET_DATA_BASE_URL": "https://api.schwabapi.com/marketdata/v1",
     "TRADER_BASE_URL": "https://api.schwabapi.com/trader/v1",
-    "ENABLE_TRADING": "true",
+    "ENABLE_TRADING": "false",
     "APP_VERSION": "0.2.0"
   },
   "secrets": {
@@ -24,7 +24,7 @@
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
-      "id": "b849f6be217b4f6bac9fcb7cb8545859"
+      "id": "replace-with-your-kv-namespace-id"
     }
   ],
   "durable_objects": {

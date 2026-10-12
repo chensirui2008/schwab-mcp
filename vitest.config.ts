@@ -8,6 +8,9 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
         bindings: {
+          GITHUB_CLIENT_ID: "test-github-client",
+          ALLOWED_GITHUB_USER_ID: "123456",
+          SCHWAB_REDIRECT_URI: "https://example.com/auth/schwab/callback",
           GITHUB_CLIENT_SECRET: "test-github-secret",
           SCHWAB_CLIENT_ID: "test-schwab-client",
           SCHWAB_CLIENT_SECRET: "test-schwab-secret",

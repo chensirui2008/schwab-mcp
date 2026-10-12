@@ -36,5 +36,16 @@ jobs:
       - name: Validate
         run: npm run validate
 
+      - name: Inject Production Configuration
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        env:
+          PROD_OAUTH_KV_ID: ${{ vars.PROD_OAUTH_KV_ID }}
+          PROD_ALLOWED_GITHUB_USER_ID: ${{ vars.PROD_ALLOWED_GITHUB_USER_ID }}
+          PROD_GITHUB_CLIENT_ID: ${{ vars.PROD_GITHUB_CLIENT_ID }}
+          PROD_SCHWAB_REDIRECT_URI: ${{ vars.PROD_SCHWAB_REDIRECT_URI }}
+          PROD_ENABLE_TRADING: ${{ vars.PROD_ENABLE_TRADING }}
+        run: npm run configure:deploy
+
       - name: Deploy to Cloudflare Workers
+        if: env.CLOUDFLARE_API_TOKEN != ''
         run: npm run deploy
