@@ -372,6 +372,10 @@ npm run deploy
 - `PROD_SCHWAB_REDIRECT_URI`: 你的生产回调地址（格式为 `https://<your-worker-name>.<your-subdomain>.workers.dev/auth/schwab/callback`）；
 - `PROD_ENABLE_TRADING`: （可选）是否在生产开启交易，若开启填 `"true"`（默认关闭 `"false"`）。
 
+部署前运行 `npm run configure:deploy`，从上述环境变量写入本次构建的 `wrangler.jsonc`；缺失必需配置或无效的 KV ID、数字用户 ID、回调地址、交易开关会立即失败。该命令不读取或写入 Worker Secrets，请勿提交注入后的配置文件。
+
+如果同时启用 Cloudflare **Workers Builds**，GitHub Actions 的 Repository Variables 不会自动传入该构建环境。需在每个触发器的 Build variables 中配置同名参数，并设置 Build command 为 `npm run validate && npm run configure:deploy`。生产分支的 Deploy command 保持 `npx wrangler deploy`，非生产分支保持 `npx wrangler versions upload`（仅上传版本，不切换生产流量）；非生产构建的 `PROD_ENABLE_TRADING` 使用 `false`。测试使用独立的虚构身份配置，无需生产参数。
+
 > [!CAUTION]
 > 严禁把 `GITHUB_CLIENT_SECRET`、`SCHWAB_CLIENT_ID` 或 `SCHWAB_CLIENT_SECRET` 上传到 GitHub Actions Secrets！这三项凭据仅应保存在 Cloudflare Worker Secrets 中。
 

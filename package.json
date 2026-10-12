@@ -20,10 +20,12 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "types": "wrangler types env.d.ts --include-runtime false",
+    "configure:deploy": "node scripts/configure-deploy.mjs",
+    "test:deploy-config": "node --test scripts/configure-deploy.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "validate": "npm run types && npm run typecheck && npm run lint && npm test"
+    "validate": "npm run types && npm run typecheck && npm run lint && npm test && npm run test:deploy-config"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.8.3",

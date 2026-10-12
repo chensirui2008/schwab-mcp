@@ -14,4 +14,12 @@ export default [
       "@typescript-eslint/no-explicit-any": "error",
     },
   },
+  {
+    files: ["scripts/**/*.mjs"],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      parserOptions: { projectService: false, project: false },
+      globals: { process: "readonly" },
+    },
+  },
 ];

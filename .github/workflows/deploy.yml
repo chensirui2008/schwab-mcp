@@ -37,21 +37,14 @@ jobs:
         run: npm run validate
 
       - name: Inject Production Configuration
-        if: env.CLOUDFLARE_API_TOKEN != '' && vars.PROD_OAUTH_KV_ID != ''
-        run: |
-          sed -i 's|"replace-with-your-kv-namespace-id"|"${{ vars.PROD_OAUTH_KV_ID }}"|g' wrangler.jsonc
-          if [ -n "${{ vars.PROD_ALLOWED_GITHUB_USER_ID }}" ]; then
-            sed -i 's|"replace-with-your-numeric-github-user-id"|"${{ vars.PROD_ALLOWED_GITHUB_USER_ID }}"|g' wrangler.jsonc
-          fi
-          if [ -n "${{ vars.PROD_GITHUB_CLIENT_ID }}" ]; then
-            sed -i 's|"replace-with-your-github-client-id"|"${{ vars.PROD_GITHUB_CLIENT_ID }}"|g' wrangler.jsonc
-          fi
-          if [ -n "${{ vars.PROD_SCHWAB_REDIRECT_URI }}" ]; then
-            sed -i 's|"https://<your-worker-name>.<your-subdomain>.workers.dev/auth/schwab/callback"|"${{ vars.PROD_SCHWAB_REDIRECT_URI }}"|g' wrangler.jsonc
-          fi
-          if [ -n "${{ vars.PROD_ENABLE_TRADING }}" ]; then
-            sed -i 's|"ENABLE_TRADING": "false"|"ENABLE_TRADING": "${{ vars.PROD_ENABLE_TRADING }}"|g' wrangler.jsonc
-          fi
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        env:
+          PROD_OAUTH_KV_ID: ${{ vars.PROD_OAUTH_KV_ID }}
+          PROD_ALLOWED_GITHUB_USER_ID: ${{ vars.PROD_ALLOWED_GITHUB_USER_ID }}
+          PROD_GITHUB_CLIENT_ID: ${{ vars.PROD_GITHUB_CLIENT_ID }}
+          PROD_SCHWAB_REDIRECT_URI: ${{ vars.PROD_SCHWAB_REDIRECT_URI }}
+          PROD_ENABLE_TRADING: ${{ vars.PROD_ENABLE_TRADING }}
+        run: npm run configure:deploy
 
       - name: Deploy to Cloudflare Workers
         if: env.CLOUDFLARE_API_TOKEN != ''
