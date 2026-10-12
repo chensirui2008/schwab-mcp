@@ -11,3 +11,6 @@ coverage/
 *.log
 .DS_Store
 .amp/portals/*
+*.swp
+*.swo
+*~

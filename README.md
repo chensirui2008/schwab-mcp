@@ -4,6 +4,12 @@
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-black)](https://modelcontextprotocol.io/)
 [![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+> [!CAUTION]
+> **免责声明 (Disclaimer)**  
+> 本项目仅供技术学习、个人研究及自动化实验使用，**不构成任何投资建议、财务咨询或交易撮合指令**。  
+> 证券与期权交易具有重大本金亏损风险。使用本项目直接或间接连接真实券商交易接口时，用户须自行承担因 API 异常、网络延迟、大语言模型幻觉输出、不可抗力或软件缺陷导致的一切投资风险与资金损失。本项目作者及贡献者概不对任何交易后果与损失承担法律责任。
 
 这是一个运行在 **Cloudflare Workers** 上的**个人专用（单用户）高安全性远程 Model Context Protocol (MCP) 服务**。它将 Charles Schwab 生产环境的官方 REST 行情、账户资产查询，以及经过严格安全防护的真实建单、改单与撤单能力封装为标准的 **Streamable HTTP MCP** 接口（暴露在 `/mcp` 端点）。
 
@@ -343,7 +349,7 @@ npm run deploy
 ```
 
 部署完成后，Worker 会生成分配的子域名，例如：
-`https://schwab-mcp.siruichen461.workers.dev`
+`https://<your-worker-name>.<your-subdomain>.workers.dev`
 
 **0.2.0 升级与重新授权**：此版本启用 `AUTHORIZATION_VERSION = "client-permissions-v1"`。部署后，所有此前的 MCP access token、refresh token 和未兑换的 authorization code 都失效：访问 `/mcp` 返回 HTTP 401 `invalid_token`，旧 code 或 refresh token 换票返回 HTTP 400 `invalid_grant`。每个客户端必须重新打开授权页，选择权限并完成 GitHub 身份校验；旧 grant 不会在刷新时自动升级。已注册的客户端可复用原 client ID，无需删除 KV。Schwab 账户绑定、已有延迟交易任务及交易确认规则保持不变，无需重新绑定 Schwab。
 
@@ -351,11 +357,20 @@ npm run deploy
 
 ### 步骤 3：配置 GitHub Actions 自动化部署流水线
 
-仓库已配置自动化工作流 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)，当代码合并或推送到 `main` 分支时自动触发全量类型、代码校验并部署。
+仓库已配置自动化工作流 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)，当代码合并或推送到 `main` 分支时自动触发全量类型、代码校验并部署。流水线支持通过 GitHub Actions 环境变量动态注入配置，从而实现**开源代码与个人生产配置完全解耦**。
 
 请在 GitHub 仓库 **Settings** → **Secrets and variables** → **Actions** 中添加：
+
+**1. Repository Secrets（加密凭据）**：
 - `CLOUDFLARE_ACCOUNT_ID`: 你的 Cloudflare 账户 ID；
 - `CLOUDFLARE_API_TOKEN`: 具备该 Worker 编辑与部署最小权限的 Cloudflare API Token。
+
+**2. Repository Variables（部署注入参数，用于将个人配置与代码库剥离）**：
+- `PROD_OAUTH_KV_ID`: 步骤 1 创建的 `OAUTH_KV` 空间 ID；
+- `PROD_ALLOWED_GITHUB_USER_ID`: 你的不可变 GitHub 数字 ID；
+- `PROD_GITHUB_CLIENT_ID`: 你的 GitHub OAuth App Client ID；
+- `PROD_SCHWAB_REDIRECT_URI`: 你的生产回调地址（格式为 `https://<your-worker-name>.<your-subdomain>.workers.dev/auth/schwab/callback`）；
+- `PROD_ENABLE_TRADING`: （可选）是否在生产开启交易，若开启填 `"true"`（默认关闭 `"false"`）。
 
 > [!CAUTION]
 > 严禁把 `GITHUB_CLIENT_SECRET`、`SCHWAB_CLIENT_ID` 或 `SCHWAB_CLIENT_SECRET` 上传到 GitHub Actions Secrets！这三项凭据仅应保存在 Cloudflare Worker Secrets 中。

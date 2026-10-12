@@ -1,8 +1,21 @@
 {
   "name": "schwab-mcp",
   "version": "0.2.0",
+  "description": "Secure Charles Schwab Model Context Protocol (MCP) server on Cloudflare Workers with zero-trust OAuth 2.1 and safety-guarded trading workflows.",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "schwab",
+    "charles-schwab",
+    "cloudflare-workers",
+    "durable-objects",
+    "trading",
+    "finance",
+    "ai-agents"
+  ],
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
