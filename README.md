@@ -370,7 +370,7 @@ npm run deploy
 - `PROD_ALLOWED_GITHUB_USER_ID`: 你的不可变 GitHub 数字 ID；
 - `PROD_GITHUB_CLIENT_ID`: 你的 GitHub OAuth App Client ID；
 - `PROD_SCHWAB_REDIRECT_URI`: 你的生产回调地址（格式为 `https://<your-worker-name>.<your-subdomain>.workers.dev/auth/schwab/callback`）；
-- `PROD_ENABLE_TRADING`: （可选）是否在生产开启交易，若开启填 `"true"`（默认关闭 `"false"`）。
+- `PROD_ENABLE_TRADING`: （可选）是否在生产开启交易，若开启填 `true`，关闭填 `false`（不加引号；默认 `false`）。
 
 部署前运行 `npm run configure:deploy`，从上述环境变量写入本次构建的 `wrangler.jsonc`；缺失必需配置或无效的 KV ID、数字用户 ID、回调地址、交易开关会立即失败。该命令不读取或写入 Worker Secrets，请勿提交注入后的配置文件。
 
