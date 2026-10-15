@@ -16,6 +16,16 @@ English | [简体中文](README.zh-CN.md)
 A production-grade, single-user remote **Model Context Protocol (MCP)** server **self-hosted on your personal Cloudflare Workers (100% Free-Tier friendly)**. It exposes Charles Schwab market data and account services to LLM clients (Cursor, Claude Desktop, VS Code) via **Streamable HTTP** (`/mcp`) with strict zero-trust security and anti-hallucination guardrails.
 
 ---
+## ⚡ One-Line Quickstart with AI Agents
+
+Got an AI coding assistant (**Claude Code**, **Cursor Composer**, **Windsurf**, or **Codex**)? Clone this repository and give your agent this single prompt:
+
+> 💬 **"Read `setup.md` and guide me step-by-step through configuring and deploying this Schwab MCP server to my Cloudflare account."**
+
+Your agent will automatically inspect prerequisites, provision Cloudflare KV & Secrets, validate code, and deploy to the edge!
+
+---
+
 
 ## Key Highlights
 

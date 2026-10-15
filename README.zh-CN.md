@@ -18,10 +18,19 @@
 
 本服务以**零信任安全、严格的数据隔离与防幻觉交易保护**为核心设计原则：客户端访问通过 Worker 自建的 OAuth 2.1 服务鉴权，仅限绑定的不可变 GitHub 用户 ID 访问；Schwab 敏感凭据、交易状态、条件任务完全隔离在持久化 SQLite-backed Durable Object (`SchwabVault`) 中。
 
+## ⚡ 一句话快速上手（AI Agent 自动化部署）
+
+使用 **Cursor**、**Claude Code**、**Windsurf** 或 **Codex**？克隆本项目后，直接对你的 AI 编程助手发送这句指令：
+
+> 💬 **“请阅读 `setup.md`，一步步指导我配置并部署这个 Schwab MCP 服务到我的 Cloudflare 账户。”**
+
+你的 AI Agent 将自动检查前置工具链、开通 Cloudflare KV 资源、安全注入 Secrets、运行校验并一键部署到边缘网络！
+
 ---
 
 ## 目录
 
+- [一句话快速上手（AI Agent 自动化部署）](#-一句话快速上手ai-agent-自动化部署)
 - [核心架构与设计原则](#核心架构与设计原则)
 - [系统架构图](#系统架构图)
 - [架构对比 (为什么选择 Cloudflare Workers？)](#架构对比-为什么选择-cloudflare-workers)
