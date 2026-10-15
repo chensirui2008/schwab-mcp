@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.chensirui2008/schwab-mcp",
+  "title": "Schwab MCP on Cloudflare Workers",
+  "description": "Production-grade Charles Schwab MCP server self-hosted on Cloudflare Workers with zero-trust OAuth 2.1, real-time quotes, options Greeks, and anti-hallucination trading guardrails.",
+  "version": "0.2.0",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/chensirui2008/schwab-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chensirui2008/schwab-mcp.git"
+  },
+  "keywords": [
+    "schwab",
+    "charles-schwab",
+    "mcp",
+    "model-context-protocol",
+    "cloudflare-workers",
+    "durable-objects",
+    "trading",
+    "finance",
+    "self-hosted",
+    "options-trading"
+  ],
+  "remotes": [
+    {
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://<your-worker-domain>/mcp"
+      }
+    }
+  ]
+}
