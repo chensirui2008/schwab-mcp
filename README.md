@@ -41,6 +41,21 @@ Your agent will automatically inspect prerequisites, provision Cloudflare KV & S
   - Zero blind write retries on network failures (`EXECUTION_UNCERTAIN`).
 
 ---
+## Why Cloudflare Workers? (Comparison)
+
+| Feature | Typical Local MCP (Python/stdio) | **schwab-mcp (This Project)** |
+| :--- | :--- | :--- |
+| **Hosting & Cost** | Local PC must stay awake, or paid VPS ($5–$20/mo) | **Self-hosted on personal Cloudflare account ($0/mo, 100% Free Tier friendly)** |
+| **Data Sovereignty** | Plaintext files on local disk | **Private & self-hosted: you own your credentials in DO SQLite, zero 3rd-party SaaS** |
+| **Runtime & Deployment** | Local machine process (dies on sleep/shutdown) | **Cloudflare Workers Edge (24/7 Global Serverless, zero maintenance)** |
+| **Multi-Client Access** | Single desktop only | **Remote Streamable HTTP (`/mcp`) across Cursor, Claude, VS Code & mobile** |
+| **Credential Storage** | Plaintext files on local disk | **Isolated SQLite inside Durable Object (`SchwabVault`), zero KV/log leaks** |
+| **Client Permissions** | All tools exposed unconditionally | **Dynamic OAuth Scope (`read_only` vs `full_access`) per client** |
+| **Trading Safety** | None or weak prompt-based hints | **Deployment killswitch (`ENABLE_TRADING`), two-phase phrase repetition, session capability** |
+| **Off-hours / Conditional Orders** | Impossible if computer sleeps | **Durable Object Alarms trigger deterministic conditional orders in the cloud** |
+| **Network Failure Safety** | Risk of double-execution on blind retry | **`EXECUTION_UNCERTAIN` state blocks blind re-submissions** |
+
+---
 
 ## Architecture
 
@@ -80,22 +95,6 @@ flowchart TD
   Router -->|Exchange Schwab Code| SchwabAPI
   Router -->|Persist Tokens| DO
 ```
-
-## Why Cloudflare Workers? (Comparison)
-
-| Feature | Typical Local MCP (Python/stdio) | **schwab-mcp (This Project)** |
-| :--- | :--- | :--- |
-| **Hosting & Cost** | Local PC must stay awake, or paid VPS ($5–$20/mo) | **Self-hosted on personal Cloudflare account ($0/mo, 100% Free Tier friendly)** |
-| **Data Sovereignty** | Plaintext files on local disk | **Private & self-hosted: you own your credentials in DO SQLite, zero 3rd-party SaaS** |
-| **Runtime & Deployment** | Local machine process (dies on sleep/shutdown) | **Cloudflare Workers Edge (24/7 Global Serverless, zero maintenance)** |
-| **Multi-Client Access** | Single desktop only | **Remote Streamable HTTP (`/mcp`) across Cursor, Claude, VS Code & mobile** |
-| **Credential Storage** | Plaintext files on local disk | **Isolated SQLite inside Durable Object (`SchwabVault`), zero KV/log leaks** |
-| **Client Permissions** | All tools exposed unconditionally | **Dynamic OAuth Scope (`read_only` vs `full_access`) per client** |
-| **Trading Safety** | None or weak prompt-based hints | **Deployment killswitch (`ENABLE_TRADING`), two-phase phrase repetition, session capability** |
-| **Off-hours / Conditional Orders** | Impossible if computer sleeps | **Durable Object Alarms trigger deterministic conditional orders in the cloud** |
-| **Network Failure Safety** | Risk of double-execution on blind retry | **`EXECUTION_UNCERTAIN` state blocks blind re-submissions** |
-
----
 
 ## Example Agent Workflows
 
