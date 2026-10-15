@@ -4,6 +4,7 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![Self-Hosted](https://img.shields.io/badge/部署方式-Cloudflare%20个人自托管%20(免费额度友好)-success?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-black)](https://modelcontextprotocol.io/)
 [![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -13,7 +14,7 @@
 > 本项目仅供技术学习、个人研究及自动化实验使用，**不构成任何投资建议、财务咨询或交易撮合指令**。  
 > 证券与期权交易具有重大本金亏损风险。使用本项目直接或间接连接真实券商交易接口时，用户须自行承担因 API 异常、网络延迟、大语言模型幻觉输出、不可抗力或软件缺陷导致的一切投资风险与资金损失。本项目作者及贡献者概不对任何交易后果与损失承担法律责任。
 
-这是一个运行在 **Cloudflare Workers** 上的**个人专用（单用户）高安全性远程 Model Context Protocol (MCP) 服务**。它将 Charles Schwab 生产环境的官方 REST 行情、账户资产查询，以及经过严格安全防护的真实建单、改单与撤单能力封装为标准的 **Streamable HTTP MCP** 接口（暴露在 `/mcp` 端点）。
+这是一个运行在 **Cloudflare Workers** 上的**个人自托管（Self-Hosted）专用高安全性远程 Model Context Protocol (MCP) 服务**。完全部署在您个人的 Cloudflare 账户内（**兼容 100% 免费额度 Free Tier**，无需任何 VPS、服务器租用或常开家用主机）。它将 Charles Schwab 生产环境的官方 REST 行情、账户资产查询，以及经过严格安全防护的真实建单、改单与撤单能力封装为标准的 **Streamable HTTP MCP** 接口（暴露在 `/mcp` 端点）。
 
 本服务以**零信任安全、严格的数据隔离与防幻觉交易保护**为核心设计原则：客户端访问通过 Worker 自建的 OAuth 2.1 服务鉴权，仅限绑定的不可变 GitHub 用户 ID 访问；Schwab 敏感凭据、交易状态、条件任务完全隔离在持久化 SQLite-backed Durable Object (`SchwabVault`) 中。
 
@@ -114,7 +115,9 @@ flowchart TD
 
 | 核心特性 | 常见本地 MCP (Python / stdio) | **本项目 (schwab-mcp on Workers)** |
 | :--- | :--- | :--- |
-| **运行与部署** | 本地单机常驻进程（休眠/关机即断开） | **Cloudflare Workers 边缘网络（24/7 全球无服务器托管）** |
+| **自托管成本与运维** | 依赖本地电脑开机常驻，或购买云服务器/VPS（每月 $5~$20） | **个人 Cloudflare 账户 100% 免费自托管（$0/月，零硬件与运维开销）** |
+| **数据与凭据主权** | 本地明文文件，易误删、遗失或被恶意脚本窃取 | **100% 私有自托管：凭据锁在个人 DO SQLite 内，无任何第三方商业中转** |
+| **运行与部署** | 本地单机常驻进程（休眠/关机即断开） | **Cloudflare Workers 边缘网络（24/7 全球无服务器托管，秒级冷启动）** |
 | **多端支持** | 仅限当前单台电脑 | **标准 Streamable HTTP (`/mcp`)，Cursor、Claude Desktop、VS Code、多设备共享** |
 | **凭据存储** | 本地明文 JSON 或环境变量 | **Durable Object SQLite 物理隔离，凭据永不泄漏至 KV 或日志** |
 | **权限控制** | 单一权限全量暴露 | **OAuth 2.1 粒度隔离：每个客户端独立选 `read_only`（只读）或 `full_access`（完整）** |

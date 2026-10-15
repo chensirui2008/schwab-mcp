@@ -4,6 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![Self-Hosted](https://img.shields.io/badge/Self--Hosted-Free%20Tier%20Friendly-success?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-black)](https://modelcontextprotocol.io/)
 [![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -12,12 +13,13 @@ English | [简体中文](README.zh-CN.md)
 > **Disclaimer**  
 > This project is for educational, research, and experimental automation purposes only. **It does NOT constitute financial advice or investment recommendations.** Trading securities and options carries substantial risk of loss. Authors and contributors assume no liability for any trading actions, losses, API errors, network latency, or LLM hallucinations.
 
-A production-grade, single-user remote **Model Context Protocol (MCP)** server running on **Cloudflare Workers**. It exposes Charles Schwab market data and account services to LLM clients (Cursor, Claude Desktop, VS Code) via **Streamable HTTP** (`/mcp`) with strict zero-trust security and anti-hallucination guardrails.
+A production-grade, single-user remote **Model Context Protocol (MCP)** server **self-hosted on your personal Cloudflare Workers (100% Free-Tier friendly)**. It exposes Charles Schwab market data and account services to LLM clients (Cursor, Claude Desktop, VS Code) via **Streamable HTTP** (`/mcp`) with strict zero-trust security and anti-hallucination guardrails.
 
 ---
 
 ## Key Highlights
 
+- **100% Self-Hosted & Zero Maintenance**: Deployed directly into your own Cloudflare account. Zero VPS, paid servers, or homelab hardware required—runs comfortably within Cloudflare's generous free tier with absolute data and credential sovereignty (no third-party proxy or SaaS middleman).
 - **Zero-Trust Access**: OAuth 2.1 dynamic client registration gated by an immutable GitHub Numeric User ID whitelist.
 - **Granular Client Scopes**: Each MCP client independently chooses `read_only` (default, trading tools hidden) or `full_access`.
 - **Physical Credential Isolation**: Schwab tokens, state machines, and audit logs reside strictly within an SQLite-backed Durable Object (`SchwabVault`). Secrets never leak into KV or logs.
@@ -73,7 +75,9 @@ flowchart TD
 
 | Feature | Typical Local MCP (Python/stdio) | **schwab-mcp (This Project)** |
 | :--- | :--- | :--- |
-| **Runtime & Deployment** | Local machine process (dies on sleep/shutdown) | **Cloudflare Workers Edge (24/7 Global Serverless)** |
+| **Hosting & Cost** | Local PC must stay awake, or paid VPS ($5–$20/mo) | **Self-hosted on personal Cloudflare account ($0/mo, 100% Free Tier friendly)** |
+| **Data Sovereignty** | Plaintext files on local disk | **Private & self-hosted: you own your credentials in DO SQLite, zero 3rd-party SaaS** |
+| **Runtime & Deployment** | Local machine process (dies on sleep/shutdown) | **Cloudflare Workers Edge (24/7 Global Serverless, zero maintenance)** |
 | **Multi-Client Access** | Single desktop only | **Remote Streamable HTTP (`/mcp`) across Cursor, Claude, VS Code & mobile** |
 | **Credential Storage** | Plaintext files on local disk | **Isolated SQLite inside Durable Object (`SchwabVault`), zero KV/log leaks** |
 | **Client Permissions** | All tools exposed unconditionally | **Dynamic OAuth Scope (`read_only` vs `full_access`) per client** |
