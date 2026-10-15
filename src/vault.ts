@@ -356,6 +356,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
         orderId: proposal.order_id, orderPayload: JSON.parse(proposal.order_json) as unknown,
         condition: proposal.condition_json ? JSON.parse(proposal.condition_json) as unknown : null,
         validUntil: proposal.valid_until === null ? null : new Date(proposal.valid_until).toISOString(),
+        pollIntervalSeconds: proposal.poll_interval_seconds, replacesTaskId: proposal.replaces_task_id,
       },
       ...(task ? { taskId: task.id, taskVersion: task.version } : {}),
       outcome: task?.outcome_json ? JSON.parse(task.outcome_json) as unknown : activation,

@@ -3,6 +3,7 @@ import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppEnv } from "../src/env";
 import { SecurityStore } from "../src/security-store";
+import { renderSecurityPage } from "../src/security-ui";
 import type { BrowserSession, ClientIdentity, PendingAuthorization } from "../src/security-store";
 import { authenticator } from "./webauthn-fixture";
 
@@ -47,6 +48,33 @@ async function setup() {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("Passkey trading", () => {
+  it("shows frozen replacement target and polling interval in proposal status and browser approval", async () => {
+    const t = await setup();
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const delayedInput = {
+      executionMode: "DELAYED",
+      condition: { type: "TIME", operator: "AFTER", at: new Date(Date.now() + 60_000).toISOString() },
+      validUntil: new Date(Date.now() + 120_000).toISOString(),
+      pollIntervalSeconds: 15,
+    };
+    const original = await t.prepare(delayedInput);
+    const options = await t.approveOptions(original.proposalId);
+    const activated = await t.browser("/verify", { challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) });
+    expect(activated.status).toBe(200);
+    const { result: { taskId } } = await activated.json<{ result: { taskId: string } }>();
+    const replacement = await t.prepare({ ...delayedInput, replacesTaskId: taskId });
+    const status = await t.post("/trade/proposal", { identity: t.identity, input: { proposalId: replacement.proposalId } });
+    expect(await status.json()).toMatchObject({ result: { preview: { ...delayedInput, replacesTaskId: taskId } } });
+    const response = await t.browser("/proposal", { proposalId: replacement.proposalId });
+    expect(response.status).toBe(200);
+    const proposal = await response.json<Parameters<typeof renderSecurityPage>[2]>();
+    expect(proposal).toMatchObject({ preview: { ...delayedInput, replacesTaskId: taskId } });
+    const page = await renderSecurityPage(t.created.session, [], proposal);
+    expect(page.toString()).toContain(`replacesTaskId&quot;: &quot;${taskId}`);
+    expect(page.toString()).toContain("pollIntervalSeconds&quot;: 15");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("isolates ordinary confirmation, enhanced approval and client-owned status", async () => {
     const t = await setup();
     const fetchMock = vi.fn(() => new Response(null, { status: 201, headers: { Location: "/accounts/hash/orders/123" } }));
