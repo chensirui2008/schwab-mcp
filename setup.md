@@ -163,6 +163,10 @@ Instruct the user to link their Charles Schwab account:
 ## Phase 5: Client Connection & Smoke Testing
 
 ### Step 5.1: Configure MCP Client
+Use a client with [RFC 7636 S256 PKCE](https://www.rfc-editor.org/rfc/rfc7636) support; upgrade clients that lack it. Server metadata advertises only `S256`. Every new authorization request must include exactly one `code_challenge` (43 unpadded base64url characters) and one `code_challenge_method=S256`. The client generates and retains a random verifier, sends its SHA-256 base64url challenge at authorization, and sends `code_verifier` only at code exchange. Missing, duplicate, or invalid authorization PKCE parameters return HTTP 400 `invalid_request` without starting consent.
+
+This update does not change `AUTHORIZATION_VERSION`: existing valid access/refresh tokens keep their current permissions. Previously issued, unexchanged codes must restart authorization; pending consent/callback flows lacking valid S256 parameters cannot continue. Local protocol tests simulate GitHub verification and cover registration, authorization, exchange, refresh, and MCP calls; actual client compatibility still requires reconnection testing after deployment.
+
 The remote MCP endpoint is:
 ```text
 https://<deployed-domain>/mcp

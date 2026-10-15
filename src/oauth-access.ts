@@ -1,4 +1,4 @@
-import { OAuthError } from "@cloudflare/workers-oauth-provider";
+import { GrantType, OAuthError } from "@cloudflare/workers-oauth-provider";
 
 export const READ_SCOPE = "schwab.read";
 
@@ -12,6 +12,8 @@ export interface AuthorizationProps {
   username: string;
   permissionLevel: PermissionLevel;
   authorizationVersion: typeof AUTHORIZATION_VERSION;
+  // Optional for existing access/refresh tokens; required for new code exchanges.
+  pkceMethod?: "S256";
 }
 
 export function isPermissionLevel(value: unknown): value is PermissionLevel {
@@ -26,8 +28,11 @@ export function isCurrentAuthorization(value: unknown): value is AuthorizationPr
     typeof Reflect.get(value, "username") === "string";
 }
 
-export function validateTokenExchange({ props }: { props: unknown }): void {
+export function validateTokenExchange({ props, grantType }: { props: unknown; grantType: GrantType }): void {
   if (!isCurrentAuthorization(props)) {
     throw new OAuthError("invalid_grant", { description: "MCP authorization expired; reconnect and select a permission level" });
+  }
+  if (grantType === GrantType.AUTHORIZATION_CODE && props.pkceMethod !== "S256") {
+    throw new OAuthError("invalid_grant", { description: "S256 PKCE required; restart authorization" });
   }
 }

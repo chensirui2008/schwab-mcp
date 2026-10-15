@@ -49,5 +49,6 @@ export default new OAuthProvider({
   apiHandler,
   defaultHandler: AuthHandler,
   scopesSupported: [READ_SCOPE],
+  allowPlainPKCE: false,
   tokenExchangeCallback: validateTokenExchange,
 });

@@ -13,6 +13,15 @@ const FLOW_COOKIE_OPTIONS = { secure: true, httpOnly: true, sameSite: "Lax" as c
 
 class InvalidOAuthStateError extends Error {}
 
+function hasS256Pkce(request: { codeChallenge?: unknown; codeChallengeMethod?: unknown } | undefined): boolean {
+  return request?.codeChallengeMethod === "S256" &&
+    typeof request.codeChallenge === "string" && request.codeChallenge.length === 43 && /^[A-Za-z0-9_-]{43}$/.test(request.codeChallenge);
+}
+
+function invalidPkceResponse(): Response {
+  return Response.json({ error: "invalid_request", error_description: "A single S256 code_challenge and code_challenge_method are required; restart authorization" }, { status: 400 });
+}
+
 interface GitHubUser {
   id: number;
   login: string;
@@ -145,6 +154,11 @@ app.get("/", (c) =>
 );
 
 app.get("/authorize", async (c) => {
+  const params = new URL(c.req.url).searchParams;
+  if (params.getAll("code_challenge").length !== 1 || params.getAll("code_challenge_method").length !== 1 ||
+      !hasS256Pkce({ codeChallenge: params.get("code_challenge") ?? undefined, codeChallengeMethod: params.get("code_challenge_method") ?? undefined })) {
+    return invalidPkceResponse();
+  }
   const authRequest = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
   const client = await c.env.OAUTH_PROVIDER.lookupClient(authRequest.clientId);
   if (!client) return c.text("Invalid OAuth client", 400);
@@ -173,6 +187,7 @@ app.post("/authorize/approve", async (c) => {
   if (payload.action !== "mcp_authorize" || payload.authorizationVersion !== AUTHORIZATION_VERSION) {
     return c.text("Authorization expired; restart authorization", 400);
   }
+  if (!hasS256Pkce(payload.authRequest)) return invalidPkceResponse();
   const githubState = await saveState(c.env, "github", { ...payload, permissionLevel });
   setCookie(c, FLOW_COOKIE, githubState, FLOW_COOKIE_OPTIONS);
   return c.redirect(githubAuthorizationUrl(c.env, payload.origin, githubState));
@@ -204,6 +219,7 @@ app.get("/auth/github/callback", async (c) => {
     if (payload.authorizationVersion !== AUTHORIZATION_VERSION || !isPermissionLevel(payload.permissionLevel)) {
       return c.text("Authorization expired; restart authorization", 400);
     }
+    if (!hasS256Pkce(payload.authRequest)) return invalidPkceResponse();
     try {
       await revokeClientGrants(c.env.OAUTH_PROVIDER, String(user.id), payload.authRequest.clientId);
     } catch {
@@ -224,6 +240,7 @@ app.get("/auth/github/callback", async (c) => {
       props: {
         userId: String(user.id), username: user.login,
         permissionLevel: payload.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION,
+        pkceMethod: "S256",
       } satisfies AuthorizationProps,
     });
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });

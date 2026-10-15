@@ -5,12 +5,14 @@ import type { AuthRequest, OAuthProviderOptions } from "@cloudflare/workers-oaut
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthHandler } from "../src/auth";
 import type { AppEnv } from "../src/env";
+import { vaultStub } from "../src/env";
 import worker from "../src/index";
 import { AUTHORIZATION_VERSION, READ_SCOPE } from "../src/oauth-access";
 import type { AuthorizationProps, PermissionLevel } from "../src/oauth-access";
 
 const origin = "https://example.com";
 const redirectUri = "https://client.example/callback";
+const verifiers = new WeakMap<AuthRequest, string>();
 const legacyOptions: OAuthProviderOptions<AppEnv> = {
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/oauth/token",
@@ -35,11 +37,26 @@ async function dispatch(request: Request, appEnv: AppEnv, provider = worker) {
   return response;
 }
 
-async function authRequest(helpers: AppEnv["OAUTH_PROVIDER"]): Promise<AuthRequest> {
-  const client = await helpers.createClient({
+async function authRequest(helpers: AppEnv["OAUTH_PROVIDER"], registeredClientId?: string): Promise<AuthRequest> {
+  const clientId = registeredClientId ?? (await helpers.createClient({
     redirectUris: [redirectUri], clientName: "Test client", tokenEndpointAuthMethod: "none",
+  })).clientId;
+  const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const verifier = encode(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = encode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const request = {
+    responseType: "code", clientId, redirectUri, scope: [READ_SCOPE], state: "client-state",
+    codeChallenge: challenge, codeChallengeMethod: "S256",
+  };
+  verifiers.set(request, verifier);
+  return request;
+}
+
+function authorizationParams(request: AuthRequest): URLSearchParams {
+  return new URLSearchParams({
+    client_id: request.clientId, redirect_uri: redirectUri, response_type: "code", scope: READ_SCOPE,
+    state: request.state, code_challenge: request.codeChallenge ?? "", code_challenge_method: request.codeChallengeMethod ?? "",
   });
-  return { responseType: "code", clientId: client.clientId, redirectUri, scope: [READ_SCOPE], state: "client-state" };
 }
 
 function tokenRequest(values: Record<string, string>) {
@@ -60,6 +77,7 @@ interface Tokens { access_token: string; refresh_token: string }
 async function exchange(appEnv: AppEnv, request: AuthRequest, code: string, provider = worker) {
   const response = await dispatch(tokenRequest({
     grant_type: "authorization_code", client_id: request.clientId, code, redirect_uri: redirectUri,
+    ...(request.codeChallenge ? { code_verifier: verifiers.get(request) ?? "" } : {}),
   }), appEnv, provider);
   expect(response.status).toBe(200);
   return response.json<Tokens>();
@@ -77,7 +95,7 @@ function mcpRequest(accessToken: string, method: string, params: unknown = {}) {
 }
 
 function currentProps(appEnv: AppEnv, permissionLevel: PermissionLevel) {
-  return { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, authorizationVersion: AUTHORIZATION_VERSION };
+  return { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" };
 }
 
 afterEach(() => {
@@ -86,10 +104,13 @@ afterEach(() => {
 });
 
 describe("OAuth permission enforcement", () => {
-  it("expires old access tokens, refresh tokens, and outstanding authorization codes on deployment", async () => {
+  it.each(["missing", "stale"])("expires access tokens, refresh tokens, and outstanding codes with %s authorization versions", async (version) => {
     const { appEnv, helpers } = setup();
     const request = await authRequest(helpers);
-    const oldProps = { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner" };
+    const oldProps = {
+      userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner",
+      ...(version === "stale" ? { authorizationVersion: "client-permissions-v0", permissionLevel: "read_only", pkceMethod: "S256" } : {}),
+    };
     const code = await grant(appEnv, request, oldProps);
     const tokens = await exchange(appEnv, request, code, new OAuthProvider(legacyOptions));
     const access = await dispatch(mcpRequest(tokens.access_token, "tools/list"), appEnv);
@@ -104,6 +125,7 @@ describe("OAuth permission enforcement", () => {
     const outstanding = await grant(appEnv, request, oldProps);
     const response = await dispatch(tokenRequest({
       grant_type: "authorization_code", client_id: request.clientId, code: outstanding, redirect_uri: redirectUri,
+      code_verifier: verifiers.get(request) ?? "",
     }), appEnv);
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: "invalid_grant" });
@@ -154,10 +176,171 @@ describe("OAuth permission enforcement", () => {
   });
 });
 
+describe("S256 PKCE protocol", () => {
+  it("advertises only S256", async () => {
+    const { appEnv } = setup();
+    const response = await dispatch(new Request(`${origin}/.well-known/oauth-authorization-server`), appEnv);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ code_challenge_methods_supported: ["S256"] });
+  });
+
+  const invalidParameters: [string, string[], string[]][] = [
+    ["missing both", [], []],
+    ["missing challenge", [], ["S256"]],
+    ["missing method", ["a".repeat(43)], []],
+    ["empty challenge", [""], ["S256"]],
+    ["empty method", ["a".repeat(43)], [""]],
+    ["plain", ["a".repeat(43)], ["plain"]],
+    ["unknown method", ["a".repeat(43)], ["S512"]],
+    ["lowercase method", ["a".repeat(43)], ["s256"]],
+    ["method whitespace", ["a".repeat(43)], [" S256"]],
+    ["short challenge", ["a".repeat(42)], ["S256"]],
+    ["long challenge", ["a".repeat(44)], ["S256"]],
+    ["padded challenge", ["a".repeat(42) + "="], ["S256"]],
+    ["base64 plus", ["a".repeat(42) + "+"], ["S256"]],
+    ["base64 slash", ["a".repeat(42) + "/"], ["S256"]],
+    ["challenge whitespace", ["a".repeat(42) + " "], ["S256"]],
+    ["challenge newline", ["a".repeat(42) + "\n"], ["S256"]],
+    ["trailing newline", ["a".repeat(43) + "\n"], ["S256"]],
+    ["duplicate challenge", ["a".repeat(43), "a".repeat(43)], ["S256"]],
+    ["duplicate method", ["a".repeat(43)], ["S256", "S256"]],
+    ["conflicting methods", ["a".repeat(43)], ["S256", "plain"]],
+  ];
+
+  it.each(invalidParameters)("rejects %s before creating an authorization flow", async (_label, challenges, methods) => {
+    const { appEnv, helpers } = setup();
+    const params = authorizationParams(await authRequest(helpers));
+    params.delete("code_challenge");
+    params.delete("code_challenge_method");
+    for (const value of challenges) params.append("code_challenge", value);
+    for (const value of methods) params.append("code_challenge_method", value);
+    const parse = vi.spyOn(helpers, "parseAuthRequest");
+    const vault = vi.spyOn(appEnv.SCHWAB_VAULT, "get");
+    const response = await dispatch(new Request(`${origin}/authorize?${params.toString()}`), appEnv);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_request" });
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("location")).toBeNull();
+    expect(parse).not.toHaveBeenCalled();
+    expect(vault).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing verifier", "wrong verifier", "other client"])("rejects %s and accepts the correct verifier", async (failure) => {
+    const { appEnv, helpers } = setup();
+    const request = await authRequest(helpers);
+    const code = await grant(appEnv, request, currentProps(appEnv, "read_only"));
+    const values: Record<string, string> = {
+      grant_type: "authorization_code", client_id: request.clientId, code, redirect_uri: redirectUri,
+    };
+    if (failure === "wrong verifier") values.code_verifier = "wrong".repeat(12);
+    if (failure === "other client") {
+      values.client_id = (await authRequest(helpers)).clientId;
+      values.code_verifier = verifiers.get(request) ?? "";
+    }
+    const rejected = await dispatch(tokenRequest(values), appEnv);
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: failure === "missing verifier" ? "invalid_request" : "invalid_grant" });
+    await exchange(appEnv, request, code);
+  });
+
+  it.each(["read_only", "full_access"] as const)("preserves existing %s access and refresh tokens without upgrading props", async (permissionLevel) => {
+    for (const usePkce of [false, true]) {
+      const { appEnv, helpers } = setup();
+      const request = await authRequest(helpers);
+      if (!usePkce) {
+        delete request.codeChallenge;
+        delete request.codeChallengeMethod;
+      }
+      const props = { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, authorizationVersion: AUTHORIZATION_VERSION };
+      const code = await grant(appEnv, request, props);
+      const tokens = await exchange(appEnv, request, code, new OAuthProvider(legacyOptions));
+      const access = await dispatch(mcpRequest(tokens.access_token, "tools/list"), appEnv);
+      expect(access.status).toBe(200);
+      expect((await access.text()).includes('"name":"prepare_trade"')).toBe(permissionLevel === "full_access");
+      const refreshed = await dispatch(tokenRequest({
+        grant_type: "refresh_token", client_id: request.clientId, refresh_token: tokens.refresh_token,
+      }), appEnv);
+      expect(refreshed.status).toBe(200);
+      const renewed = await refreshed.json<Tokens>();
+      const decoded = await helpers.unwrapToken<AuthorizationProps>(renewed.access_token);
+      expect(decoded?.grant.props).toEqual(props);
+      const list = await dispatch(mcpRequest(renewed.access_token, "tools/list"), appEnv);
+      expect(list.status).toBe(200);
+      expect((await list.text()).includes('"name":"prepare_trade"')).toBe(permissionLevel === "full_access");
+    }
+  });
+
+  it.each([false, true])("rejects pre-upgrade outstanding codes (PKCE=%s), even with a forged token-request marker", async (usePkce) => {
+    const { appEnv, helpers } = setup();
+    const request = await authRequest(helpers);
+    if (!usePkce) {
+      delete request.codeChallenge;
+      delete request.codeChallengeMethod;
+    }
+    const props = { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel: "full_access", authorizationVersion: AUTHORIZATION_VERSION };
+    const code = await grant(appEnv, request, props);
+    const response = await dispatch(tokenRequest({
+      grant_type: "authorization_code", client_id: request.clientId, code, redirect_uri: redirectUri, pkceMethod: "S256",
+      ...(usePkce ? { code_verifier: verifiers.get(request) ?? "" } : {}),
+    }), appEnv);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_grant", error_description: "S256 PKCE required; restart authorization" });
+  });
+
+  it.each([
+    ["consent", "missing"], ["github", "missing"],
+    ["consent", "plain"], ["github", "plain"],
+    ["consent", "malformed"], ["github", "malformed"],
+  ])("rejects pre-upgrade %s state with %s PKCE before revoking existing grants", async (kind, pkce) => {
+    const { appEnv, helpers } = setup();
+    const request = await authRequest(helpers);
+    const tokens = await exchange(appEnv, request, await grant(appEnv, request, currentProps(appEnv, "full_access")));
+    if (pkce === "missing") {
+      delete request.codeChallenge;
+      delete request.codeChallengeMethod;
+    } else if (pkce === "plain") {
+      request.codeChallengeMethod = "plain";
+    } else {
+      request.codeChallenge = "invalid-challenge";
+    }
+    const state = crypto.randomUUID();
+    const saved = await vaultStub(appEnv).fetch("https://vault/state", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state, kind, expiresAt: Date.now() + 600_000, payload: {
+        action: "mcp_authorize", origin, authRequest: request, authorizationVersion: AUTHORIZATION_VERSION, permissionLevel: "read_only",
+      } }),
+    });
+    expect(saved.ok).toBe(true);
+    const list = vi.spyOn(helpers, "listUserGrants");
+    const revoke = vi.spyOn(helpers, "revokeGrant");
+    const complete = vi.spyOn(helpers, "completeAuthorization");
+    const github = vi.fn()
+      .mockResolvedValueOnce(Response.json({ access_token: "test-github-token" }))
+      .mockResolvedValueOnce(Response.json({ id: Number(appEnv.ALLOWED_GITHUB_USER_ID), login: "owner", name: null }));
+    vi.stubGlobal("fetch", github);
+    const headers = { Cookie: `__Host-schwab-oauth=${state}` };
+    const response = await dispatch(kind === "consent"
+      ? new Request(`${origin}/authorize/approve`, { method: "POST", headers, body: new URLSearchParams({ state, permissionLevel: "read_only" }) })
+      : new Request(`${origin}/auth/github/callback?state=${state}&code=test-code`, { headers }), appEnv);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_request" });
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(list).not.toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    if (kind === "consent") expect(github).not.toHaveBeenCalled();
+    expect((await dispatch(mcpRequest(tokens.access_token, "tools/list"), appEnv)).status).toBe(200);
+    expect((await dispatch(tokenRequest({
+      grant_type: "refresh_token", client_id: request.clientId, refresh_token: tokens.refresh_token,
+    }), appEnv)).status).toBe(200);
+  });
+});
+
 describe("browser permission consent", () => {
   async function consent(appEnv: AppEnv, request: AuthRequest) {
     const url = new URL(`${origin}/authorize`);
-    url.search = new URLSearchParams({ client_id: request.clientId, redirect_uri: redirectUri, response_type: "code", scope: READ_SCOPE }).toString();
+    url.search = authorizationParams(request).toString();
     const response = await dispatch(new Request(url), appEnv);
     expect(response.status).toBe(200);
     const cookie = response.headers.get("set-cookie")?.split(";")[0] ?? "";
@@ -188,13 +371,30 @@ describe("browser permission consent", () => {
 
   it.each(["read_only", "full_access"] as const)("carries %s through owner verification into the grant", async (permissionLevel) => {
     const { appEnv, helpers } = setup();
-    const request = await authRequest(helpers);
+    const registration = await dispatch(new Request(`${origin}/oauth/register`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [redirectUri], client_name: "Protocol test client", token_endpoint_auth_method: "none" }),
+    }), appEnv);
+    expect(registration.status).toBe(201);
+    const { client_id: clientId } = await registration.json<{ client_id: string }>();
+    const request = await authRequest(helpers, clientId);
     const callback = await authorize(appEnv, request, permissionLevel);
     expect(callback.status).toBe(302);
     const code = new URL(callback.headers.get("location") ?? "").searchParams.get("code") ?? "";
     const tokens = await exchange(appEnv, request, code);
     const decoded = await helpers.unwrapToken<AuthorizationProps>(tokens.access_token);
-    expect(decoded?.grant.props).toMatchObject({ permissionLevel, authorizationVersion: AUTHORIZATION_VERSION });
+    expect(decoded?.grant.props).toMatchObject({ permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" });
+    const refreshed = await dispatch(tokenRequest({
+      grant_type: "refresh_token", client_id: clientId, refresh_token: tokens.refresh_token,
+    }), appEnv);
+    expect(refreshed.status).toBe(200);
+    const renewed = await refreshed.json<Tokens>();
+    const list = await dispatch(mcpRequest(renewed.access_token, "tools/list"), appEnv);
+    expect(list.status).toBe(200);
+    expect((await list.text()).includes('"name":"prepare_trade"')).toBe(permissionLevel === "full_access");
+    const call = await dispatch(mcpRequest(renewed.access_token, "tools/call", { name: "get_trading_diagnostics", arguments: {} }), appEnv);
+    expect(call.status).toBe(200);
+    expect(await call.text()).toContain(permissionLevel);
   });
 
   it("revokes grants on every page, including unexchanged codes, before issuing a replacement", async () => {
@@ -226,6 +426,7 @@ describe("browser permission consent", () => {
     }), appEnv)).status).toBe(400);
     expect((await dispatch(tokenRequest({
       grant_type: "authorization_code", client_id: request.clientId, code: outstanding, redirect_uri: redirectUri,
+      code_verifier: verifiers.get(request) ?? "",
     }), appEnv)).status).toBe(400);
   });
 
