@@ -69,6 +69,44 @@ flowchart TD
   Router -->|Persist Tokens| DO
 ```
 
+## Why Cloudflare Workers? (Comparison)
+
+| Feature | Typical Local MCP (Python/stdio) | **schwab-mcp (This Project)** |
+| :--- | :--- | :--- |
+| **Runtime & Deployment** | Local machine process (dies on sleep/shutdown) | **Cloudflare Workers Edge (24/7 Global Serverless)** |
+| **Multi-Client Access** | Single desktop only | **Remote Streamable HTTP (`/mcp`) across Cursor, Claude, VS Code & mobile** |
+| **Credential Storage** | Plaintext files on local disk | **Isolated SQLite inside Durable Object (`SchwabVault`), zero KV/log leaks** |
+| **Client Permissions** | All tools exposed unconditionally | **Dynamic OAuth Scope (`read_only` vs `full_access`) per client** |
+| **Trading Safety** | None or weak prompt-based hints | **Deployment killswitch (`ENABLE_TRADING`), two-phase phrase repetition, session capability** |
+| **Off-hours / Conditional Orders** | Impossible if computer sleeps | **Durable Object Alarms trigger deterministic conditional orders in the cloud** |
+| **Network Failure Safety** | Risk of double-execution on blind retry | **`EXECUTION_UNCERTAIN` state blocks blind re-submissions** |
+
+---
+
+## Example Agent Workflows
+
+### 1. Portfolio Analysis & Option Chain (Read-Only)
+
+> **User**: *"What's my current position in NVDA, and what does the next monthly 140 CALL option look like?"*  
+> **Agent**: *(Calls `get_account` and `get_option_chain`)*  
+> *"You hold 100 shares of NVDA at an average price of $118.40 (unrealized P&L: +18.2%). The 30-day $140 CALL is currently trading at $4.20 bid / $4.35 ask, with Delta 0.38 and IV of 42.1%."*
+
+### 2. Guarded Order Execution (Two-Phase Confirmation)
+
+> **User**: *"Buy 10 shares of AAPL with a limit order at $220.00."*  
+> **Agent**: *(Calls `prepare_trade` with action `PLACE` to freeze order snapshot)*  
+> *"I have prepared and frozen the order snapshot:*  
+> *- **Action**: BUY 10 AAPL @ Limit $220.00 (Day)*  
+> *- **Account**: `...8a9f`*  
+> *- **Proposal ID**: `prop_01JABC...` (Valid for 5 minutes)*  
+> *⚠️ **To confirm and execute, please reply verbatim with:**  
+> `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`"*  
+>  
+> **User**: `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`  
+> **Agent**: *(Calls `confirm_trade` consuming one-time token with verbatim phrase)*  
+> *"Order successfully placed with Charles Schwab. Order ID: `#10098234`."*
+
+---
 ---
 
 ## MCP Tools Catalog
