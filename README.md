@@ -253,6 +253,8 @@ npm run deploy
 > [!NOTE]
 > MCP authorization uses `AUTHORIZATION_VERSION = "client-permissions-v1"`. Updating this version invalidates active grants, requiring clients to re-authenticate and pick permissions. Schwab account bindings and pending delayed trades remain intact.
 
+The S256 PKCE update keeps this authorization version unchanged: existing valid access and refresh tokens retain their permissions, including grants issued without PKCE. Authorization codes issued before this update must restart authorization; pending consent or GitHub callback flows without valid S256 parameters are also rejected. Reauthorizing the same client still revokes its previous grants before issuing a replacement.
+
 ### Step 3: CI/CD Pipeline (GitHub Actions)
 
 The repository includes [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) for automated builds on `main`:
@@ -276,6 +278,10 @@ https://<your-worker-domain>/auth/schwab/connect
 ## Client Configuration
 
 MCP Endpoint: `https://<your-worker-domain>/mcp`
+
+Every new MCP OAuth authorization requires [RFC 7636 S256 PKCE](https://www.rfc-editor.org/rfc/rfc7636). Server metadata advertises only `S256`; clients that lack S256 support must upgrade. Send exactly one `code_challenge` (43 unpadded base64url characters) and one `code_challenge_method=S256` in the authorization request. Keep the independently generated random verifier on the client and send it as `code_verifier` only when exchanging the authorization code. Missing, duplicate, or invalid challenge/method parameters return HTTP 400 `invalid_request` before starting consent. Missing or incorrect verifiers fail token exchange through the OAuth provider.
+
+Local protocol tests cover dynamic registration, browser consent, simulated GitHub owner verification, code exchange, refresh, and MCP calls for both permission levels. These tests do not establish compatibility with real client applications; reconnect and verify each client after deployment.
 
 ### Claude Desktop
 

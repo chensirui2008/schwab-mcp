@@ -11,6 +11,7 @@
 
 - TypeScript + Cloudflare Workers；MCP 使用 `@modelcontextprotocol/server` v2 的 `createMcpHandler`，通过 `/mcp` 提供无协议会话的 Streamable HTTP。
 - MCP OAuth 使用 `@cloudflare/workers-oauth-provider`，注册和授权数据存入 `OAUTH_KV`；GitHub OAuth 身份仅按 numeric user ID 匹配 `ALLOWED_GITHUB_USER_ID`。
+- 所有新的 MCP OAuth 授权强制使用 RFC 7636 S256 PKCE；`allowPlainPKCE: false`，元数据只公布 `S256`。授权入口必须拒绝缺失、重复或非法的 challenge/method（challenge 为 43 字符无填充 base64url，method 精确为 `S256`），并在 consent 提交和 GitHub 回调撤销旧 grant 前复查服务端保存的请求。新 grant 的加密 props 由服务端写入 `pkceMethod: "S256"`，仅 authorization-code 换票要求该标记；密码学校验仍使用 OAuth provider。本次不修改 `AUTHORIZATION_VERSION`，保留当前版本有效 access/refresh token，升级前未兑换的 code 和不符合 S256 要求的待处理流程必须重新授权。
 - MCP OAuth 使用单一 `schwab.read` 服务访问 scope，并继续通过 GitHub numeric user ID 白名单限制 owner。每个客户端在授权页独立选择 `read_only`（默认）或 `full_access`；选择只能通过绑定浏览器的一次性 consent state 传入 GitHub 身份校验流程，最终持久化在 OAuth grant 的加密 props 中。只读客户端不注册任何交易控制工具，完整访问客户端注册所有工具，实际交易仍由 `ENABLE_TRADING`、明确用户指令以及原有确认/session 能力共同约束。
 - `src/oauth-access.ts` 的 `AUTHORIZATION_VERSION` 标记当前 MCP 授权政策；MCP 请求及 authorization code/refresh token 换票都必须验证版本和权限字段，旧版或缺失字段失败关闭并要求重新授权，不能在刷新时自动升级旧 grant。需要全量重新授权时显式更新此标记；普通版本更新不自动作废有效 grant。MCP 授权更新不清除 Schwab 凭据或已有延迟交易任务。
 - 同一客户端重新授权时，必须显式撤销其全部旧 grant 和 token，撤销全部成功后才能签发新授权；查询或撤销失败返回 HTTP 503 `temporarily_unavailable` 并记录脱敏 `requestId`，不得依赖 OAuth provider 忽略撤销错误的自动清理来保证权限降级成功。

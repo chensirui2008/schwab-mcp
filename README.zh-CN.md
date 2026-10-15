@@ -407,7 +407,9 @@ npm run deploy
 部署完成后，Worker 会生成分配的子域名，例如：
 `https://<your-worker-name>.<your-subdomain>.workers.dev`
 
-**0.2.0 升级与重新授权**：此版本启用 `AUTHORIZATION_VERSION = "client-permissions-v1"`。部署后，所有此前的 MCP access token、refresh token 和未兑换的 authorization code 都失效：访问 `/mcp` 返回 HTTP 401 `invalid_token`，旧 code 或 refresh token 换票返回 HTTP 400 `invalid_grant`。每个客户端必须重新打开授权页，选择权限并完成 GitHub 身份校验；旧 grant 不会在刷新时自动升级。已注册的客户端可复用原 client ID，无需删除 KV。Schwab 账户绑定、已有延迟交易任务及交易确认规则保持不变，无需重新绑定 Schwab。
+**0.2.0 权限政策首次升级与重新授权**：此版本启用 `AUTHORIZATION_VERSION = "client-permissions-v1"`。从此前权限政策升级时，旧政策的 MCP access token、refresh token 和未兑换的 authorization code 都失效：访问 `/mcp` 返回 HTTP 401 `invalid_token`，旧 code 或 refresh token 换票返回 HTTP 400 `invalid_grant`。每个客户端必须重新打开授权页，选择权限并完成 GitHub 身份校验；旧 grant 不会在刷新时自动升级。已注册的客户端可复用原 client ID，无需删除 KV。Schwab 账户绑定、已有延迟交易任务及交易确认规则保持不变，无需重新绑定 Schwab。
+
+**S256 PKCE 更新的兼容策略**：本次不修改 `AUTHORIZATION_VERSION`。当前版本有效的 access token 和 refresh token 继续可用并保留原权限，包括此前未使用 PKCE 的登录；升级前已签发但尚未兑换的 authorization code 返回 HTTP 400 `invalid_grant`，需要重新开始授权。缺少有效 S256 参数的待处理 consent 或 GitHub callback 同样拒绝继续。主动重新授权同一客户端时，仍按原规则先撤销该客户端旧 grant，再签发新授权。
 
 之后需要再次全量过期 MCP 授权时，修改 `src/oauth-access.ts` 中的 `AUTHORIZATION_VERSION` 后部署；普通 `APP_VERSION` 更新不会自动作废当前授权。对同一客户端重新授权以修改权限时，服务先显式撤销该客户端的旧 grant 和 token，全部撤销成功后才签发新授权；其他客户端的授权不受影响。若查询或撤销旧授权失败，返回 HTTP 503 `temporarily_unavailable` 和可关联的 `requestId`，不会签发新授权；权限修改尚未完成，旧授权可能仍有效，需要重新发起授权流程。
 
@@ -450,6 +452,10 @@ https://<your-worker-domain>/auth/schwab/connect
 ---
 
 ## MCP 客户端接入配置
+
+所有新的 MCP OAuth 授权都必须支持 [RFC 7636 S256 PKCE](https://www.rfc-editor.org/rfc/rfc7636)，服务器元数据只公布 `S256`；不支持的客户端必须升级。授权请求必须携带唯一的 `code_challenge`（43 字符、无填充 base64url）和唯一且精确为 `S256` 的 `code_challenge_method`。客户端独立生成随机 verifier，仅在换取授权码对应的 token 时通过 `code_verifier` 提交，不能把 verifier 放入授权 URL。缺失、重复或非法 challenge/method 会在创建 consent 流程前返回 HTTP 400 `invalid_request`；缺失或错误 verifier 由 OAuth provider 拒绝换票。
+
+本地协议测试覆盖动态注册、浏览器授权页、模拟 GitHub owner 校验、授权码换票、刷新及两种权限的 MCP 调用；这些验证不代表真实客户端已经实测兼容。部署后仍需逐一验证实际客户端重新连接。
 
 MCP 统一端点地址为：
 ```text
