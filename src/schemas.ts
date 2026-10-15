@@ -63,6 +63,7 @@ const prepareTrade = z.object({
 });
 
 export const toolSchemas = {
+  getTradeProposal: z.object({ proposalId: z.uuid() }).strict(),
   empty: z.object({}),
   getQuotes: z.object({
     symbols: z.array(symbol).min(1).max(50),

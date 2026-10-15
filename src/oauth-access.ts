@@ -14,6 +14,9 @@ export interface AuthorizationProps {
   authorizationVersion: typeof AUTHORIZATION_VERSION;
   // Optional for existing access/refresh tokens; required for new code exchanges.
   pkceMethod?: "S256";
+  clientId?: string;
+  advancedSecurity?: boolean;
+  securityPolicyVersion?: number;
 }
 
 export function isPermissionLevel(value: unknown): value is PermissionLevel {
@@ -25,7 +28,10 @@ export function isCurrentAuthorization(value: unknown): value is AuthorizationPr
   return Reflect.get(value, "authorizationVersion") === AUTHORIZATION_VERSION &&
     isPermissionLevel(Reflect.get(value, "permissionLevel")) &&
     typeof Reflect.get(value, "userId") === "string" &&
-    typeof Reflect.get(value, "username") === "string";
+    typeof Reflect.get(value, "username") === "string" &&
+    (Reflect.get(value, "advancedSecurity") === undefined || typeof Reflect.get(value, "advancedSecurity") === "boolean") &&
+    (Reflect.get(value, "advancedSecurity") !== true ||
+      (Reflect.get(value, "permissionLevel") === "full_access" && typeof Reflect.get(value, "clientId") === "string" && Number.isInteger(Reflect.get(value, "securityPolicyVersion"))));
 }
 
 export function validateTokenExchange({ props, grantType }: { props: unknown; grantType: GrantType }): void {

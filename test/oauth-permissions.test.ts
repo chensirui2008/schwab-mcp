@@ -505,3 +505,130 @@ describe("browser permission consent", () => {
     }), appEnv)).status).toBe(400);
   });
 });
+
+describe("Advanced Security OAuth and browser boundaries", () => {
+  async function resetSecurity(appEnv: AppEnv) {
+    const { runInDurableObject } = await import("cloudflare:test");
+    await runInDurableObject(vaultStub(appEnv), (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM passkey; DELETE FROM client_security; DELETE FROM oauth_state WHERE kind LIKE 'security_%'; UPDATE owner_security SET version = version + 1;");
+    });
+  }
+  function cookie(response: Response, name: string) {
+    return response.headers.get("set-cookie")?.match(new RegExp(`(?:^|, )(${name}=[^;,]+)`))?.[1] ?? "";
+  }
+  async function begin(appEnv: AppEnv, request: AuthRequest, advanced: boolean, level: PermissionLevel = "full_access") {
+    const page = await dispatch(new Request(`${origin}/authorize?${authorizationParams(request).toString()}`), appEnv);
+    expect(page.headers.get("Cache-Control")).toBe("no-store");
+    const browserCookie = cookie(page, "__Host-schwab-oauth");
+    const state = browserCookie.split("=")[1] ?? "";
+    const selected = await dispatch(new Request(`${origin}/authorize/approve`, { method: "POST", headers: { Cookie: browserCookie }, body: new URLSearchParams({ state, permissionLevel: level, ...(advanced ? { advancedSecurity: "on" } : {}) }) }), appEnv);
+    return { page, selected };
+  }
+  async function callback(appEnv: AppEnv, selected: Response) {
+    const location = new URL(selected.headers.get("location") ?? "");
+    const state = location.searchParams.get("state") ?? "";
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({ access_token: "github-security-test" }))
+      .mockResolvedValueOnce(Response.json({ id: Number(appEnv.ALLOWED_GITHUB_USER_ID), login: "owner", name: null })));
+    return dispatch(new Request(`${origin}/auth/github/callback?state=${state}&code=test-code`, { headers: { Cookie: cookie(selected, "__Host-schwab-oauth") } }), appEnv);
+  }
+  async function browser(appEnv: AppEnv, securityCookie: string) {
+    const page = await dispatch(new Request(`${origin}/security`, { headers: { Cookie: securityCookie } }), appEnv);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const csrf = html.match(/name="csrf" content="([^"]+)"/)?.[1] ?? "";
+    expect(csrf).toBeTruthy();
+    const post = (action: string, body: unknown, overrides: Record<string, string> = {}) => dispatch(new Request(`${origin}/security/api/${action}`, {
+      method: "POST", headers: { Cookie: securityCookie, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf, ...overrides }, body: JSON.stringify(body),
+    }), appEnv);
+    return { post, html, page };
+  }
+  type Challenge = { challengeId: string; options: { challenge: string } };
+
+  it("registers before granting enhanced access, preserves mode on refresh, and requires Passkey to disable", async () => {
+    const { authenticator } = await import("./webauthn-fixture");
+    const { appEnv, helpers } = setup(); await resetSecurity(appEnv);
+    const request = await authRequest(helpers);
+    const { selected } = await begin(appEnv, request, true);
+    const complete = vi.spyOn(helpers, "completeAuthorization");
+    const github = await callback(appEnv, selected);
+    expect(github.headers.get("location")).toBe("/security");
+    expect(complete).not.toHaveBeenCalled();
+    const ui = await browser(appEnv, cookie(github, "__Host-schwab-security"));
+    expect(ui.html).toContain("注册 Passkey 并完成授权");
+    expect(ui.page.headers.get("X-Frame-Options")).toBe("DENY");
+    const key = await authenticator();
+    const options = await (await ui.post("options", { operation: "register" })).json<Challenge>();
+    const verified = await ui.post("verify", { challengeId: options.challengeId, response: await key.register(options.options.challenge) });
+    expect(verified.status).toBe(200);
+    const completed = await verified.json<{ redirectTo: string }>();
+    const code = new URL(completed.redirectTo).searchParams.get("code") ?? "";
+    const tokens = await exchange(appEnv, request, code);
+    const props = (await helpers.unwrapToken<AuthorizationProps>(tokens.access_token))?.grant.props;
+    expect(props).toMatchObject({ advancedSecurity: true, clientId: request.clientId, securityPolicyVersion: 1, authorizationVersion: AUTHORIZATION_VERSION });
+    const list = await (await dispatch(mcpRequest(tokens.access_token, "tools/list"), appEnv)).text();
+    expect(list).toContain('"name":"get_trade_proposal"');
+    for (const name of ["confirm_trade", "enable_session_direct_trading", "place_order_direct"]) {
+      expect(list).not.toContain(`"name":"${name}"`);
+      expect(await (await dispatch(mcpRequest(tokens.access_token, "tools/call", { name, arguments: {} }), appEnv)).text()).toContain("not found");
+    }
+    const refreshed = await dispatch(tokenRequest({ grant_type: "refresh_token", client_id: request.clientId, refresh_token: tokens.refresh_token }), appEnv);
+    expect(refreshed.status).toBe(200);
+    const newTokens = await refreshed.json<Tokens>();
+    expect((await helpers.unwrapToken<AuthorizationProps>(newTokens.access_token))?.grant.props).toMatchObject({ advancedSecurity: true, securityPolicyVersion: 1 });
+    const again = await authRequest(helpers, request.clientId);
+    const { selected: off, page } = await begin(appEnv, again, false);
+    expect(await page.text()).toMatch(/name="advancedSecurity"[^>]+checked/);
+    const disabling = await callback(appEnv, off);
+    expect(disabling.headers.get("location")).toBe("/security");
+    const disabledUi = await browser(appEnv, cookie(disabling, "__Host-schwab-security"));
+    expect(disabledUi.html).toContain("关闭");
+    const authOptions = await (await disabledUi.post("options", { operation: "authorize" })).json<Challenge>();
+    const offVerified = await disabledUi.post("verify", { challengeId: authOptions.challengeId, response: await key.authenticate(authOptions.options.challenge) });
+    expect(offVerified.status).toBe(200);
+    expect((await dispatch(mcpRequest(newTokens.access_token, "tools/list"), appEnv)).status).toBe(401);
+    const offResult = await offVerified.json<{ redirectTo: string }>();
+    const ordinary = await exchange(appEnv, again, new URL(offResult.redirectTo).searchParams.get("code") ?? "");
+    expect((await helpers.unwrapToken<AuthorizationProps>(ordinary.access_token))?.grant.props).toMatchObject({ advancedSecurity: false, securityPolicyVersion: 2 });
+    expect(await (await dispatch(mcpRequest(ordinary.access_token, "tools/list"), appEnv)).text()).toContain('"name":"confirm_trade"');
+  });
+
+  it("rejects read-only selection, forged browser CSRF/origin, MCP bearer approval, and oversized requests", async () => {
+    const { appEnv, helpers } = setup(); await resetSecurity(appEnv);
+    const read = await begin(appEnv, await authRequest(helpers), true, "read_only");
+    expect(read.selected.status).toBe(400);
+    const request = await authRequest(helpers);
+    const { selected } = await begin(appEnv, request, true);
+    const github = await callback(appEnv, selected);
+    const ui = await browser(appEnv, cookie(github, "__Host-schwab-security"));
+    expect((await ui.post("options", { operation: "register" }, { Origin: "https://evil.example" })).status).toBe(403);
+    expect((await ui.post("options", { operation: "register" }, { "X-CSRF-Token": "forged" })).status).toBe(403);
+    expect((await ui.post("options", { operation: "register" }, { Cookie: "" })).status).toBe(403);
+    expect((await ui.post("options", { operation: "register", padding: "x".repeat(65536) })).status).toBe(413);
+    const token = await exchange(appEnv, request, await grant(appEnv, request, currentProps(appEnv, "full_access")));
+    const bearer = await dispatch(new Request(`${origin}/security/api/options`, { method: "POST", headers: { Origin: origin, "Content-Type": "application/json", Authorization: `Bearer ${token.access_token}` }, body: JSON.stringify({ operation: "approve" }) }), appEnv);
+    expect(bearer.status).toBe(403);
+    const recovery = await dispatch(new Request(`${origin}/security/recover`, { headers: { Cookie: cookie(github, "__Host-schwab-security") } }), appEnv);
+    expect(recovery.status).toBe(302);
+    expect(recovery.headers.get("location")).toContain("https://github.com/login/oauth/authorize");
+  });
+
+  it("does not commit enhanced policy if old grant revocation fails", async () => {
+    const { authenticator } = await import("./webauthn-fixture");
+    const { appEnv, helpers } = setup(); await resetSecurity(appEnv);
+    const request = await authRequest(helpers);
+    const old = await exchange(appEnv, request, await grant(appEnv, request, currentProps(appEnv, "full_access")));
+    const { selected } = await begin(appEnv, request, true);
+    const github = await callback(appEnv, selected);
+    const ui = await browser(appEnv, cookie(github, "__Host-schwab-security"));
+    const key = await authenticator();
+    const options = await (await ui.post("options", { operation: "register" })).json<Challenge>();
+    vi.spyOn(helpers, "revokeGrant").mockRejectedValueOnce(new Error("test-revoke-failure"));
+    const result = await ui.post("verify", { challengeId: options.challengeId, response: await key.register(options.options.challenge) });
+    expect(result.status).toBe(503);
+    expect(await result.json()).toMatchObject({ error: "temporarily_unavailable" });
+    const policy = await vaultStub(appEnv).fetch("https://vault/security/policy", { method: "POST", body: JSON.stringify({ clientId: request.clientId }) });
+    expect(await policy.json()).toMatchObject({ advancedSecurity: false, version: 0 });
+    expect((await dispatch(mcpRequest(old.access_token, "tools/list"), appEnv)).status).toBe(200);
+  });
+});

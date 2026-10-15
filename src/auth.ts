@@ -1,12 +1,17 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import type { Context } from "hono";
+import { renderSecurityPage } from "./security-ui";
+import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { renderAuthorizePage, renderSchwabConnectedPage } from "./auth-ui";
+import type { ErrorCode, PublicError } from "./types";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
 import { AUTHORIZATION_VERSION, isPermissionLevel, READ_SCOPE } from "./oauth-access";
 import type { AuthorizationProps, PermissionLevel } from "./oauth-access";
 
+const SECURITY_COOKIE = "__Host-schwab-security";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const FLOW_COOKIE = "__Host-schwab-oauth";
 const FLOW_COOKIE_OPTIONS = { secure: true, httpOnly: true, sameSite: "Lax" as const, path: "/", maxAge: STATE_TTL_MS / 1000 };
@@ -29,7 +34,9 @@ interface GitHubUser {
 }
 
 interface GitHubStatePayload {
-  action: "mcp_authorize" | "schwab_connect";
+  action: "mcp_authorize" | "schwab_connect" | "security_login" | "security_recover";
+  returnTo?: string;
+  advancedSecurity?: boolean;
   origin: string;
   authRequest?: AuthRequest;
   permissionLevel?: PermissionLevel;
@@ -136,7 +143,121 @@ async function beginSchwabAuthorization(env: AppEnv, origin: string): Promise<{ 
   return { url: url.toString(), state };
 }
 
+class SecurityCallError extends Error {
+  constructor(public error: PublicError) { super(error.message); }
+}
+function browserError(code: ErrorCode, message: string, status: number): Response {
+  return Response.json({ error: { code, message, requestId: crypto.randomUUID() } }, { status });
+}
+
+async function securityCall<T>(env: AppEnv, path: string, input: unknown): Promise<T> {
+  const response = await vaultStub(env).fetch(`https://vault/security${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+  if (!response.ok) {
+    const envelope = await response.json<{ error: PublicError }>();
+    throw new SecurityCallError(envelope.error);
+  }
+  return response.json<T>();
+}
+
+async function finishAuthorization(env: AppEnv, pending: PendingAuthorization, ticket?: string): Promise<{ redirectTo: string } | Response> {
+  if (!hasS256Pkce(pending.authRequest) || (pending.advancedSecurity && pending.permissionLevel !== "full_access")) return invalidPkceResponse();
+  try {
+    await revokeClientGrants(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID, pending.authRequest.clientId);
+  } catch {
+    const requestId = crypto.randomUUID();
+    console.error(JSON.stringify({ event: "mcp_authorization_revocation_failed", requestId }));
+    return Response.json({ error: "temporarily_unavailable", error_description: "Unable to revoke previous client authorizations; restart authorization", requestId }, { status: 503 });
+  }
+  const policy = await securityCall<ClientPolicy>(env, "/commit-policy", { clientId: pending.authRequest.clientId, advancedSecurity: pending.advancedSecurity, expected: pending.policyVersion, ticket });
+  return env.OAUTH_PROVIDER.completeAuthorization({
+    request: pending.authRequest, userId: env.ALLOWED_GITHUB_USER_ID, revokeExistingGrants: false,
+    metadata: { label: "Personal Schwab MCP", permissionLevel: pending.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, advancedSecurity: pending.advancedSecurity },
+    scope: [READ_SCOPE], props: {
+      userId: env.ALLOWED_GITHUB_USER_ID, username: pending.username, permissionLevel: pending.permissionLevel,
+      authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256", clientId: pending.authRequest.clientId,
+      advancedSecurity: policy.advancedSecurity, securityPolicyVersion: policy.version,
+    } satisfies AuthorizationProps,
+  });
+}
+
 const app = new Hono<{ Bindings: AppEnv }>();
+
+app.use("*", async (c, next) => {
+  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize")) {
+    c.header("Cache-Control", "no-store");
+    c.header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
+    c.header("X-Frame-Options", "DENY");
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Referrer-Policy", "no-referrer");
+  }
+  await next();
+});
+
+async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: boolean, returnTo = "/security") {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  const state = await saveState(c.env, "github", { action: recovery ? "security_recover" : "security_login", origin, returnTo } satisfies GitHubStatePayload);
+  setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
+  deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
+  return c.redirect(githubAuthorizationUrl(c.env, origin, state));
+}
+app.get("/security/recover", c => beginSecurityLogin(c, true));
+app.get("/security", renderSecurity);
+app.get("/security/approvals/:proposalId", renderSecurity);
+async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
+  if (new URL(c.req.url).origin !== new URL(c.env.SCHWAB_REDIRECT_URI).origin) return c.text("Invalid origin", 400);
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  let state: { session: BrowserSession; credentials: { id: string; name: string }[] };
+  try {
+    if (!sessionId) throw new Error("No session");
+    state = await securityCall(c.env, "/session", { sessionId });
+  } catch { return beginSecurityLogin(c, false, c.req.path); }
+  const proposalId = c.req.param("proposalId");
+  if (proposalId) {
+    try {
+      const proposal = await securityCall<Parameters<typeof renderSecurityPage>[2]>(c.env, "/proposal", { sessionId, proposalId });
+      return await c.html(renderSecurityPage(state.session, state.credentials, proposal));
+    } catch { return c.text("提案不可用，请返回客户端查询状态。", 403); }
+  }
+  return c.html(renderSecurityPage(state.session, state.credentials));
+}
+app.post("/security/api/:action", async c => {
+  const action = c.req.param("action");
+  if (!["options", "verify", "add-options", "add-verify"].includes(action)) return browserError("INVALID_ARGUMENT", "Unknown operation", 404);
+  if (c.req.header("Origin") !== new URL(c.env.SCHWAB_REDIRECT_URI).origin || !c.req.header("Content-Type")?.startsWith("application/json")) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  const csrf = c.req.header("X-CSRF-Token");
+  if (!sessionId || !csrf) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
+  const reader = c.req.raw.body?.getReader();
+  if (!reader) return browserError("INVALID_ARGUMENT", "Invalid request", 400);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > 65536) { await reader.cancel(); return browserError("INVALID_ARGUMENT", "Request too large", 413); }
+    chunks.push(value);
+  }
+  try {
+    const body: unknown = JSON.parse(new TextDecoder().decode(await new Blob(chunks.map(chunk => new Uint8Array(chunk))).arrayBuffer()));
+    if (!body || typeof body !== "object" || Array.isArray(body)) return browserError("INVALID_ARGUMENT", "Invalid request", 400);
+    // Browser-supplied identity, CSRF and session fields can never override trusted values.
+    const result = await securityCall<Record<string, unknown>>(c.env, `/${action}`, { ...body, sessionId, csrf });
+    if (typeof result.authorizationTicket === "string") {
+      const proof = await securityCall<{ pending: PendingAuthorization; ticket: string }>(c.env, "/authorization", { ticket: result.authorizationTicket });
+      const completed = await finishAuthorization(c.env, proof.pending, proof.ticket);
+      if (completed instanceof Response) return completed;
+      deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
+      return c.json({ redirectTo: completed.redirectTo });
+    }
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof SecurityCallError) return c.json({ error: error.error }, 403);
+    const requestId = crypto.randomUUID();
+    console.error(JSON.stringify({ event: "browser_security_failed", requestId }));
+    return c.json({ error: { code: "SECURITY_VERIFICATION_FAILED", message: "验证失败或状态已过期，请刷新页面重试。", requestId } }, 403);
+  }
+});
 
 app.get("/health", (c) => c.json({ status: "ok", version: c.env.APP_VERSION }));
 
@@ -162,13 +283,14 @@ app.get("/authorize", async (c) => {
   const authRequest = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
   const client = await c.env.OAUTH_PROVIDER.lookupClient(authRequest.clientId);
   if (!client) return c.text("Invalid OAuth client", 400);
-  const origin = new URL(c.req.url).origin;
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
   const state = await saveState(c.env, "consent", {
     action: "mcp_authorize", origin, authRequest, authorizationVersion: AUTHORIZATION_VERSION,
   } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   const clientName = client.clientName ?? client.clientId;
-  return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state }));
+  const policy = await securityCall<ClientPolicy>(c.env, "/policy", { clientId: authRequest.clientId });
+  return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state, advancedSecurity: policy.advancedSecurity }));
 });
 
 app.post("/authorize/approve", async (c) => {
@@ -188,13 +310,16 @@ app.post("/authorize/approve", async (c) => {
     return c.text("Authorization expired; restart authorization", 400);
   }
   if (!hasS256Pkce(payload.authRequest)) return invalidPkceResponse();
-  const githubState = await saveState(c.env, "github", { ...payload, permissionLevel });
+  if (form.advancedSecurity !== undefined && form.advancedSecurity !== "on") return c.text("Invalid advanced security selection", 400);
+  const advancedSecurity = form.advancedSecurity === "on";
+  if (advancedSecurity && permissionLevel !== "full_access") return c.text("Advanced Security requires full access", 400);
+  const githubState = await saveState(c.env, "github", { ...payload, permissionLevel, advancedSecurity });
   setCookie(c, FLOW_COOKIE, githubState, FLOW_COOKIE_OPTIONS);
   return c.redirect(githubAuthorizationUrl(c.env, payload.origin, githubState));
 });
 
 app.get("/auth/schwab/connect", async (c) => {
-  const origin = new URL(c.req.url).origin;
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
   const state = await saveState(c.env, "github", { action: "schwab_connect", origin } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   return c.redirect(githubAuthorizationUrl(c.env, origin, state));
@@ -210,6 +335,12 @@ app.get("/auth/github/callback", async (c) => {
     const user = await exchangeGitHubCode(c.env, payload.origin, code);
     if (!isAllowedGitHubUser(user.id, c.env.ALLOWED_GITHUB_USER_ID)) return c.text("Forbidden", 403);
 
+    if (payload.action === "security_login" || payload.action === "security_recover") {
+      const created = await securityCall<{ sessionId: string }>(c.env, "/session/create", { recovery: payload.action === "security_recover" });
+      setCookie(c, SECURITY_COOKIE, created.sessionId, { ...FLOW_COOKIE_OPTIONS, maxAge: 900 });
+      deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
+      return c.redirect(payload.returnTo ?? "/security");
+    }
     if (payload.action === "schwab_connect") {
       const schwab = await beginSchwabAuthorization(c.env, payload.origin);
       setCookie(c, FLOW_COOKIE, schwab.state, FLOW_COOKIE_OPTIONS);
@@ -220,33 +351,22 @@ app.get("/auth/github/callback", async (c) => {
       return c.text("Authorization expired; restart authorization", 400);
     }
     if (!hasS256Pkce(payload.authRequest)) return invalidPkceResponse();
-    try {
-      await revokeClientGrants(c.env.OAUTH_PROVIDER, String(user.id), payload.authRequest.clientId);
-    } catch {
-      const requestId = crypto.randomUUID();
-      console.error(JSON.stringify({ event: "mcp_authorization_revocation_failed", requestId }));
-      return c.json({
-        error: "temporarily_unavailable",
-        error_description: "Unable to revoke previous client authorizations; restart authorization",
-        requestId,
-      }, 503);
+    if (payload.advancedSecurity === true && payload.permissionLevel !== "full_access") return c.text("Invalid security mode", 400);
+    const policy = await securityCall<ClientPolicy>(c.env, "/policy", { clientId: payload.authRequest.clientId });
+    const pending: PendingAuthorization = { authRequest: payload.authRequest, permissionLevel: payload.permissionLevel, advancedSecurity: payload.advancedSecurity ?? false, username: user.login, policyVersion: policy.version };
+    if (pending.advancedSecurity || policy.advancedSecurity) {
+      const created = await securityCall<{ sessionId: string }>(c.env, "/session/create", { pending });
+      setCookie(c, SECURITY_COOKIE, created.sessionId, { ...FLOW_COOKIE_OPTIONS, maxAge: 900 });
+      deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
+      return c.redirect("/security");
     }
-    const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
-      request: payload.authRequest,
-      userId: String(user.id),
-      revokeExistingGrants: false,
-      metadata: { label: "Personal Schwab MCP", permissionLevel: payload.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION },
-      scope: [READ_SCOPE],
-      props: {
-        userId: String(user.id), username: user.login,
-        permissionLevel: payload.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION,
-        pkceMethod: "S256",
-      } satisfies AuthorizationProps,
-    });
+    const result = await finishAuthorization(c.env, pending);
+    if (result instanceof Response) return result;
+    const redirectTo = result.redirectTo;
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
     return c.redirect(redirectTo);
   } catch (error) {
-    console.error(JSON.stringify({ event: "github_oauth_failed", message: error instanceof Error ? error.message : "Unknown error" }));
+    console.error(JSON.stringify({ event: "github_oauth_failed", errorType: error instanceof Error ? error.name : "UnknownError" }));
     return c.text("GitHub authorization failed", 400);
   }
 });
@@ -281,7 +401,7 @@ app.get("/auth/schwab/callback", async (c) => {
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
     return c.html(renderSchwabConnectedPage());
   } catch (error) {
-    console.error(JSON.stringify({ event: "schwab_oauth_failed", message: error instanceof Error ? error.message : "Unknown error" }));
+    console.error(JSON.stringify({ event: "schwab_oauth_failed", errorType: error instanceof Error ? error.name : "UnknownError" }));
     return c.text("Schwab authorization failed", 400);
   }
 });

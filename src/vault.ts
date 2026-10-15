@@ -1,6 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import type { AppEnv } from "./env";
 import { tradingEnabled } from "./env";
+import { SecurityError, SecurityStore } from "./security-store";
+import type { ApprovalBinding, ClientIdentity, PendingAuthorization } from "./security-store";
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
+import { z } from "zod";
 import { logEvent } from "./log";
 import { toolSchemas, tradeConditionSchema } from "./schemas";
 import { assertSafeOrderPayload, canonicalJson, collectQuoteSymbols, evaluateCondition, randomToken, sha256, tokenMatches } from "./trading";
@@ -31,6 +35,10 @@ interface ProposalRow {
   confirmation_text: string;
   status: string;
   expires_at: number;
+  approval_method: string;
+  client_id: string | null;
+  policy_version: number;
+  outcome_json: string | null;
 }
 
 interface DelayedTradeRow {
@@ -135,6 +143,7 @@ function publicError(error: PublicError, status: number): Response {
 }
 
 export class SchwabVault extends DurableObject<AppEnv> {
+  private security: SecurityStore;
   private refreshPromise: Promise<TokenRecord> | undefined;
 
   constructor(ctx: DurableObjectState, env: AppEnv) {
@@ -231,10 +240,47 @@ export class SchwabVault extends DurableObject<AppEnv> {
         created_at INTEGER NOT NULL
       );
     `);
+    this.security = new SecurityStore(this.ctx.storage, env);
   }
 
   override async fetch(request: Request): Promise<Response> {
+    try { return await this.dispatch(request); }
+    catch (error) {
+      if (!(error instanceof SecurityError)) throw error;
+      return publicError({ code: error.code, message: "Security policy changed or verification failed", requestId: crypto.randomUUID() }, 403);
+    }
+  }
+
+  private async dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/security/")) {
+      try { return await this.securityRequest(request, url.pathname); }
+      catch (error) {
+        const requestId = crypto.randomUUID();
+        const code = error instanceof SecurityError ? error.code : "SECURITY_VERIFICATION_FAILED";
+        logEvent("security_request_rejected", { requestId, code });
+        return publicError({ code, message: "Security verification failed; restart the browser flow", requestId }, 403);
+      }
+    }
+    if (request.method === "POST" && url.pathname.startsWith("/trade/")) {
+      try {
+        const raw: { identity?: unknown } = await request.clone().json();
+        const identity = this.identity(raw.identity);
+        this.security.assertIdentity(identity);
+        if (identity.advancedSecurity && ["/trade/confirm", "/trade/session/enable", "/trade/place-direct"].includes(url.pathname)) throw new SecurityError();
+      } catch (error) {
+        const code = error instanceof SecurityError ? error.code : "SECURITY_VERIFICATION_FAILED";
+        return publicError({ code, message: "Client trading policy is invalid; reconnect if changed", requestId: crypto.randomUUID() }, 403);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/trade/proposal") {
+      const raw: { identity: ClientIdentity; input: unknown } = await request.json();
+      const parsed = toolSchemas.getTradeProposal.safeParse(raw.input);
+      if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid proposal query", requestId: crypto.randomUUID() }, 400);
+      const proposal = this.proposal(parsed.data.proposalId);
+      if (!proposal || proposal.client_id !== raw.identity.clientId) return publicError({ code: "TRADE_NOT_FOUND", message: "Trade proposal was not found", requestId: crypto.randomUUID() }, 404);
+      return jsonResponse({ result: this.proposalView(proposal) });
+    }
     if (request.method === "POST" && url.pathname === "/state") {
       return this.saveState(request);
     }
@@ -286,6 +332,121 @@ export class SchwabVault extends DurableObject<AppEnv> {
       return this.listDelayedTrades(request);
     }
     return new Response("Not found", { status: 404 });
+  }
+
+  private identity(value: unknown): ClientIdentity {
+    const parsed = z.object({ clientId: z.string().min(1), advancedSecurity: z.boolean(), securityPolicyVersion: z.number().int().nonnegative() }).safeParse(value);
+    if (!parsed.success) throw new SecurityError();
+    return parsed.data;
+  }
+
+  private proposalView(proposal: ProposalRow) {
+    const activation: unknown = proposal.outcome_json ? JSON.parse(proposal.outcome_json) : null;
+    let task: DelayedTradeRow | undefined;
+    if (proposal.mode === "DELAYED" && proposal.status === "CONFIRMED" && activation && typeof activation === "object") {
+      const result: unknown = Reflect.get(activation, "result");
+      const taskId: unknown = result && typeof result === "object" ? Reflect.get(result, "taskId") : undefined;
+      if (typeof taskId === "string") task = this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade WHERE id = ?", taskId).toArray()[0];
+    }
+    return {
+      proposalId: proposal.id, status: task?.status ?? (proposal.status === "PENDING" && proposal.expires_at <= Date.now() ? "EXPIRED" : proposal.status),
+      approvalMethod: proposal.approval_method, intentDigest: proposal.intent_digest,
+      expiresAt: new Date(proposal.expires_at).toISOString(),
+      preview: { accountHash: proposal.account_hash, action: proposal.action, executionMode: proposal.mode,
+        orderId: proposal.order_id, orderPayload: JSON.parse(proposal.order_json) as unknown,
+        condition: proposal.condition_json ? JSON.parse(proposal.condition_json) as unknown : null,
+        validUntil: proposal.valid_until === null ? null : new Date(proposal.valid_until).toISOString(),
+      },
+      ...(task ? { taskId: task.id, taskVersion: task.version } : {}),
+      outcome: task?.outcome_json ? JSON.parse(task.outcome_json) as unknown : activation,
+    };
+  }
+
+  private approvalBinding(proposalId: string): ApprovalBinding {
+    const proposal = this.proposal(proposalId);
+    if (!proposal || proposal.approval_method !== "passkey" || !proposal.client_id) throw new SecurityError();
+    return { proposalId, intentDigest: proposal.intent_digest, clientId: proposal.client_id, policyVersion: proposal.policy_version, expiresAt: proposal.expires_at };
+  }
+
+  private checkApproval(binding: ApprovalBinding): void {
+    const current = this.proposal(binding.proposalId);
+    if (!current || current.status !== "PENDING" || current.approval_method !== "passkey" || current.intent_digest !== binding.intentDigest || current.client_id !== binding.clientId || current.policy_version !== binding.policyVersion || current.expires_at !== binding.expiresAt || current.expires_at <= Date.now() || !tradingEnabled(this.env)) throw new SecurityError();
+    if (this.security.policy(binding.clientId).version !== binding.policyVersion) throw new SecurityError("SECURITY_POLICY_CHANGED");
+  }
+
+  private async securityRequest(request: Request, path: string): Promise<Response> {
+    const raw: {
+      clientId: string; advancedSecurity: boolean; expected: number; ticket?: string;
+      sessionId: string; csrf: string; recovery?: boolean; pending?: PendingAuthorization;
+      operation: "register" | "recover" | "authorize" | "add" | "delete" | "rename" | "approve";
+      target?: string; name?: string; resetConfirmation?: string; proposalId?: string;
+      challengeId: string; response: RegistrationResponseJSON | AuthenticationResponseJSON;
+    } = await request.json();
+    if (path === "/security/policy") return jsonResponse(this.security.policy(raw.clientId));
+    if (path === "/security/commit-policy") {
+      if (raw.advancedSecurity || this.security.policy(raw.clientId).advancedSecurity) {
+        if (!raw.ticket) throw new SecurityError();
+        const proof = this.security.read<{ pending: PendingAuthorization; credentialVersion: number }>(raw.ticket, "commit", true);
+        if (proof.credentialVersion !== this.security.version() || proof.pending.authRequest.clientId !== raw.clientId || proof.pending.advancedSecurity !== raw.advancedSecurity || proof.pending.policyVersion !== raw.expected) throw new SecurityError();
+      }
+      return jsonResponse(this.security.commitPolicy(raw.clientId, raw.advancedSecurity, raw.expected));
+    }
+    if (path === "/security/authorization") {
+      if (!raw.ticket) throw new SecurityError();
+      const proof = this.security.read<{ pending: PendingAuthorization; credentialVersion: number }>(raw.ticket, "authorization", true);
+      if (proof.credentialVersion !== this.security.version()) throw new SecurityError();
+      return jsonResponse({ pending: proof.pending, ticket: this.security.save("commit", proof, Date.now() + 120_000) });
+    }
+    if (path === "/security/session/create") return jsonResponse(this.security.createSession(raw.recovery, raw.pending));
+    const session = this.security.session(raw.sessionId, raw.csrf);
+    if (path === "/security/session") return jsonResponse({ session, credentials: this.security.credentials() });
+    if (path === "/security/proposal") {
+      if (session.recovery) throw new SecurityError();
+      const proposal = this.proposal(raw.proposalId ?? "");
+      if (!proposal || proposal.approval_method !== "passkey") throw new SecurityError();
+      return jsonResponse(this.proposalView(proposal));
+    }
+    if (path === "/security/options") {
+      const binding = raw.operation === "approve" ? this.approvalBinding(raw.proposalId ?? "") : undefined;
+      if (binding) this.checkApproval(binding);
+      return jsonResponse(await this.security.options(raw.sessionId, raw.csrf, raw.operation, raw.target, raw.name, binding, raw.resetConfirmation));
+    }
+    if (path === "/security/add-options" && raw.ticket) return jsonResponse(await this.security.addOptions(raw.sessionId, raw.csrf, raw.ticket, raw.name ?? "Passkey"));
+    if (path === "/security/add-verify") {
+      await this.security.addVerify(raw.sessionId, raw.csrf, raw.challengeId, raw.response as RegistrationResponseJSON);
+      return jsonResponse({ saved: true });
+    }
+    if (path === "/security/verify") {
+      const previous = this.ctx.storage.sql.exec<{ payload: string }>("SELECT payload FROM oauth_state WHERE state = ? AND kind = 'security_approval_attempt' AND expires_at > ?", raw.challengeId, Date.now()).toArray()[0];
+      if (previous) {
+        const attempt = JSON.parse(previous.payload) as { sessionId: string; proposalId: string };
+        if (attempt.sessionId !== raw.sessionId) throw new SecurityError();
+        const proposal = this.proposal(attempt.proposalId);
+        if (!proposal) throw new SecurityError();
+        return jsonResponse(this.proposalView(proposal));
+      }
+      const result = await this.security.verify(raw.sessionId, raw.csrf, raw.challengeId, raw.response, binding => { this.checkApproval(binding); });
+      if (result.binding) {
+        this.security.session(raw.sessionId, raw.csrf);
+        const proposal = this.proposal(result.binding.proposalId);
+        this.checkApproval(result.binding);
+        if (!proposal) throw new SecurityError();
+        const requestId = crypto.randomUUID();
+        if (proposal.mode === "DELAYED") return this.activateDelayedTrade(proposal, requestId);
+        const claimed = this.ctx.storage.sql.exec<{ id: string }>("UPDATE trade_proposal SET status = 'EXECUTING', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id", Date.now(), proposal.id).toArray()[0];
+        if (!claimed) return jsonResponse(this.proposalView(this.proposal(proposal.id) ?? proposal));
+        this.audit("passkey_trade_approved", proposal.id, requestId, "EXECUTING", proposal.intent_digest);
+        const response = await this.executeMutation(proposal.action, proposal.account_hash, proposal.order_id, JSON.parse(proposal.order_json) as { [key: string]: JsonValue }, requestId, "passkey_approval");
+        const finished = await this.finishProposal(proposal, requestId, response);
+        const outcome: Record<string, unknown> = await finished.json();
+        // Approval succeeded even if Schwab rejected the write or its outcome is
+        // uncertain. Preserve that execution result instead of reporting a failed
+        // WebAuthn ceremony to the browser.
+        return jsonResponse({ ...outcome, proposalId: proposal.id, status: this.proposal(proposal.id)?.status });
+      }
+      return jsonResponse(result);
+    }
+    throw new SecurityError();
   }
 
   private async saveState(request: Request): Promise<Response> {
@@ -490,12 +651,14 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const idleExpiresAt = now + DIRECT_TRADING_IDLE_TTL_MS;
     const absoluteExpiresAt = now + DIRECT_TRADING_MAX_TTL_MS;
     const instructionDigest = await sha256(parsed.data.userInstruction);
+    const capabilityHash = await sha256(sessionCapability);
+    this.security.assertIdentity(this.identity(field(raw as object, "identity")));
     this.ctx.storage.sql.exec(
       `INSERT INTO direct_trading_session
        (id, capability_hash, status, idle_expires_at, absolute_expires_at, created_at, last_used_at, updated_at)
        VALUES (?, ?, 'ACTIVE', ?, ?, ?, ?, ?)`,
       sessionId,
-      await sha256(sessionCapability),
+      capabilityHash,
       idleExpiresAt,
       absoluteExpiresAt,
       now,
@@ -574,6 +737,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const intentDigest = await sha256(canonicalJson(intent));
     const instructionDigest = await sha256(parsed.data.userInstruction);
     const now = Date.now();
+    this.security.assertIdentity(this.identity(field(raw as object, "identity")));
     const inserted = this.ctx.storage.sql.exec<{ id: string }>(
       `INSERT OR IGNORE INTO direct_trade_execution
        (id, session_id, intent_digest, instruction_digest, status, created_at, updated_at)
@@ -622,6 +786,12 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const parsed = toolSchemas.prepareTrade.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
     if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid trade proposal", requestId }, 400);
     const input = parsed.data;
+    const identity = this.identity(field(raw as object, "identity"));
+    let approvalMethod = identity.advancedSecurity ? "passkey" : "conversation";
+    if (input.replacesTaskId) {
+      const task = this.ctx.storage.sql.exec<{ approval_method: string }>("SELECT approval_method FROM delayed_trade WHERE id = ?", input.replacesTaskId).toArray()[0];
+      if (task?.approval_method === "passkey") approvalMethod = "passkey";
+    }
     try {
       assertSafeOrderPayload(input.orderPayload);
     } catch {
@@ -658,40 +828,45 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const tokenHash = await sha256(token);
     const confirmationText = `确认交易 ${proposalId.slice(0, 8)} ${intentDigest.slice(0, 12)}`;
     const expiresAt = now + CONFIRMATION_TTL_MS;
-    this.ctx.storage.sql.exec(
-      `INSERT INTO trade_proposal
-       (id, mode, action, account_hash, order_id, order_json, condition_json, valid_until,
-        poll_interval_seconds, replaces_task_id, intent_digest, instruction_digest, token_hash,
-        confirmation_text, status, expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
-      proposalId,
-      input.executionMode,
-      input.action,
-      input.accountHash,
-      input.orderId ?? null,
-      JSON.stringify(input.orderPayload),
-      input.condition === undefined ? null : JSON.stringify(input.condition),
-      validUntil,
-      input.pollIntervalSeconds ?? null,
-      input.replacesTaskId ?? null,
-      intentDigest,
-      instructionDigest,
-      tokenHash,
-      confirmationText,
-      expiresAt,
-      now,
-      now,
-    );
+    this.security.assertIdentity(identity);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO trade_proposal
+         (id, mode, action, account_hash, order_id, order_json, condition_json, valid_until,
+          poll_interval_seconds, replaces_task_id, intent_digest, instruction_digest, token_hash,
+          confirmation_text, status, expires_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+        proposalId,
+        input.executionMode,
+        input.action,
+        input.accountHash,
+        input.orderId ?? null,
+        JSON.stringify(input.orderPayload),
+        input.condition === undefined ? null : JSON.stringify(input.condition),
+        validUntil,
+        input.pollIntervalSeconds ?? null,
+        input.replacesTaskId ?? null,
+        intentDigest,
+        instructionDigest,
+        tokenHash,
+        confirmationText,
+        expiresAt,
+        now,
+        now,
+      );
+      this.ctx.storage.sql.exec("UPDATE trade_proposal SET approval_method = ?, client_id = ?, policy_version = ? WHERE id = ?", approvalMethod, identity.clientId, identity.securityPolicyVersion, proposalId);
+    });
     this.audit("trade_proposal_created", proposalId, requestId, "PENDING", intentDigest, instructionDigest);
     return jsonResponse({
       result: {
         proposalId,
-        confirmationToken: token,
-        confirmationText,
+        ...(approvalMethod === "passkey" ? {
+          approvalMethod: "passkey", approvalUrl: `${new URL(this.env.SCHWAB_REDIRECT_URI).origin}/security/approvals/${proposalId}`,
+        } : { confirmationToken: token, confirmationText }),
         expiresAt: new Date(expiresAt).toISOString(),
         intentDigest,
         preview: intent,
-        warning: "Only call confirm_trade after the user explicitly repeats confirmationText; AI must never propose or initiate a trade.",
+        warning: approvalMethod === "passkey" ? "Open approvalUrl in a browser and approve using a Passkey. No conversational fallback is available." : "Only call confirm_trade after the user explicitly repeats confirmationText; AI must never propose or initiate a trade.",
       },
     });
   }
@@ -708,6 +883,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
     if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid trade confirmation", requestId }, 400);
     const current = this.proposal(parsed.data.proposalId);
     if (!current) return publicError({ code: "TRADE_NOT_FOUND", message: "Trade proposal was not found", requestId }, 404);
+    const identity = this.identity(field(raw as object, "identity"));
+    if (current.approval_method === "passkey" || (current.client_id !== null && current.client_id !== identity.clientId)) return publicError({ code: "SECURITY_VERIFICATION_FAILED", message: "This proposal requires its original approval method and client", requestId }, 403);
     if (current.status !== "PENDING") return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal is no longer pending", requestId }, 409);
     if (current.expires_at <= Date.now()) {
       this.ctx.storage.sql.exec("UPDATE trade_proposal SET status = 'EXPIRED', updated_at = ? WHERE id = ? AND status = 'PENDING'", Date.now(), current.id);
@@ -718,6 +895,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
       return publicError({ code: "CONFIRMATION_INVALID", message: "Trade confirmation did not match the frozen proposal", requestId }, 403);
     }
 
+    try { this.security.assertIdentity(identity); } catch { return publicError({ code: "SECURITY_POLICY_CHANGED", message: "Client policy changed", requestId }, 403); }
+    if (current.policy_version !== identity.securityPolicyVersion || current.expires_at <= Date.now() || !tradingEnabled(this.env)) return publicError({ code: "CONFIRMATION_EXPIRED", message: "Trade approval expired or policy changed", requestId }, 403);
     if (current.mode === "DELAYED") return this.activateDelayedTrade(current, requestId);
     const claimed = this.ctx.storage.sql.exec<{ id: string }>(
       "UPDATE trade_proposal SET status = 'EXECUTING', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
@@ -734,41 +913,52 @@ export class SchwabVault extends DurableObject<AppEnv> {
     if (proposal.condition_json === null || proposal.valid_until === null) {
       return publicError({ code: "TRADE_STATE_CONFLICT", message: "Delayed proposal is incomplete", requestId }, 409);
     }
-    let version = 1;
-    if (proposal.replaces_task_id !== null) {
-      const previous = this.ctx.storage.sql.exec<{ version: number; status: string }>("SELECT version, status FROM delayed_trade WHERE id = ?", proposal.replaces_task_id).toArray()[0];
-      if (!previous) return publicError({ code: "TRADE_NOT_FOUND", message: "Delayed trade was not found", requestId }, 404);
-      if (previous.status !== "ACTIVE") return publicError({ code: "TRADE_STATE_CONFLICT", message: "Delayed trade is no longer active", requestId }, 409);
-      version = previous.version + 1;
-    }
-    const claimed = this.ctx.storage.sql.exec<{ id: string }>(
-      "UPDATE trade_proposal SET status = 'CONFIRMED', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
-      Date.now(),
-      proposal.id,
-    ).toArray()[0];
-    if (!claimed) return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal was already consumed", requestId }, 409);
-    const now = Date.now();
-    const taskId = crypto.randomUUID();
-    if (proposal.replaces_task_id !== null) {
-      this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'ACTIVE'", now, proposal.replaces_task_id);
-    }
-    this.ctx.storage.sql.exec(
-      `INSERT INTO delayed_trade
-       (id, version, action, account_hash, order_id, order_json, condition_json, valid_until,
-        poll_interval_seconds, intent_digest, instruction_digest, status, next_check_at, created_at, updated_at)
-       SELECT ?, ?, action, account_hash, order_id, order_json, condition_json, valid_until,
-        COALESCE(poll_interval_seconds, 60), intent_digest, instruction_digest, 'ACTIVE', ?, ?, ?
-       FROM trade_proposal WHERE id = ?`,
-      taskId,
-      version,
-      now,
-      now,
-      now,
-      proposal.id,
-    );
+    if (!tradingEnabled(this.env) || proposal.expires_at <= Date.now() || proposal.valid_until <= Date.now()) return publicError({ code: "CONFIRMATION_EXPIRED", message: "Delayed proposal has expired or trading is disabled", requestId }, 403);
+    const validUntil = proposal.valid_until;
+    const activation = this.ctx.storage.transactionSync(() => {
+      let version = 1;
+      if (proposal.replaces_task_id !== null) {
+        const previous = this.ctx.storage.sql.exec<{ version: number; status: string; approval_method: string }>("SELECT version, status, approval_method FROM delayed_trade WHERE id = ?", proposal.replaces_task_id).toArray()[0];
+        if (!previous) return publicError({ code: "TRADE_NOT_FOUND", message: "Delayed trade was not found", requestId }, 404);
+        if (previous.status !== "ACTIVE") return publicError({ code: "TRADE_STATE_CONFLICT", message: "Delayed trade is no longer active", requestId }, 409);
+        if (previous.approval_method === "passkey" && proposal.approval_method !== "passkey") throw new SecurityError();
+        version = previous.version + 1;
+      }
+      const claimed = this.ctx.storage.sql.exec<{ id: string }>(
+        "UPDATE trade_proposal SET status = 'CONFIRMED', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
+        Date.now(),
+        proposal.id,
+      ).toArray()[0];
+      if (!claimed) return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal was already consumed", requestId }, 409);
+      const now = Date.now();
+      const taskId = crypto.randomUUID();
+      if (proposal.replaces_task_id !== null) {
+        this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'ACTIVE'", now, proposal.replaces_task_id);
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO delayed_trade
+         (id, version, action, account_hash, order_id, order_json, condition_json, valid_until,
+          poll_interval_seconds, intent_digest, instruction_digest, status, next_check_at, created_at, updated_at)
+         SELECT ?, ?, action, account_hash, order_id, order_json, condition_json, valid_until,
+          COALESCE(poll_interval_seconds, 60), intent_digest, instruction_digest, 'ACTIVE', ?, ?, ?
+         FROM trade_proposal WHERE id = ?`,
+        taskId,
+        version,
+        now,
+        now,
+        now,
+        proposal.id,
+      );
+      this.ctx.storage.sql.exec("UPDATE delayed_trade SET approval_method = ?, client_id = ?, policy_version = ? WHERE id = ?", proposal.approval_method, proposal.client_id, proposal.policy_version, taskId);
+      const result = { taskId, version, status: "ACTIVE", validUntil: new Date(validUntil).toISOString(), intentDigest: proposal.intent_digest };
+      this.ctx.storage.sql.exec("UPDATE trade_proposal SET outcome_json = ? WHERE id = ?", JSON.stringify({ result }), proposal.id);
+      return { taskId, version, result };
+    });
+    if (activation instanceof Response) return activation;
+    const { taskId, result } = activation;
     this.audit("delayed_trade_activated", taskId, requestId, "ACTIVE", proposal.intent_digest);
     await this.scheduleNextAlarm();
-    return jsonResponse({ result: { taskId, version, status: "ACTIVE", validUntil: new Date(proposal.valid_until).toISOString(), intentDigest: proposal.intent_digest } });
+    return jsonResponse({ result });
   }
 
   private async finishProposal(proposal: ProposalRow, requestId: string, response: Response): Promise<Response> {
@@ -829,6 +1019,9 @@ export class SchwabVault extends DurableObject<AppEnv> {
     return jsonResponse({
       result: rows.map((row) => ({
         taskId: row.id,
+        approvalMethod: row.approval_method,
+        clientId: row.client_id,
+        securityPolicyVersion: row.policy_version,
         version: row.version,
         action: row.action,
         accountHash: row.account_hash,

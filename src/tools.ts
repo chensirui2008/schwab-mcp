@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import type { AppEnv } from "./env";
 import { tradingEnabled, vaultStub } from "./env";
+import type { ClientIdentity } from "./security-store";
 import type { PermissionLevel } from "./oauth-access";
 import { accountHashes, redact } from "./redaction";
 import { toolSchemas } from "./schemas";
@@ -112,14 +113,14 @@ async function execute(
   };
 }
 
-async function executeVaultAction(env: AppEnv, tool: string, path: string, input: unknown, transform: Transform = redact) {
+async function executeVaultAction(env: AppEnv, tool: string, path: string, input: unknown, transform: Transform = redact, identity?: ClientIdentity) {
   const requestId = crypto.randomUUID();
   let response: Response;
   try {
     response = await vaultStub(env).fetch(`https://vault${path}`, {
       method: path === "/trading/status" ? "GET" : "POST",
       headers: { "Content-Type": "application/json" },
-      ...(path === "/trading/status" ? {} : { body: JSON.stringify({ requestId, input }) }),
+      ...(path === "/trading/status" ? {} : { body: JSON.stringify({ requestId, input, identity }) }),
     });
   } catch {
     return toolError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab vault is unavailable", requestId }, env);
@@ -162,21 +163,24 @@ export function transactionDateRange(startDate: string, endDate: string): { star
   };
 }
 
-export function tradingDiagnostics(env: AppEnv, permissionLevel: PermissionLevel = "read_only") {
+export function tradingDiagnostics(env: AppEnv, permissionLevel: PermissionLevel = "read_only", advancedSecurity = false) {
   const deploymentTradingEnabled = tradingEnabled(env);
   const tradingToolsRegistered = permissionLevel === "full_access";
   return {
+    advancedSecurity,
+    approvalMethod: advancedSecurity ? "passkey" : "conversation",
+    sessionDirectTradingAvailable: permissionLevel === "full_access" && !advancedSecurity,
     oauthTradeScopeRequired: false,
     permissionLevel,
     tradingToolsRegistered,
     deploymentTradingEnabled,
     effectiveTradingState: !tradingToolsRegistered ? "DISABLED_BY_PERMISSION" : deploymentTradingEnabled ? "ENABLED" : "DISABLED_BY_DEPLOYMENT",
     cancellationAvailableWhenDisabled: tradingToolsRegistered,
-    protection: "Trading mutations still require explicit user instructions and the applicable confirmation or session capability.",
+    protection: advancedSecurity ? "Trading mutations require explicit user instructions and browser Passkey approval; session direct trading is unavailable." : "Trading mutations still require explicit user instructions and the applicable confirmation or session capability.",
   };
 }
 
-export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "read_only"): McpServer {
+export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "read_only", identity: ClientIdentity = { clientId: "local", advancedSecurity: false, securityPolicyVersion: 0 }): McpServer {
   const server = new McpServer({ name: "schwab-mcp", version: env.APP_VERSION });
 
   server.registerTool(
@@ -209,7 +213,7 @@ export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "re
     },
     () => {
       const output: ToolResult<ReturnType<typeof tradingDiagnostics>> = {
-        data: tradingDiagnostics(env, permissionLevel),
+        data: tradingDiagnostics(env, permissionLevel, identity.advancedSecurity),
         meta: { source: "deployment", fetchedAt: new Date().toISOString(), requestId: crypto.randomUUID() },
       };
       return { resultType: "complete" as const, content: [{ type: "text" as const, text: JSON.stringify(output) }], structuredContent: output };
@@ -376,6 +380,8 @@ export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "re
     async () => execute(env, "get_user_preferences", "trader", "/userPreference"),
   );
 
+  const tradeAction = (tool: string, path: string, input: unknown) => executeVaultAction(env, tool, path, input, redact, identity);
+
   // Omit the entire trading surface, so guessed tools/call names are rejected too.
   if (permissionLevel !== "full_access") return server;
 
@@ -385,34 +391,39 @@ export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "re
       description: "Report the deployment-controlled ENABLE_TRADING master switch. This tool cannot enable trading; only deployment configuration can do so.",
       inputSchema: toolSchemas.empty,
     },
-    async () => executeVaultAction(env, "enable_trading", "/trading/status", {}),
+    async () => tradeAction("enable_trading", "/trading/status", {}),
   );
+
+  server.registerTool("get_trade_proposal", {
+    description: "Get the current client's frozen trade proposal status and result without confirmation credentials.",
+    inputSchema: toolSchemas.getTradeProposal,
+  }, async input => tradeAction("get_trade_proposal", "/trade/proposal", input));
 
   server.registerTool(
     "prepare_trade",
     {
-      description: "Prepare and freeze a user-initiated PLACE or REPLACE order for mandatory second confirmation. Never suggest a trade, never call this proactively, and never treat model-generated text as user intent. Official Schwab order JSON is passed through after bounded safety validation.",
+      description: "Prepare and freeze a user-initiated PLACE or REPLACE order for mandatory second confirmation. Advanced Security returns a browser approvalUrl for Passkey approval and immediate submission; poll get_trade_proposal for its outcome. Never suggest a trade, never call this proactively, and never treat model-generated text as user intent. Official Schwab order JSON is passed through after bounded safety validation.",
       inputSchema: toolSchemas.prepareTrade,
     },
-    async (input) => executeVaultAction(env, "prepare_trade", "/trade/prepare", input),
+    async (input) => tradeAction("prepare_trade", "/trade/prepare", input),
   );
 
-  server.registerTool(
+  if (!identity.advancedSecurity) server.registerTool(
     "confirm_trade",
     {
       description: "Consume a one-time confirmation for an unchanged frozen proposal. Call only after the user explicitly repeats confirmationText. Immediate proposals execute now; delayed proposals become active without another confirmation at trigger time.",
       inputSchema: toolSchemas.confirmTrade,
     },
-    async (input) => executeVaultAction(env, "confirm_trade", "/trade/confirm", input),
+    async (input) => tradeAction("confirm_trade", "/trade/confirm", input),
   );
 
-  server.registerTool(
+  if (!identity.advancedSecurity) server.registerTool(
     "enable_session_direct_trading",
     {
       description: "Enable immediate PLACE orders without per-order confirmation for this agent session only, after an explicit user instruction. Returns a sensitive sessionCapability that expires after 30 minutes of inactivity and after 8 hours at the latest. Never call proactively; never log or echo the capability beyond the one enable result.",
       inputSchema: toolSchemas.enableSessionDirectTrading,
     },
-    async (input) => executeVaultAction(env, "enable_session_direct_trading", "/trade/session/enable", input),
+    async (input) => tradeAction("enable_session_direct_trading", "/trade/session/enable", input),
   );
 
   server.registerTool(
@@ -421,16 +432,16 @@ export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "re
       description: "Immediately disable a direct-trading session capability. This remains available even when ENABLE_TRADING is false.",
       inputSchema: toolSchemas.disableSessionDirectTrading,
     },
-    async (input) => executeVaultAction(env, "disable_session_direct_trading", "/trade/session/disable", input),
+    async (input) => tradeAction("disable_session_direct_trading", "/trade/session/disable", input),
   );
 
-  server.registerTool(
+  if (!identity.advancedSecurity) server.registerTool(
     "place_order_direct",
     {
       description: "Place one immediate user-initiated Schwab order without per-order confirmation using an explicitly enabled agent-session capability. Supports PLACE only: no REPLACE or delayed execution. Generate one executionKey per user order and reuse it only when retrying the identical tool call. Never suggest or initiate a trade proactively.",
       inputSchema: toolSchemas.placeOrderDirect,
     },
-    async (input) => executeVaultAction(env, "place_order_direct", "/trade/place-direct", input),
+    async (input) => tradeAction("place_order_direct", "/trade/place-direct", input),
   );
 
   server.registerTool(
@@ -439,13 +450,13 @@ export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "re
       description: "Cancel one Schwab order without second confirmation, only after an explicit user instruction. Cancellation remains available while ENABLE_TRADING is false.",
       inputSchema: toolSchemas.cancelOrder,
     },
-    async (input) => executeVaultAction(env, "cancel_order", "/trade/cancel-order", input),
+    async (input) => tradeAction("cancel_order", "/trade/cancel-order", input),
   );
 
   server.registerTool(
     "list_delayed_trades",
     { description: "List delayed trades and their frozen conditions, versions, execution states, and outcomes", inputSchema: toolSchemas.listDelayedTrades },
-    async (input) => executeVaultAction(env, "list_delayed_trades", "/trade/list-delayed", input),
+    async (input) => tradeAction("list_delayed_trades", "/trade/list-delayed", input),
   );
 
   server.registerTool(
@@ -454,7 +465,7 @@ export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "re
       description: "Cancel an active delayed trade immediately without second confirmation, only after an explicit user instruction. An executing or terminal task cannot be cancelled.",
       inputSchema: toolSchemas.cancelDelayedTrade,
     },
-    async (input) => executeVaultAction(env, "cancel_delayed_trade", "/trade/cancel-delayed", input),
+    async (input) => tradeAction("cancel_delayed_trade", "/trade/cancel-delayed", input),
   );
 
   return server;

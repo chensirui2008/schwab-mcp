@@ -67,14 +67,14 @@ flowchart TD
   end
 
   subgraph CloudflareEdge ["Cloudflare Workers Edge"]
-    Router["Worker Router (/mcp, /authorize, /auth/*)"]
+    Router["Worker Router (/mcp, /authorize, /auth/*, /security/*)"]
     OAuthProvider["@cloudflare/workers-oauth-provider"]
     KV[("OAUTH_KV (Client & Grant Meta)")]
     
     subgraph StorageDO ["SchwabVault Durable Object"]
       DO["Durable Object Runtime"]
-      SQLite[("DO SQLite Storage\n- Schwab Tokens & Expiry\n- Proposals & Direct Session\n- Delayed Tasks\n- Redacted Audit Logs")]
-      Alarm["DO Alarm Scheduler\n(Auto-refresh / Delayed Tasks)"]
+      SQLite[("DO SQLite Storage\n- Schwab Tokens & Expiry\n- Proposals & Direct Session\n- Delayed Tasks\n- Passkeys / Policies / Browser State\n- Redacted Audit Logs")]
+      Alarm["DO Alarm Scheduler\n(Delayed Tasks)"]
     end
   end
 
@@ -125,11 +125,11 @@ flowchart TD
 
 ## MCP Tools Catalog
 
-The server registers **24 MCP tools**. Schema validation strictly follows Zod definitions in [`src/schemas.ts`](src/schemas.ts).
+The server registers **up to 25 MCP tools**. Schema validation strictly follows Zod definitions in [`src/schemas.ts`](src/schemas.ts).
 
 ### Read-Only & Diagnostics (15 Tools)
 
-Available to all authenticated clients. Operations use HTTP `GET`:
+Available to all authenticated clients. Schwab queries use HTTP `GET`; deployment diagnostics read configuration:
 
 | Tool | Description | Key Inputs |
 | :--- | :--- | :--- |
@@ -149,15 +149,16 @@ Available to all authenticated clients. Operations use HTTP `GET`:
 | `get_transactions` | Account cash flow and trade transactions | `accountHash`, `startDate`, `endDate` (`YYYY-MM-DD`), `types`, `symbol` |
 | `get_user_preferences` | User profile context and trade permissions | None |
 
-### Trading Control Tools (9 Tools)
+### Trading Control Tools (10 Tools)
 
 > [!WARNING]
-> Only registered for clients granted **`full_access`** during OAuth authorization. Executing trades additionally requires `ENABLE_TRADING=true`. Cancellation remains available even when trading is disabled to de-risk positions.
+> Only registered for clients granted **`full_access`** during OAuth authorization. Advanced Security clients omit `confirm_trade`, `enable_session_direct_trading`, and `place_order_direct` (22 tools total); read-only clients retain 15 tools. Executing trades additionally requires `ENABLE_TRADING=true`. Cancellation remains available even when trading is disabled to de-risk positions.
 
 | Tool | Description | Key Inputs |
 | :--- | :--- | :--- |
 | `enable_trading` | Read-only check for deployment killswitch status | None (switch cannot be toggled via MCP) |
-| `prepare_trade` | Freeze order snapshot and issue 5-minute single-use token | `accountHash`, `action` (`PLACE`/`REPLACE`), `executionMode`, `orderPayload`, `userInstruction` |
+| `prepare_trade` | Freeze an order for five minutes; return a confirmation token or a Passkey approval URL | `accountHash`, `action` (`PLACE`/`REPLACE`), `executionMode`, `orderPayload`, `userInstruction` |
+| `get_trade_proposal` | Read this client’s proposal status and execution result without confirmation credentials | `proposalId` (UUID) |
 | `confirm_trade` | Consume confirmation token with verbatim text playback | `proposalId`, `confirmationToken`, `confirmationText` |
 | `enable_session_direct_trading` | Enable direct order placement for the current session | `userInstruction` (returns single-reveal `sessionCapability`) |
 | `place_order_direct` | Direct order submission bypassing per-order confirmation | `sessionCapability`, `executionKey` (UUID), `accountHash`, `orderPayload`, `userInstruction` |
@@ -168,16 +169,34 @@ Available to all authenticated clients. Operations use HTTP `GET`:
 
 ---
 
+## Advanced Security: optional Passkey approval
+
+Choose **Full access** and check **Advanced Security** on the OAuth consent page. New clients default to off; reauthorization preselects the last saved choice. This setting applies to each client independently: other full-access clients that leave it off retain ordinary confirmation and session direct trading. Existing grants without the new fields remain ordinary; `AUTHORIZATION_VERSION` stays unchanged.
+
+After GitHub numeric owner verification, enabling requires registration of the first Passkey, or verification with an existing owner Passkey. Disabling also requires an existing Passkey. All old grants must be successfully revoked before the new client policy and grant are issued. Policy versions prevent stale tokens from writing under an old policy.
+
+For enhanced clients, `prepare_trade` keeps the same input and returns `proposalId`, `approvalMethod: "passkey"`, `approvalUrl`, the frozen preview, digest and expiry. It returns no executable confirmation token or phrase. Open the URL in an external desktop or phone browser, authenticate with GitHub if needed, review every leg and the complete JSON, then click **批准并提交** to invoke WebAuthn. Successful verification immediately submits the frozen immediate order, or activates the frozen delayed task. Query `get_trade_proposal({ proposalId })` for status and execution outcome. Approving or replaying a proposal never submits it twice. An `EXECUTION_UNCERTAIN` result still requires manual order inspection.
+
+Every immediate PLACE/REPLACE and delayed task creation/modification requires Passkey approval; protected delayed tasks cannot be downgraded by modification from an ordinary client. Enhanced clients cannot enable or use session direct trading. Cancellation, delayed task cancellation and disabling an existing direct session retain their existing rules. The deployment killswitch also blocks browser approval and task activation.
+
+Manage owner credentials at `/security`: register, name, add, rename and delete Passkeys shared by all enhanced clients. Adding, renaming or deleting requires an existing Passkey, and the final credential cannot be deleted directly. If **all credentials are lost**, open `/security/recover`. This always starts a separate GitHub owner OAuth flow; an MCP token or existing security browser session cannot reset credentials. Type **重置全部 Passkey** and register a replacement before the server atomically replaces all keys. Recovery invalidates old keys, browser sessions, challenges and pending enhanced proposals, while preserving activated delayed tasks and the enabled client policies. Disabling afterward still requires the replacement Passkey. **The GitHub account is the credential-recovery trust entry point.**
+
+Proposals expire in five minutes, browser sessions in fifteen minutes, and single-use challenges in at most two minutes (capped by proposal/session expiry). Cancellation, timeout and unsupported browsers leave orders unapproved, with no conversational fallback. Native WebAuthn uses required user verification and the pinned [`@simplewebauthn/server@14.0.3`](https://simplewebauthn.dev/docs/packages/server). The configured Schwab callback **origin** is the expected origin and its hostname the RP ID; approval links must use this same origin. No app, notification service, CDN, frontend build or new Worker binding is required.
+
+Credentials, policies and browser state live only in owner DO SQLite, using repeatable incremental migrations. No existing tables, Schwab tokens or trade history are rebuilt or deleted. This protects against compromised MCP tokens or clients; it does not promise resistance to compromise of the Worker, approval device or GitHub recovery account.
+
+Local checks include real-signature software-authenticator tests, OAuth regressions, deployment/introspection checks and Wrangler dry-run packaging. Browser UI checks use controlled local fixtures; **actual Safari, phone and device Passkey operation remain manual release acceptance**. See [validation and manual acceptance](docs/passkey-validation.md).
+
 ## Safety & Security Guardrails
 
 1. **Deployment Killswitch (`ENABLE_TRADING`)**:
    - Configured in `wrangler.jsonc` (default: `"false"`).
    - When `false`, order preparations, confirmations, and session capability grants fail closed. Working orders can still be cancelled.
 2. **Anti-Hallucination Two-Phase Confirmation**:
-   - `prepare_trade` generates an immutable snapshot and a random confirmation sentence.
+   - In ordinary mode, `prepare_trade` generates an immutable snapshot and a random confirmation sentence; enhanced mode uses browser Passkey approval as described above.
    - The user must explicitly repeat the confirmation sentence before `confirm_trade` consumes the token and executes the order.
 3. **Session Direct Trading Mode**:
-   - Limited strictly to `IMMEDIATE` + `PLACE` (order modifications still require confirmation).
+   - Available only in ordinary mode. Limited strictly to `IMMEDIATE` + `PLACE` (order modifications still require confirmation).
    - 30-minute idle expiry, refreshed on use; 8-hour hard lifetime.
    - Atomic idempotent claim using client-provided `executionKey`.
 4. **Deterministic Delayed Orders**:
@@ -193,7 +212,7 @@ Available to all authenticated clients. Operations use HTTP `GET`:
 
 ### Prerequisites
 
-- **Node.js**: >= 20.0.0 (LTS recommended)
+- **Node.js**: >= 22.0.0 (LTS recommended)
 - **Cloudflare Account**: Workers & Durable Objects enabled
 - **GitHub Account**: OAuth App created for owner authentication
 - **Charles Schwab Developer Account**: Approved developer app with Trader & Market Data APIs
@@ -309,6 +328,9 @@ Configure as a remote MCP server:
 
 | Code | Cause | Action |
 | :--- | :--- | :--- |
+| `SECURITY_VERIFICATION_FAILED` | Passkey verification or browser binding failed | Restart browser verification; no conversational fallback |
+| `SECURITY_POLICY_CHANGED` | Client policy version is stale | Reconnect this MCP client |
+| `BROWSER_AUTH_REQUIRED` | Browser session expired or invalid | Restart GitHub owner login |
 | `AUTH_REQUIRED` | Schwab account not linked | Visit `reconnectUrl` from response |
 | `REAUTHORIZATION_REQUIRED` | Refresh token expired (7 days inactivity) | Visit `reconnectUrl` to re-authenticate |
 | `INVALID_ARGUMENT` | Payload failed Zod validation | Review input against [`src/schemas.ts`](src/schemas.ts) |
