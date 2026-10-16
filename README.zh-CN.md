@@ -9,10 +9,11 @@
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-black)](https://modelcontextprotocol.io/)
 [![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/chensirui2008/schwab-mcp)
 
 > [!CAUTION]
-> **免责声明 (Disclaimer)**  
-> 本项目仅供技术学习、个人研究及自动化实验使用，**不构成任何投资建议、财务咨询或交易撮合指令**。  
+> **免责声明 (Disclaimer)**
+> 本项目仅供技术学习、个人研究及自动化实验使用，**不构成任何投资建议、财务咨询或交易撮合指令**。
 > 证券与期权交易具有重大本金亏损风险。使用本项目直接或间接连接真实券商交易接口时，用户须自行承担因 API 异常、网络延迟、大语言模型幻觉输出、不可抗力或软件缺陷导致的一切投资风险与资金损失。本项目作者及贡献者概不对任何交易后果与损失承担法律责任。
 
 这是一个运行在 **Cloudflare Workers** 上的**个人自托管（Self-Hosted）专用高安全性远程 Model Context Protocol (MCP) 服务**。完全部署在您个人的 Cloudflare 账户内（**兼容 100% 免费额度 Free Tier**，无需任何 VPS、服务器租用或常开家用主机）。它将 Charles Schwab 生产环境的官方 REST 行情、账户资产查询，以及经过严格安全防护的真实建单、改单与撤单能力封装为标准的 **Streamable HTTP MCP** 接口（暴露在 `/mcp` 端点）。
@@ -38,7 +39,8 @@
 - [典型 AI 交互场景演示](#典型-ai-交互场景演示)
 - [工具清单与参数规格](#工具清单与参数规格)
   - [只读与诊断工具 (15 个)](#1-只读与诊断工具-15-个)
-  - [交易控制工具 (9 个)](#2-交易控制工具-9-个)
+  - [交易控制工具 (10 个)](#2-交易控制工具-10-个)
+- [Advanced Security：可选的 Passkey 订单批准](#advanced-security可选的-passkey-订单批准)
 - [安全边界与交易防护机制](#安全边界与交易防护机制)
   - [1. 部署总开关 (ENABLE_TRADING)](#1-部署总开关-enable_trading)
   - [2. AI 零主动交易原则 (Anti-Hallucination)](#2-ai-零主动交易原则-anti-hallucination)
@@ -73,8 +75,8 @@
    使用 `@cloudflare/workers-oauth-provider` 实现 MCP 客户端动态注册与授权。OAuth 授权流程必须通过 GitHub OAuth 确认服务拥有者身份，仅当不可变 GitHub 数字 ID 完全匹配环境变量 `ALLOWED_GITHUB_USER_ID` 时才予放行。
 3. **每客户端 OAuth 权限边界**：
    - MCP OAuth 使用 `schwab.read` 服务访问 scope。每个客户端在授权页独立选择**只读（Read only，默认）**或**完整访问（Full access）**，选择随一次性浏览器 state 传入 GitHub owner 校验流程，存入 grant 的加密 props，并在刷新 token 后保持。
-   - 只读客户端仅注册账户、行情与诊断工具；全部 9 个交易控制工具不向模型暴露，直接指定交易工具名调用同样失败。完整访问客户端注册所有工具，真实交易仍受部署总开关 `ENABLE_TRADING`、明确用户指令、二次确认或原有 session 能力约束，撤单例外保持。
-   - `get_trading_diagnostics` 始终可见，返回当前客户端的 `permissionLevel`、交易工具注册状态、部署总开关和有效交易状态。只读授权的有效交易状态为 `DISABLED_BY_PERMISSION`。
+   - 只读客户端仅注册账户、行情与诊断工具；全部 10 个交易控制工具不向模型暴露，直接指定交易工具名调用同样失败。普通完整访问客户端注册所有工具；开启 Advanced Security 时不注册对话确认和 session 直下的三个工具，真实交易仍受部署总开关 `ENABLE_TRADING`、明确用户指令、二次确认或原有 session 能力约束，撤单例外保持。
+   - `get_trading_diagnostics` 始终可见，返回当前客户端的 `permissionLevel`、`advancedSecurity`、`approvalMethod`、交易工具注册状态、部署总开关和有效交易状态。只读授权的有效交易状态为 `DISABLED_BY_PERMISSION`。
 4. **SQLite 物理级凭据与状态隔离**：
    Schwab OAuth Token、刷新时间、一次性确认提案、Session 直下能力哈希、延迟条件订单及脱敏交易审计摘要**严格存储于 SQLite-backed `SchwabVault` Durable Object 内**。凭据和原始订单明文严禁进入 KV 存储或日志。
 5. **Session 直下凭证单次暴露与哈希存储**：
@@ -109,7 +111,7 @@ flowchart TD
     Router["Worker Router (/mcp, /authorize, /auth/*)"]
     OAuthProvider["@cloudflare/workers-oauth-provider"]
     KV[("OAUTH_KV (Client & Grant Metadata)")]
-    
+
     subgraph StorageDO ["单个 Owner: SchwabVault Durable Object"]
       DO["Durable Object Runtime"]
       SQLite[("DO 内置 SQLite 存储\n- Schwab Tokens & Expiry\n- 确认提案 (Proposals)\n- Session 直下哈希摘要\n- 延迟条件任务 (Delayed Tasks)\n- 脱敏交易审计记录")]
@@ -142,23 +144,23 @@ flowchart TD
 
 ### 1. 资产透视与期权链分析（只读模式）
 
-> **用户**：“帮我查一下当前 NVDA 的持仓盈亏，顺便看一下下个月到期、行权价 140 的 Call 表现如何？”  
-> **Agent**：*(自动调用 `get_account` 与 `get_option_chain`)*  
+> **用户**：“帮我查一下当前 NVDA 的持仓盈亏，顺便看一下下个月到期、行权价 140 的 Call 表现如何？”
+> **Agent**：*(自动调用 `get_account` 与 `get_option_chain`)*
 > “您当前持有 NVDA 100 股，均价 $118.40，浮盈 +18.2%。下个月到期的 $140 CALL 当前买卖价差为 $4.20 / $4.35，Delta 为 0.38，隐含波动率 IV 为 42.1%。”
 
 ### 2. 防幻觉两阶段确认建单（交易控制模式）
 
-> **用户**：“帮我以限价 $220 买入 10 股 AAPL。”  
-> **Agent**：*(调用 `prepare_trade` 冻结订单快照并生成防呆口令)*  
-> “已为您生成并冻结订单提案（有效期 5 分钟）：  
-> - **方向**：买入 10 股 AAPL @ 限价 $220.00 (当日有效)  
-> - **账户**：`...8a9f`  
-> - **提案 ID**：`prop_01JABC...`  
-> ⚠️ **为确保资金安全，请原样复述以下确认短语以执行下单：**  
-> `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`”  
->  
-> **用户**：`CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`  
-> **Agent**：*(调用 `confirm_trade` 消费一次性令牌)*  
+> **用户**：“帮我以限价 $220 买入 10 股 AAPL。”
+> **Agent**：*(调用 `prepare_trade` 冻结订单快照并生成防呆口令)*
+> “已为您生成并冻结订单提案（有效期 5 分钟）：
+> - **方向**：买入 10 股 AAPL @ 限价 $220.00 (当日有效)
+> - **账户**：`...8a9f`
+> - **提案 ID**：`prop_01JABC...`
+> ⚠️ **为确保资金安全，请原样复述以下确认短语以执行下单：**
+> `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`”
+>
+> **用户**：`CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`
+> **Agent**：*(调用 `confirm_trade` 消费一次性令牌)*
 > “订单已成功提交至嘉信理财 (Charles Schwab)，委托编号：`#10098234`。”
 
 ---
@@ -166,7 +168,7 @@ flowchart TD
 
 ## 工具清单与参数规格
 
-系统共注册 **24 个 MCP 工具**，输入约束严格以 `src/schemas.ts` 的 Zod 校验为准。
+普通完整访问客户端注册 **25 个 MCP 工具**；增强完整访问客户端注册 **22 个**，只读客户端注册 **15 个**，输入约束严格以 `src/schemas.ts` 的 Zod 校验为准。
 
 ### 1. 只读与诊断工具 (15 个)
 
@@ -190,7 +192,7 @@ flowchart TD
 | `get_transactions` | 查询指定账户的历史资金流水与交割明细 | `accountHash`: 账户哈希；<br>`startDate` / `endDate`: `YYYY-MM-DD` 日期；请求 Schwab 时自动转换为覆盖完整起止日的 UTC ISO-8601 时间范围；<br>`types`: 可选交易类型；<br>`symbol`: 可选标的代码过滤。 |
 | `get_user_preferences` | 获取账户上下文偏好设置与交易权限 | 无参数。 |
 
-### 2. 交易控制工具 (9 个)
+### 2. 交易控制工具 (10 个)
 
 > [!WARNING]
 > 以下工具仅向选择**完整访问**并通过 OAuth 与 GitHub owner 白名单校验的 MCP 客户端注册。`ENABLE_TRADING` 是允许准备、确认、开启 session 直下及提交订单的唯一部署总开关；关闭时相关调用失败关闭，但完整访问客户端仍可撤单、关闭 session 和取消延迟任务以降险。
@@ -198,7 +200,8 @@ flowchart TD
 | 工具名称 | 功能描述 | 关键参数与格式要求 |
 | :--- | :--- | :--- |
 | `enable_trading` | 查询部署配置中的交易总开关状态 | 无参数。**注意：此工具为只读查询，MCP 无法在线开启总开关，必须通过修改部署配置并重新部署。** |
-| `prepare_trade` | 冻结即时或延迟交易快照，生成一次性二次确认令牌 | `accountHash`: 目标账户哈希；<br>`action`: `PLACE` (新建) \| `REPLACE` (修改)；<br>`executionMode`: `IMMEDIATE` (即时) \| `DELAYED` (延迟条件)；<br>`orderId`: 修改订单时必填订单 ID，新建订单禁止传入；<br>`orderPayload`: 官方 Schwab Order JSON（最大 64 KiB，严格深度限制）；<br>`userInstruction`: 用户明确交易指令文字 (1~4000 字符)；<br>`condition` / `validUntil` / `pollIntervalSeconds` / `replacesTaskId`: 延迟订单必填条件参数。 |
+| `prepare_trade` | 冻结即时或延迟交易快照；普通模式生成一次性确认令牌，增强模式返回 Passkey 批准链接 | `accountHash`: 目标账户哈希；<br>`action`: `PLACE` (新建) \| `REPLACE` (修改)；<br>`executionMode`: `IMMEDIATE` (即时) \| `DELAYED` (延迟条件)；<br>`orderId`: 修改订单时必填订单 ID，新建订单禁止传入；<br>`orderPayload`: 官方 Schwab Order JSON（最大 64 KiB，严格深度限制）；<br>`userInstruction`: 用户明确交易指令文字 (1~4000 字符)；<br>`condition` / `validUntil` / `pollIntervalSeconds` / `replacesTaskId`: 延迟订单必填条件参数。 |
+| `get_trade_proposal` | 查询当前客户端提案状态和执行结果，不返回确认凭据 | `proposalId`: 提案 UUID。 |
 | `confirm_trade` | 提交复述文本并消费一次性确认令牌 | `proposalId`: 提案 UUID；<br>`confirmationToken`: 43 字符一次性令牌；<br>`confirmationText`: 必须完全一致复述由 `prepare_trade` 生成的确认确认句。 |
 | `enable_session_direct_trading` | 在用户明确指令下开启当前 Agent 会话直下能力 | `userInstruction`: 明确的用户开启指令。<br>返回敏感 `sessionCapability` (43 字符)，全局仅返回一次。 |
 | `place_order_direct` | 使用 Session 直下能力提交即时建单 (绕过逐单确认) | `sessionCapability`: 43 字符 Session 令牌；<br>`executionKey`: 客户端生成的幂等 UUID；<br>`accountHash`: 账户哈希；<br>`orderPayload`: 订单载荷；<br>`userInstruction`: 当前单笔下单的明确用户指令。 |
@@ -208,6 +211,24 @@ flowchart TD
 | `cancel_delayed_trade` | 立即取消处于 `ACTIVE` 状态的延迟任务 | `taskId`: 任务 UUID；<br>`userInstruction`: 明确的用户取消指令。**无需二次确认。** |
 
 ---
+
+## Advanced Security：可选的 Passkey 订单批准
+
+在 OAuth 授权页选择**完整访问**后，可勾选 **Advanced Security**。新客户端默认关闭，重新授权默认保持该客户端上次保存的选择。设置按客户端生效，其他未开启的完整访问客户端仍沿用普通确认及 session 直下策略。缺少新字段的旧授权保持普通行为，不更新 `AUTHORIZATION_VERSION`。
+
+通过 GitHub numeric owner 校验后，首次开启须注册首个 Passkey；已有凭据时须验证已有 Passkey。关闭也须已有 Passkey 验证。只有成功撤销此客户端全部旧 grant 后，才提交新客户端策略并签发授权；DO 同时核对可信客户端身份和策略版本，阻止旧 token 按旧模式写入。
+
+增强模式保留 `prepare_trade` 输入，返回 `proposalId`、`approvalMethod: "passkey"`、`approvalUrl`、冻结预览、摘要及到期时间，**不返回可执行的确认令牌或短语**。用电脑或手机外部浏览器打开链接，必要时先通过 GitHub owner 登录。核对账户 hash、每条订单腿、方向、数量、价格类型、有效期及完整 JSON，延迟任务还须核对条件和截止时间。点击“批准并提交”后才调用 WebAuthn；验证成功即提交即时订单或激活冻结的延迟任务。Agent 通过 `get_trade_proposal({ proposalId })` 获取当前客户端提案状态与执行结果。重复批准不会重复提交，`EXECUTION_UNCERTAIN` 仍须人工查询订单。
+
+每笔即时建单、改单及延迟任务创建和修改都须 Passkey 批准；受保护延迟任务即使由普通客户端修改，也不能降级为对话确认。增强客户端不注册 `confirm_trade`、`enable_session_direct_trading`、`place_order_direct`，DO 也拒绝这些路径。撤单、取消延迟任务、关闭已有 session 保持原策略。`ENABLE_TRADING=false` 时也禁止浏览器批准、激活和触发交易。
+
+在 `/security` 管理 owner 共享的多个凭据，可以命名、添加、重命名、删除；添加、重命名或删除需要已有 Passkey 验证，不允许直接删除最后一个。**全部凭据丢失时**打开 `/security/recover`，此入口必走独立 GitHub owner OAuth，不能凭 MCP token 或已有安全浏览器会话重置。输入 **重置全部 Passkey**，注册替代凭据成功后才原子替换。恢复使旧凭据、浏览器会话、challenge 和所有待批准增强提案失效；已激活延迟任务和增强客户端策略继续保留。恢复后关闭功能仍需用新凭据验证。**GitHub 账户是凭据恢复的信任入口。**
+
+提案五分钟、浏览器会话十五分钟、一次性 challenge 最长两分钟有效，challenge 不超过提案及会话剩余寿命。取消、超时或不支持 WebAuthn 均保持未批准，不降级为对话确认。原生 WebAuthn 要求用户验证，使用锁定版本的 [`@simplewebauthn/server@14.0.3`](https://simplewebauthn.dev/docs/packages/server) 验证密码学签名。预期 origin 固定为已配置 Schwab 回调的 origin，RP ID 为其 hostname，批准链接必须使用相同 origin。无需手机应用、通知服务、CDN、新前端构建或新 Worker binding。
+
+凭据、策略及浏览器状态只存于 owner DO SQLite，迁移可重复执行并只增量加表、加字段，不重建已有表，不删除 Schwab token 或交易历史。本功能防御 MCP 令牌或客户端失陷，不承诺抵抗 Worker、批准设备或 GitHub 恢复账户被控制。
+
+本地验证包含真实签名的软件认证器测试、OAuth 回归、部署配置及工具自省和 Wrangler dry-run 打包。浏览器页面使用受控本地 fixture 检查；**Safari、手机及真实设备 Passkey 操作仍须发布前人工验收**。参见[验证记录与人工验收](docs/passkey-validation.md)。
 
 ## 安全边界与交易防护机制
 
@@ -306,7 +327,7 @@ sequenceDiagram
 
 ### 环境准备
 
-- **Node.js**: 20.0.0 或更高版本 (推荐 Node.js 22 LTS)
+- **Node.js**: 22.0.0 或更高版本 (推荐 Node.js 22 LTS)
 - **Cloudflare 账户**: 拥有 Workers 与 Durable Objects 权限
 - **GitHub 账户**: 创建用于身份校验的 GitHub OAuth App
 - **Charles Schwab Developer 账户**: 拥有 Approved 状态的 Schwab Developer App
@@ -495,6 +516,9 @@ https://<your-worker-domain>/mcp
 
 | 错误码 (`code`) | 产生原因 | 应对措施 |
 | :--- | :--- | :--- |
+| `SECURITY_VERIFICATION_FAILED` | Passkey 验证或浏览器绑定失败 | 重新开始浏览器验证，不降级对话确认。 |
+| `SECURITY_POLICY_CHANGED` | 当前客户端策略版本过时 | 重新连接此 MCP 客户端。 |
+| `BROWSER_AUTH_REQUIRED` | 浏览器会话无效或已过期 | 重新走 GitHub owner 登录。 |
 | `AUTH_REQUIRED` | 未初始化绑定 Schwab 凭据 | 访问返回体中的 `reconnectUrl` 进行首次 OAuth 绑定。 |
 | `REAUTHORIZATION_REQUIRED` | 凭据失效（如超过 7 天无活动导致 Refresh Token 过期） | 访问返回体中的 `reconnectUrl` 重新完成 Schwab 网页授权。 |
 | `INVALID_ARGUMENT` | 参数未通过 Zod 校验（格式不符、大小超限、缺少必填字段） | 检查输入参数是否符合 `src/schemas.ts` 规范要求。 |

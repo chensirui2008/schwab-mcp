@@ -4,6 +4,7 @@ export interface AuthorizePageProps {
   clientName: string;
   redirectUri: string;
   state: string;
+  advancedSecurity?: boolean;
 }
 
 function createBackgroundSvg(): string {
@@ -592,20 +593,30 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
       <fieldset class="permission-options">
         <legend>选择此客户端的权限</legend>
         <label class="permission-option">
-          <input type="radio" name="permissionLevel" value="read_only" form="authorize-form" required checked>
+          <input type="radio" name="permissionLevel" value="read_only" form="authorize-form" required ${props.advancedSecurity ? "" : "checked"}>
           <span>
             <span class="policy-title">只读 · Read only</span><br>
             <span class="policy-desc">允许读取账户与行情；不向模型暴露交易工具。</span>
           </span>
         </label>
         <label class="permission-option">
-          <input type="radio" name="permissionLevel" value="full_access" form="authorize-form" required>
+          <input type="radio" name="permissionLevel" value="full_access" form="authorize-form" required ${props.advancedSecurity ? "checked" : ""}>
           <span>
             <span class="policy-title">完整访问 · Full access</span><br>
             <span class="policy-desc">向模型暴露所有工具；保留现有二次确认、session 直下模式和撤单规则。</span>
           </span>
         </label>
       </fieldset>
+      <label class="permission-option" id="advanced-option">
+        <input type="checkbox" name="advancedSecurity" form="authorize-form" ${props.advancedSecurity ? "checked" : ""}>
+        <span><span class="policy-title">Advanced Security · Passkey 订单批准</span><br><span class="policy-desc">仅完整访问可开启。每笔建单、改单及延迟任务创建和修改均需浏览器 Passkey 批准；禁止 session 直下。设置按客户端生效，其他未开启的完整访问客户端仍沿用普通策略。GitHub 账户是凭据恢复的信任入口。</span></span>
+      </label>
+      <script>
+        const advanced = document.querySelector('[name="advancedSecurity"]');
+        function updateAdvanced() { advanced.disabled = !document.querySelector('[name="permissionLevel"][value="full_access"]').checked; }
+        document.querySelectorAll('[name="permissionLevel"]').forEach(input => input.addEventListener('change', updateAdvanced));
+        updateAdvanced();
+      </script>
 
       <div class="security-notice">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

@@ -25,7 +25,11 @@ const apiHandler = {
         },
       });
     }
-    const handler = createMcpHandler(() => createServer(env, props.permissionLevel), {
+    const token = request.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
+    const summary = token ? await env.OAUTH_PROVIDER.unwrapToken<unknown>(token) : null;
+    if (!summary || (props.clientId !== undefined && props.clientId !== summary.grant.clientId)) return Response.json({ error: "invalid_token" }, { status: 401, headers: cors });
+    const identity = { clientId: summary.grant.clientId, advancedSecurity: props.advancedSecurity ?? false, securityPolicyVersion: props.securityPolicyVersion ?? 0 };
+    const handler = createMcpHandler(() => createServer(env, props.permissionLevel, identity), {
       legacy: "stateless",
       responseMode: "auto",
       onerror(error) {

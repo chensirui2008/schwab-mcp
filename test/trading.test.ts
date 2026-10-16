@@ -18,7 +18,7 @@ async function saveToken(vault: DurableObjectStub): Promise<void> {
   const response = await vault.fetch("https://vault/token", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ access_token: "trade-access", refresh_token: "trade-refresh", expires_in: 1800 }),
+    body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 }, access_token: "trade-access", refresh_token: "trade-refresh", expires_in: 1800 }),
   });
   expect(response.status).toBe(204);
 }
@@ -36,7 +36,7 @@ async function prepare(vault: DurableObjectStub, overrides: Record<string, unkno
   const response = await vault.fetch("https://vault/trade/prepare", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 },
       requestId: crypto.randomUUID(),
       input: {
         accountHash: "a".repeat(32),
@@ -57,7 +57,7 @@ async function confirm(vault: DurableObjectStub, proposal: Awaited<ReturnType<ty
   return vault.fetch("https://vault/trade/confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ requestId: crypto.randomUUID(), input: proposal }),
+    body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 }, requestId: crypto.randomUUID(), input: proposal }),
   });
 }
 
@@ -65,7 +65,7 @@ async function enableDirectTrading(vault: DurableObjectStub): Promise<string> {
   const response = await vault.fetch("https://vault/trade/session/enable", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ requestId: crypto.randomUUID(), input: { userInstruction: "Enable direct placement for this agent session" } }),
+    body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 }, requestId: crypto.randomUUID(), input: { userInstruction: "Enable direct placement for this agent session" } }),
   });
   expect(response.status).toBe(200);
   const payload = await response.json<{ result: { sessionCapability: string } }>();
@@ -76,7 +76,7 @@ function placeDirect(vault: DurableObjectStub, sessionCapability: string, execut
   return vault.fetch("https://vault/trade/place-direct", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 },
       requestId: crypto.randomUUID(),
       input: {
         sessionCapability,
@@ -136,7 +136,7 @@ describe("trade confirmation state machine", () => {
     const response = await vault.fetch("https://vault/trade/prepare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 },
         requestId: crypto.randomUUID(),
         input: {
           accountHash: "a".repeat(32),
@@ -159,7 +159,7 @@ describe("trade confirmation state machine", () => {
     const response = await vault.fetch("https://vault/trade/cancel-order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 },
         requestId: crypto.randomUUID(),
         input: { accountHash: "a".repeat(32), orderId: 42, userInstruction: "Cancel order 42" },
       }),
@@ -189,7 +189,7 @@ describe("trade confirmation state machine", () => {
     const listed = await vault.fetch("https://vault/trade/list-delayed", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId: crypto.randomUUID(), input: {} }),
+      body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 }, requestId: crypto.randomUUID(), input: {} }),
     });
     expect(await listed.json()).toMatchObject({ result: [{ status: "EXECUTED", outcome: { result: { orderId: 777 } } }] });
   });
@@ -233,7 +233,7 @@ describe("trade confirmation state machine", () => {
     const listed = await vault.fetch("https://vault/trade/list-delayed", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId: crypto.randomUUID(), input: {} }),
+      body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 }, requestId: crypto.randomUUID(), input: {} }),
     });
     expect(await listed.json()).toMatchObject({ result: [{ status: "FAILED", outcome: { error: { code: "UPSTREAM_UNAVAILABLE" } } }] });
   });
@@ -264,7 +264,7 @@ describe("trade confirmation state machine", () => {
     const listed = await vault.fetch("https://vault/trade/list-delayed", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId: crypto.randomUUID(), input: {} }),
+      body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 }, requestId: crypto.randomUUID(), input: {} }),
     });
     expect(await listed.json()).toMatchObject({ result: [{ status: "EXPIRED" }] });
   });
@@ -361,7 +361,7 @@ describe("agent-session direct placement", () => {
     const disabled = await vault.fetch("https://vault/trade/session/disable", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId: crypto.randomUUID(), input: { sessionCapability } }),
+      body: JSON.stringify({ identity: { clientId: "test-legacy", advancedSecurity: false, securityPolicyVersion: 0 }, requestId: crypto.randomUUID(), input: { sessionCapability } }),
     });
     expect(disabled.status).toBe(200);
     expect(JSON.stringify(await disabled.json())).not.toContain(sessionCapability);

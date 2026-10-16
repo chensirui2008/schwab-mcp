@@ -46,6 +46,7 @@ describe("authenticated tool exposure", () => {
   const tradingTools = [
     "enable_trading",
     "prepare_trade",
+    "get_trade_proposal",
     "confirm_trade",
     "enable_session_direct_trading",
     "disable_session_direct_trading",
@@ -71,6 +72,7 @@ describe("authenticated tool exposure", () => {
   });
 
   it("reports the deployment switch without an OAuth trade gate", () => {
+    expect(tradingDiagnostics({ ENABLE_TRADING: "true" } as AppEnv, "full_access", true)).toMatchObject({ advancedSecurity: true, approvalMethod: "passkey", sessionDirectTradingAvailable: false });
     expect(tradingDiagnostics({ ENABLE_TRADING: "true" } as AppEnv, "full_access")).toMatchObject({
       oauthTradeScopeRequired: false,
       tradingToolsRegistered: true,
