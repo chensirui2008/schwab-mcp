@@ -4,7 +4,7 @@ import { renderSecurityPage } from "./security-ui";
 import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { renderAuthorizePage, renderSchwabConnectedPage } from "./auth-ui";
+import { renderAuthorizePage, renderGitHubContinuePage, renderSchwabConnectedPage } from "./auth-ui";
 import type { ErrorCode, PublicError } from "./types";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
@@ -183,6 +183,8 @@ async function finishAuthorization(env: AppEnv, pending: PendingAuthorization, t
 const app = new Hono<{ Bindings: AppEnv }>();
 
 app.use("*", async (c, next) => {
+  await next();
+  // Apply to the final response, including early errors built with Response.json().
   if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize")) {
     c.header("Cache-Control", "no-store");
     c.header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
@@ -190,7 +192,6 @@ app.use("*", async (c, next) => {
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
   }
-  await next();
 });
 
 async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: boolean, returnTo = "/security") {
@@ -315,7 +316,7 @@ app.post("/authorize/approve", async (c) => {
   if (advancedSecurity && permissionLevel !== "full_access") return c.text("Advanced Security requires full access", 400);
   const githubState = await saveState(c.env, "github", { ...payload, permissionLevel, advancedSecurity });
   setCookie(c, FLOW_COOKIE, githubState, FLOW_COOKIE_OPTIONS);
-  return c.redirect(githubAuthorizationUrl(c.env, payload.origin, githubState));
+  return c.html(renderGitHubContinuePage(githubAuthorizationUrl(c.env, payload.origin, githubState)));
 });
 
 app.get("/auth/schwab/connect", async (c) => {

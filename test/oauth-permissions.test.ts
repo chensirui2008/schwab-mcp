@@ -37,6 +37,19 @@ async function dispatch(request: Request, appEnv: AppEnv, provider = worker) {
   return response;
 }
 
+async function githubContinueUrl(response: Response): Promise<URL> {
+  expect(response.status).toBe(200);
+  expect(response.headers.get("location")).toBeNull();
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(response.headers.get("Content-Security-Policy")).toContain("form-action 'self';");
+  const page = await response.clone().text();
+  const target = page.match(/id="github-continue" href="([^"]+)"/)?.[1]?.replaceAll("&amp;", "&");
+  const url = new URL(target ?? "");
+  expect(url.origin).toBe("https://github.com");
+  expect(url.pathname).toBe("/login/oauth/authorize");
+  return url;
+}
+
 async function authRequest(helpers: AppEnv["OAUTH_PROVIDER"], registeredClientId?: string): Promise<AuthRequest> {
   const clientId = registeredClientId ?? (await helpers.createClient({
     redirectUris: [redirectUri], clientName: "Test client", tokenEndpointAuthMethod: "none",
@@ -353,8 +366,7 @@ describe("browser permission consent", () => {
     const approved = await dispatch(new Request(`${origin}/authorize/approve`, {
       method: "POST", headers: { Cookie: cookie }, body: new URLSearchParams({ state, permissionLevel }),
     }), appEnv);
-    expect(approved.status).toBe(302);
-    const githubState = new URL(approved.headers.get("location") ?? "").searchParams.get("state") ?? "";
+    const githubState = (await githubContinueUrl(approved)).searchParams.get("state") ?? "";
     const githubCookie = approved.headers.get("set-cookie")?.split(";")[0] ?? "";
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(Response.json({ access_token: "test-github-token" }))
@@ -507,6 +519,40 @@ describe("browser permission consent", () => {
 });
 
 describe("Advanced Security OAuth and browser boundaries", () => {
+  it.each([false, true])("ends the consent POST before navigating to GitHub (advanced=%s), and rejects replay", async advancedSecurity => {
+    const { appEnv, helpers } = setup();
+    const request = await authRequest(helpers);
+    const page = await dispatch(new Request(`${origin}/authorize?${authorizationParams(request)}`), appEnv);
+    const originalCookie = page.headers.get("set-cookie")?.split(";")[0] ?? "";
+    const state = originalCookie.split("=")[1] ?? "";
+    const form = new URLSearchParams({ state, permissionLevel: "full_access", ...(advancedSecurity ? { advancedSecurity: "on" } : {}) });
+    const approved = await dispatch(new Request(`${origin}/authorize/approve`, { method: "POST", headers: { Cookie: originalCookie }, body: form }), appEnv);
+    const next = await githubContinueUrl(approved);
+    const newCookie = approved.headers.get("set-cookie")?.split(";")[0] ?? "";
+    expect(next.searchParams.get("state")).toBe(newCookie.split("=")[1]);
+    expect(newCookie).not.toBe(originalCookie);
+    expect(next.searchParams.get("redirect_uri")).toBe(`${origin}/auth/github/callback`);
+    for (const cookie of [originalCookie, newCookie]) {
+      const replay = await dispatch(new Request(`${origin}/authorize/approve`, { method: "POST", headers: { Cookie: cookie }, body: form }), appEnv);
+      expect(replay.status).toBe(400);
+      expect(replay.headers.get("location")).toBeNull();
+    }
+  });
+
+  it("preserves browser security headers on early error responses", async () => {
+    const { appEnv } = setup();
+    for (const [path, method] of [["/security/api/options", "POST"], ["/security/api/verify", "POST"], ["/security/api/unknown", "POST"], ["/authorize", "GET"]] as const) {
+      const response = await dispatch(new Request(`${origin}${path}`, {
+        method, ...(method === "POST" ? { headers: { Origin: origin, "Content-Type": "application/json" }, body: "{}" } : {}),
+      }), appEnv);
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+      expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+      expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    }
+  });
+
   async function resetSecurity(appEnv: AppEnv) {
     const { runInDurableObject } = await import("cloudflare:test");
     await runInDurableObject(vaultStub(appEnv), (_instance, state) => {
@@ -525,7 +571,7 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     return { page, selected };
   }
   async function callback(appEnv: AppEnv, selected: Response) {
-    const location = new URL(selected.headers.get("location") ?? "");
+    const location = await githubContinueUrl(selected);
     const state = location.searchParams.get("state") ?? "";
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(Response.json({ access_token: "github-security-test" }))
