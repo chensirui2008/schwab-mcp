@@ -9,10 +9,11 @@
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-black)](https://modelcontextprotocol.io/)
 [![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/chensirui2008/schwab-mcp)
 
 > [!CAUTION]
-> **免责声明 (Disclaimer)**  
-> 本项目仅供技术学习、个人研究及自动化实验使用，**不构成任何投资建议、财务咨询或交易撮合指令**。  
+> **免责声明 (Disclaimer)**
+> 本项目仅供技术学习、个人研究及自动化实验使用，**不构成任何投资建议、财务咨询或交易撮合指令**。
 > 证券与期权交易具有重大本金亏损风险。使用本项目直接或间接连接真实券商交易接口时，用户须自行承担因 API 异常、网络延迟、大语言模型幻觉输出、不可抗力或软件缺陷导致的一切投资风险与资金损失。本项目作者及贡献者概不对任何交易后果与损失承担法律责任。
 
 这是一个运行在 **Cloudflare Workers** 上的**个人自托管（Self-Hosted）专用高安全性远程 Model Context Protocol (MCP) 服务**。完全部署在您个人的 Cloudflare 账户内（**兼容 100% 免费额度 Free Tier**，无需任何 VPS、服务器租用或常开家用主机）。它将 Charles Schwab 生产环境的官方 REST 行情、账户资产查询，以及经过严格安全防护的真实建单、改单与撤单能力封装为标准的 **Streamable HTTP MCP** 接口（暴露在 `/mcp` 端点）。
@@ -110,7 +111,7 @@ flowchart TD
     Router["Worker Router (/mcp, /authorize, /auth/*)"]
     OAuthProvider["@cloudflare/workers-oauth-provider"]
     KV[("OAUTH_KV (Client & Grant Metadata)")]
-    
+
     subgraph StorageDO ["单个 Owner: SchwabVault Durable Object"]
       DO["Durable Object Runtime"]
       SQLite[("DO 内置 SQLite 存储\n- Schwab Tokens & Expiry\n- 确认提案 (Proposals)\n- Session 直下哈希摘要\n- 延迟条件任务 (Delayed Tasks)\n- 脱敏交易审计记录")]
@@ -143,23 +144,23 @@ flowchart TD
 
 ### 1. 资产透视与期权链分析（只读模式）
 
-> **用户**：“帮我查一下当前 NVDA 的持仓盈亏，顺便看一下下个月到期、行权价 140 的 Call 表现如何？”  
-> **Agent**：*(自动调用 `get_account` 与 `get_option_chain`)*  
+> **用户**：“帮我查一下当前 NVDA 的持仓盈亏，顺便看一下下个月到期、行权价 140 的 Call 表现如何？”
+> **Agent**：*(自动调用 `get_account` 与 `get_option_chain`)*
 > “您当前持有 NVDA 100 股，均价 $118.40，浮盈 +18.2%。下个月到期的 $140 CALL 当前买卖价差为 $4.20 / $4.35，Delta 为 0.38，隐含波动率 IV 为 42.1%。”
 
 ### 2. 防幻觉两阶段确认建单（交易控制模式）
 
-> **用户**：“帮我以限价 $220 买入 10 股 AAPL。”  
-> **Agent**：*(调用 `prepare_trade` 冻结订单快照并生成防呆口令)*  
-> “已为您生成并冻结订单提案（有效期 5 分钟）：  
-> - **方向**：买入 10 股 AAPL @ 限价 $220.00 (当日有效)  
-> - **账户**：`...8a9f`  
-> - **提案 ID**：`prop_01JABC...`  
-> ⚠️ **为确保资金安全，请原样复述以下确认短语以执行下单：**  
-> `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`”  
->  
-> **用户**：`CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`  
-> **Agent**：*(调用 `confirm_trade` 消费一次性令牌)*  
+> **用户**：“帮我以限价 $220 买入 10 股 AAPL。”
+> **Agent**：*(调用 `prepare_trade` 冻结订单快照并生成防呆口令)*
+> “已为您生成并冻结订单提案（有效期 5 分钟）：
+> - **方向**：买入 10 股 AAPL @ 限价 $220.00 (当日有效)
+> - **账户**：`...8a9f`
+> - **提案 ID**：`prop_01JABC...`
+> ⚠️ **为确保资金安全，请原样复述以下确认短语以执行下单：**
+> `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`”
+>
+> **用户**：`CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`
+> **Agent**：*(调用 `confirm_trade` 消费一次性令牌)*
 > “订单已成功提交至嘉信理财 (Charles Schwab)，委托编号：`#10098234`。”
 
 ---

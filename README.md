@@ -9,9 +9,10 @@ English | [简体中文](README.zh-CN.md)
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-black)](https://modelcontextprotocol.io/)
 [![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)](https://vitest.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/chensirui2008/schwab-mcp)
 
 > [!CAUTION]
-> **Disclaimer**  
+> **Disclaimer**
 > This project is for educational, research, and experimental automation purposes only. **It does NOT constitute financial advice or investment recommendations.** Trading securities and options carries substantial risk of loss. Authors and contributors assume no liability for any trading actions, losses, API errors, network latency, or LLM hallucinations.
 
 A production-grade, single-user remote **Model Context Protocol (MCP)** server **self-hosted on your personal Cloudflare Workers (100% Free-Tier friendly)**. It exposes Charles Schwab market data and account services to LLM clients (Cursor, Claude Desktop, VS Code) via **Streamable HTTP** (`/mcp`) with strict zero-trust security and anti-hallucination guardrails.
@@ -70,7 +71,7 @@ flowchart TD
     Router["Worker Router (/mcp, /authorize, /auth/*, /security/*)"]
     OAuthProvider["@cloudflare/workers-oauth-provider"]
     KV[("OAUTH_KV (Client & Grant Meta)")]
-    
+
     subgraph StorageDO ["SchwabVault Durable Object"]
       DO["Durable Object Runtime"]
       SQLite[("DO SQLite Storage\n- Schwab Tokens & Expiry\n- Proposals & Direct Session\n- Delayed Tasks\n- Passkeys / Policies / Browser State\n- Redacted Audit Logs")]
@@ -101,23 +102,23 @@ flowchart TD
 
 ### 1. Portfolio Analysis & Option Chain (Read-Only)
 
-> **User**: *"What's my current position in NVDA, and what does the next monthly 140 CALL option look like?"*  
-> **Agent**: *(Calls `get_account` and `get_option_chain`)*  
+> **User**: *"What's my current position in NVDA, and what does the next monthly 140 CALL option look like?"*
+> **Agent**: *(Calls `get_account` and `get_option_chain`)*
 > *"You hold 100 shares of NVDA at an average price of $118.40 (unrealized P&L: +18.2%). The 30-day $140 CALL is currently trading at $4.20 bid / $4.35 ask, with Delta 0.38 and IV of 42.1%."*
 
 ### 2. Guarded Order Execution (Two-Phase Confirmation)
 
-> **User**: *"Buy 10 shares of AAPL with a limit order at $220.00."*  
-> **Agent**: *(Calls `prepare_trade` with action `PLACE` to freeze order snapshot)*  
-> *"I have prepared and frozen the order snapshot:*  
-> *- **Action**: BUY 10 AAPL @ Limit $220.00 (Day)*  
-> *- **Account**: `...8a9f`*  
-> *- **Proposal ID**: `prop_01JABC...` (Valid for 5 minutes)*  
-> *⚠️ **To confirm and execute, please reply verbatim with:**  
-> `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`"*  
->  
-> **User**: `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`  
-> **Agent**: *(Calls `confirm_trade` consuming one-time token with verbatim phrase)*  
+> **User**: *"Buy 10 shares of AAPL with a limit order at $220.00."*
+> **Agent**: *(Calls `prepare_trade` with action `PLACE` to freeze order snapshot)*
+> *"I have prepared and frozen the order snapshot:*
+> *- **Action**: BUY 10 AAPL @ Limit $220.00 (Day)*
+> *- **Account**: `...8a9f`*
+> *- **Proposal ID**: `prop_01JABC...` (Valid for 5 minutes)*
+> *⚠️ **To confirm and execute, please reply verbatim with:**
+> `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`"*
+>
+> **User**: `CONFIRM BUY 10 AAPL LIMIT 220.00 HASH 8a9f`
+> **Agent**: *(Calls `confirm_trade` consuming one-time token with verbatim phrase)*
 > *"Order successfully placed with Charles Schwab. Order ID: `#10098234`."*
 
 ---
