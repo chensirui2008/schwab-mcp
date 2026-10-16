@@ -48,3 +48,25 @@ Baseline fixture counters: 0 GitHub authorizations, 0 mock token exchanges, 0 re
 ## Release boundary
 
 The local browsers demonstrated that this regression is fixed without weakening CSP. Production GitHub owner login and real-client callback still need a smoke test after an explicitly approved production release. This test does not authorize production deployment, Schwab connection changes or trading. The fixture processes were stopped after validation.
+
+## Same-Worker cloud acceptance (2026-10-16)
+
+The owner explicitly requested test routes inside the existing `schwab-mcp` Worker and authorized deploying them. No separate Worker was created. `/__test/*` uses an optional `ACCEPTANCE_KEY` Worker Secret, separate HttpOnly cookies, a dedicated `ACCEPTANCE_KV` namespace and SQLite `AcceptanceVault`. Every run gets a new Durable Object identity. Missing key/bindings disable the routes with 404. Production routes continue to use the real GitHub provider, original KV/DO, and existing secrets.
+
+The acceptance vault replaces all brokerage configuration with dummy values, forces trading off, and rejects credential storage, accounts and trading paths before calling the production vault implementation. Browser routes cannot directly proxy MCP, token, or Schwab endpoints. OAuth tokens are used server-side for verification and never returned in HTML or stored in reports. Reports expire after one hour. The software authenticator creates an in-memory test key and uses the actual server WebAuthn verifier; it does not create a device Passkey.
+
+### Reproduce
+
+1. Set the optional `ACCEPTANCE_KEY` through Worker Secrets; never put it in configuration, a URL, or a committed file. Keep the existing three required secret names unchanged.
+2. Open `https://schwab-mcp.siruichen461.workers.dev/__test/` and unlock using that key. Choose a fresh ordinary or enhanced flow. Select Full access; select Advanced Security for the enhanced flow. Click the normal consent button, then the software registration button when prompted.
+3. Expect `tokenExchange: 200`, `mcpStatus: 200`, `prepareTrade: true`, `tradingEnabled: false`, and `realSchwabRequests: 0`. Ordinary mode exposes `confirmTrade`; enhanced mode hides it.
+4. For genuinely cross-origin CSP validation, run `node scripts/mock-github-acceptance.mjs` on the browser's Mac, then open `/__test/start?mode=plain&crossOrigin=1` and repeat with `mode=enhanced`. The loopback provider only redirects a valid mock authorization to the fixed cloud callback. PKCE, OAuth persistence, Passkey verification, token exchange and authenticated MCP all run in the deployed Cloudflare Worker. Default test flows use a mock route in the same Worker and do not require this helper.
+5. Delete the optional Worker Secret when testing is no longer needed; routes then return 404. This is a deployment operation and does not clear production grants or credentials.
+
+### Observed cloud results
+
+Chrome completed both cross-origin flows on the existing Worker, deployed version `e70a255f-4fb4-4f6f-97d3-38ead125b20e`. Both returned token exchange 200 and MCP 200, with `prepareTrade: true`. Ordinary `confirmTrade: true`; enhanced `confirmTrade: false`. Both reported trading disabled and zero real Schwab requests. The loopback provider observed both callbacks. The consent CSP remained `form-action 'self'`; production configuration and secret values were preserved. The live production trading flag was already `false` when preparing this deployment and remained `false`.
+
+`npm run validate` passed: 127 Worker tests, 2 deployment configuration tests, 25 tool introspection checks, and 4 browser fixture tests. Five added Worker tests cover the optional gate, foreign-origin unlock rejection, blocked brokerage/token/MCP routes, production/test storage and cookie isolation, mock callback restrictions, and DO-level brokerage denial.
+
+These results validate deployed application behavior with simulated GitHub and a software authenticator. They do not claim a real GitHub login or a new Safari/iPhone hardware Passkey run against production. Earlier device acceptance is documented separately.

@@ -94,7 +94,7 @@ async function consumeState<T>(env: AppEnv, state: string, kind: string): Promis
 }
 
 function githubAuthorizationUrl(env: AppEnv, origin: string, state: string): string {
-  const url = new URL("https://github.com/login/oauth/authorize");
+  const url = new URL(env.acceptanceGitHub?.url ?? "https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
   url.searchParams.set("redirect_uri", `${origin}/auth/github/callback`);
   url.searchParams.set("scope", "read:user");
@@ -103,7 +103,7 @@ function githubAuthorizationUrl(env: AppEnv, origin: string, state: string): str
 }
 
 async function exchangeGitHubCode(env: AppEnv, origin: string, code: string): Promise<GitHubUser> {
-  const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+  const tokenResponse = await (env.acceptanceGitHub?.fetch ?? fetch)("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -116,7 +116,7 @@ async function exchangeGitHubCode(env: AppEnv, origin: string, code: string): Pr
   const tokenBody: unknown = await tokenResponse.json();
   const accessToken = tokenBody !== null && typeof tokenBody === "object" ? Reflect.get(tokenBody, "access_token") as unknown : undefined;
   if (!tokenResponse.ok || typeof accessToken !== "string") throw new Error("GitHub token exchange failed");
-  const profileResponse = await fetch("https://api.github.com/user", {
+  const profileResponse = await (env.acceptanceGitHub?.fetch ?? fetch)("https://api.github.com/user", {
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${accessToken}`,
