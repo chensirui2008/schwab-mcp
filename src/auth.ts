@@ -4,7 +4,7 @@ import { renderSecurityPage } from "./security-ui";
 import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { renderAuthorizePage, renderSchwabConnectedPage } from "./auth-ui";
+import { renderAuthorizePage, renderGitHubContinuePage, renderSchwabConnectedPage } from "./auth-ui";
 import type { ErrorCode, PublicError } from "./types";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
@@ -94,7 +94,7 @@ async function consumeState<T>(env: AppEnv, state: string, kind: string): Promis
 }
 
 function githubAuthorizationUrl(env: AppEnv, origin: string, state: string): string {
-  const url = new URL("https://github.com/login/oauth/authorize");
+  const url = new URL(env.acceptanceGitHub?.url ?? "https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
   url.searchParams.set("redirect_uri", `${origin}/auth/github/callback`);
   url.searchParams.set("scope", "read:user");
@@ -103,7 +103,7 @@ function githubAuthorizationUrl(env: AppEnv, origin: string, state: string): str
 }
 
 async function exchangeGitHubCode(env: AppEnv, origin: string, code: string): Promise<GitHubUser> {
-  const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+  const tokenResponse = await (env.acceptanceGitHub?.fetch ?? fetch)("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -116,7 +116,7 @@ async function exchangeGitHubCode(env: AppEnv, origin: string, code: string): Pr
   const tokenBody: unknown = await tokenResponse.json();
   const accessToken = tokenBody !== null && typeof tokenBody === "object" ? Reflect.get(tokenBody, "access_token") as unknown : undefined;
   if (!tokenResponse.ok || typeof accessToken !== "string") throw new Error("GitHub token exchange failed");
-  const profileResponse = await fetch("https://api.github.com/user", {
+  const profileResponse = await (env.acceptanceGitHub?.fetch ?? fetch)("https://api.github.com/user", {
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${accessToken}`,
@@ -183,6 +183,8 @@ async function finishAuthorization(env: AppEnv, pending: PendingAuthorization, t
 const app = new Hono<{ Bindings: AppEnv }>();
 
 app.use("*", async (c, next) => {
+  await next();
+  // Apply to the final response, including early errors built with Response.json().
   if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize")) {
     c.header("Cache-Control", "no-store");
     c.header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
@@ -190,7 +192,6 @@ app.use("*", async (c, next) => {
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
   }
-  await next();
 });
 
 async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: boolean, returnTo = "/security") {
@@ -315,7 +316,7 @@ app.post("/authorize/approve", async (c) => {
   if (advancedSecurity && permissionLevel !== "full_access") return c.text("Advanced Security requires full access", 400);
   const githubState = await saveState(c.env, "github", { ...payload, permissionLevel, advancedSecurity });
   setCookie(c, FLOW_COOKIE, githubState, FLOW_COOKIE_OPTIONS);
-  return c.redirect(githubAuthorizationUrl(c.env, payload.origin, githubState));
+  return c.html(renderGitHubContinuePage(githubAuthorizationUrl(c.env, payload.origin, githubState)));
 });
 
 app.get("/auth/schwab/connect", async (c) => {

@@ -30,6 +30,12 @@
 - 新状态只放 owner SQLite DO，浏览器 state/session/challenge 复用 `oauth_state`，不进 KV；迁移可重复执行，旧记录标普通模式，不重建表、不删 Schwab 凭据或交易记录、不增 Worker binding。提案和延迟任务持久保存批准方式、发起客户端及策略版本；受保护任务修改不能降级。
 - 自动测试使用真实本地签名、模拟全部 Schwab 请求；实际 Safari/手机 Passkey 操作未测时必须标注为发布前人工验收。防御范围不包含 Worker、批准设备或 GitHub 恢复账户失陷。
 
+## 同 Worker 隔离验收
+
+- `/__test/*` 仅在可选 Worker Secret `ACCEPTANCE_KEY` 和测试 bindings 齐全时开放；Secret 不加入三个生产必需 Secret 名称，不写入配置、URL 或文档。
+- 测试使用专用 `ACCEPTANCE_KV`、`AcceptanceVault` SQLite DO、独立 cookie 及每次运行独立状态；不得复用生产 owner 会话、grant、凭据或交易数据。该测试设施是原“不增 Worker binding”约束的显式例外，不改变生产 Passkey 存储策略。
+- 模拟 GitHub 只进入测试状态；测试 DO 在构造时强制假凭据和交易关闭，并在路由层拒绝账户、凭据和交易访问。不得把软件认证器作为真实设备验收结果。操作步骤与证据见 `docs/oauth-navigation-validation.md`。
+
 ## 边界
 
 - 行情和账户查询只允许 `GET`。真实建单仅允许 `POST /accounts/{hash}/orders`，改单仅允许 `PUT /accounts/{hash}/orders/{orderId}`，撤单仅允许对应 `DELETE`；其他交易写路径禁止。

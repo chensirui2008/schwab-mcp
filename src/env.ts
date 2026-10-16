@@ -1,6 +1,10 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 export interface AppEnv {
+  ACCEPTANCE_KV?: KVNamespace;
+  ACCEPTANCE_VAULT?: DurableObjectNamespace;
+  ACCEPTANCE_KEY?: string;
+  acceptanceGitHub?: { url: string; fetch: typeof fetch };
   OAUTH_KV: KVNamespace;
   SCHWAB_VAULT: DurableObjectNamespace;
   OAUTH_PROVIDER: OAuthHelpers;

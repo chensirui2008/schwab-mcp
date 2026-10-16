@@ -344,6 +344,10 @@ Configure as a remote MCP server:
 | `DIRECT_TRADING_SESSION_INVALID` | Session expired (30m idle / 8h max) | Call `enable_session_direct_trading` |
 | `EXECUTION_UNCERTAIN` | Network failure during order submission | **Do not blindly retry.** Verify via `get_orders` |
 
+### Same-Worker OAuth acceptance
+
+The optional, access-key-protected `/__test/` routes exercise the deployed OAuth flow with isolated KV/SQLite state, mocked GitHub and a software authenticator. They cannot access brokerage credentials, accounts or trading. Production routes retain real GitHub authentication. See [OAuth navigation validation](docs/oauth-navigation-validation.md#same-worker-cloud-acceptance-2026-10-16) for setup, cross-origin checks, results and shutdown.
+
 ### Real-Time Log Monitoring
 
 Stream sanitized structured JSON logs via Cloudflare Workers Observability:

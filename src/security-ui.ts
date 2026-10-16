@@ -38,6 +38,7 @@ let busy = false;
 async function act(operation, target) {
   if (busy) return;
   busy = true;
+  const enabledButtons = [...document.querySelectorAll('button')].filter(b => !b.disabled);
   document.querySelectorAll('button').forEach(b => b.disabled = true);
   status.textContent = '请在系统提示中完成 Passkey 验证…';
   try {
@@ -59,7 +60,7 @@ async function act(operation, target) {
       document.querySelector('#approve').hidden = true;
     } else location.reload();
   } catch(e) { status.textContent = e.name === 'NotAllowedError' ? '操作已取消或超时，订单保持未批准。' : e.message; }
-  finally { busy = false; document.querySelectorAll('button').forEach(b => b.disabled = false); }
+  finally { busy = false; enabledButtons.forEach(b => b.disabled = false); }
 }
 document.querySelectorAll('[data-operation]').forEach(b => b.addEventListener('click', () => act(b.dataset.operation, b.dataset.target)));
 document.querySelector('#register-add')?.addEventListener('click', async e => {
@@ -77,7 +78,7 @@ if (!window.PublicKeyCredential || !navigator.credentials) {
   document.querySelectorAll('button').forEach(b => b.disabled = true);
 }
 `;
-const STYLE = `body{font:16px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:24px;color:#172230;background:#f5f7fa}main{max-width:850px;margin:auto;background:white;padding:24px;border:1px solid #dce2ea;border-radius:16px}button,input{font:inherit;padding:10px;margin:6px 0;max-width:100%;box-sizing:border-box}button{cursor:pointer;border-radius:7px;background:#123d61;color:white;border:0}button:disabled{opacity:.5}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;background:#f3f5f7}a{color:#13597f}li{overflow-wrap:anywhere;margin:12px 0}label{display:block}#status{white-space:pre-wrap;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse}td,th{text-align:left;border:1px solid #dce2ea;padding:8px;overflow-wrap:anywhere}@media(max-width:500px){body{padding:8px}main{padding:16px}button{width:100%}}`;
+const STYLE = `body{font:16px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:24px;color:#172230;background:#f5f7fa}main{overflow-wrap:anywhere;max-width:850px;margin:auto;background:white;padding:24px;border:1px solid #dce2ea;border-radius:16px}button,input{font:inherit;padding:10px;margin:6px 0;max-width:100%;box-sizing:border-box}button{cursor:pointer;border-radius:7px;background:#123d61;color:white;border:0}button:disabled{opacity:.5}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;background:#f3f5f7}a{color:#13597f}li{overflow-wrap:anywhere;margin:12px 0}label{display:block}#status{white-space:pre-wrap;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse}td,th{text-align:left;border:1px solid #dce2ea;padding:8px;overflow-wrap:anywhere}@media(max-width:500px){body{padding:8px}main{padding:16px}button{width:100%}}`;
 
 function orderSummary(preview: unknown) {
   if (!preview || typeof preview !== "object") return html`<p>订单预览不可用。</p>`;

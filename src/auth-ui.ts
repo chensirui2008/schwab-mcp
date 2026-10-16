@@ -7,6 +7,12 @@ export interface AuthorizePageProps {
   advancedSecurity?: boolean;
 }
 
+// Finish the same-origin form navigation before starting GitHub OAuth. A 302
+// directly from the form POST remains subject to the form-action 'self' CSP.
+export function renderGitHubContinuePage(url: string) {
+  return html`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>继续 GitHub 身份验证</title></head><body><p>正在跳转至 GitHub 身份验证…</p><p><a id="github-continue" href="${url}">若未自动跳转，点击继续 GitHub 身份验证</a></p><script>location.replace(document.getElementById('github-continue').href);</script></body></html>`;
+}
+
 function createBackgroundSvg(): string {
   const particles: string[] = [];
   const colors = [
