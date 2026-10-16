@@ -86,9 +86,9 @@ function createBackgroundSvg(): string {
   return `<svg class="bg-particles" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" fill="none" xmlns="http://www.w3.org/2000/svg"><g>${particles.join("")}</g></svg>`;
 }
 
-const BACKGROUND_SVG = createBackgroundSvg();
+export const BACKGROUND_SVG = createBackgroundSvg();
 
-const BRAND_LOGO_SVG = `<svg class="brand-logo" width="34" height="34" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+export const BRAND_LOGO_SVG = `<svg class="brand-logo" width="34" height="34" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="logo-left" x1="18" y1="4.5" x2="5.5" y2="27.5" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#38bdf8" />
@@ -109,7 +109,7 @@ const BRAND_LOGO_SVG = `<svg class="brand-logo" width="34" height="34" viewBox="
   <path d="M5.5 27.5L30.5 27.5L18 20.5Z" fill="url(#logo-bottom)" />
 </svg>`;
 
-const COMMON_STYLES = `
+export const COMMON_STYLES = `
   :root {
     --bg: #ffffff;
     --card-bg: #f8fafc;
