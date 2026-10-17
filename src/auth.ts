@@ -330,8 +330,19 @@ async function dashboardPolicyRows(env: AppEnv) {
   // Provider timestamps are seconds (completeAuthorization uses Date.now()/1e3).
   const grants = await checkedUserGrants(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID);
   const grantMap = new Map<string, z.infer<typeof grantSchema>>();
+  let legacyGrantCount = 0;
   for (const grant of grants) {
     if (grant.expiresAt !== undefined && grant.expiresAt * 1000 <= Date.now()) continue;
+    const version = z.object({ authorizationVersion: z.string().optional() }).safeParse(grant.metadata ?? {});
+    if (!version.success) throw new Error("Invalid grant version metadata");
+    // Historical grants remain in KV after authorization policy upgrades. They
+    // cannot authorize MCP requests and must never seed a current client policy.
+    if (version.data.authorizationVersion !== AUTHORIZATION_VERSION) {
+      legacyGrantCount++;
+      continue;
+    }
+    const metadata = z.object({ permissionLevel: permissionSchema, advancedSecurity: z.boolean().optional(), securityPolicyVersion: versionSchema.optional() }).safeParse(grant.metadata);
+    if (!metadata.success) throw new Error("Invalid grant permission metadata");
     const current = grantMap.get(grant.clientId);
     if (!current || grant.createdAt > current.createdAt || (grant.createdAt === current.createdAt && grant.id > current.id)) grantMap.set(grant.clientId, grant);
   }
@@ -348,7 +359,7 @@ async function dashboardPolicyRows(env: AppEnv) {
     const policy = await dashboardVault(env, `/client/policy?${query.toString()}`, policySchema);
     policies.set(clientId, policy);
   }
-  return { grantMap, policies };
+  return { grantMap, policies, legacyGrantCount };
 }
 async function requireDashboardClient(env: AppEnv, clientId: string): Promise<ClientPolicy> {
   const { grantMap, policies } = await dashboardPolicyRows(env);
@@ -374,12 +385,12 @@ app.get("/dashboard/api/overview", c => dashboardRequest(c, async state => {
     connected: z.boolean(), status: z.enum(["connected", "reauthorization_required"]),
     accessExpiresAt: timestampSchema.nullable(), refreshExpiresAt: timestampSchema.nullable(),
   }));
-  const { grantMap, policies } = await dashboardPolicyRows(c.env);
+  const { grantMap, policies, legacyGrantCount } = await dashboardPolicyRows(c.env);
   const audit = await dashboardVault(c.env, "/audit/tools?limit=1", z.object({ total: versionSchema }));
   return c.json({
     schwabConnected: schwabStatus.connected, schwabStatus, tradingEnabled: tradingEnabled(c.env),
     clientCount: [...grantMap.keys()].filter(clientId => !policies.get(clientId)?.revoked).length,
-    toolCallsCount: audit.total, passkeyCount: state.credentials.length,
+    toolCallsCount: audit.total, passkeyCount: state.credentials.length, legacyGrantCount,
   });
 }));
 app.get("/dashboard/api/clients", c => dashboardRequest(c, async () => {
