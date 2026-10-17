@@ -103,7 +103,7 @@ main {
   overflow-wrap: anywhere;
 }
 
-main.approval-main {
+main:has(.approval-layout) {
   max-width: 1060px;
 }
 
@@ -547,7 +547,7 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
 </head>
 <body>
   ${raw(BACKGROUND_SVG)}
-  <main class="${proposal ? "approval-main" : ""}">
+  <main>
     <div class="brand-header">
       ${raw(BRAND_LOGO_SVG)}
       <span class="brand-title">SCHWAB MCP</span>
