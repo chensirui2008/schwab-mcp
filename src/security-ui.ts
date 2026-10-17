@@ -96,15 +96,90 @@ main {
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: 520px;
+  max-width: 580px;
   display: flex;
   flex-direction: column;
   align-items: center;
   overflow-wrap: anywhere;
 }
 
+main.approval-main {
+  max-width: 1060px;
+}
+
+.approval-layout {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 20px;
+  width: 100%;
+  align-items: start;
+}
+
+.approval-cockpit, .approval-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.terminal-card {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #060911;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.terminal-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.terminal-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.terminal-dot.red { background: #f43f5e; }
+.terminal-dot.yellow { background: #f59e0b; }
+.terminal-dot.green { background: #10b981; }
+
+.terminal-title {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.terminal-desc {
+  padding: 14px 16px 4px;
+  font-size: 11.5px;
+  color: var(--text-sub);
+  line-height: 1.45;
+}
+
+.approval-inspector .code-preview {
+  margin: 10px 16px;
+  max-height: 440px;
+  border: 1px solid var(--panel-border);
+}
+
+.inspector-badge-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 16px;
+  flex-wrap: wrap;
+}
+
 .pill-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
@@ -158,17 +233,17 @@ main {
   font-size: 13.5px;
   font-family: inherit;
   color: var(--text-main);
-  background: var(--panel-bg);
+  background: var(--code-bg);
   border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border-radius: 6px;
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   box-sizing: border-box;
 }
 
 .text-input:focus {
-  border-color: var(--brand-blue);
-  box-shadow: 0 0 0 3px var(--brand-blue-soft);
+  border-color: var(--brand-cyan);
+  box-shadow: 0 0 0 2px var(--brand-cyan-soft);
 }
 
 .text-input.no-icon {
@@ -183,19 +258,20 @@ main {
   background: var(--panel-bg);
   color: var(--text-main);
   border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 6px 12px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   font-family: inherit;
   transition: background-color 0.15s ease, border-color 0.15s ease;
+  text-decoration: none;
 }
 
 .secondary-btn:hover {
-  background: var(--card-bg);
-  border-color: var(--brand-blue-border);
-  color: var(--brand-blue);
+  background: #131b2e;
+  border-color: var(--brand-cyan);
+  color: var(--brand-cyan);
 }
 
 .secondary-btn:disabled {
@@ -203,9 +279,16 @@ main {
   cursor: not-allowed;
 }
 
+.secondary-btn.danger {
+  color: var(--brand-rose);
+  border-color: rgba(244, 63, 94, 0.3);
+  background: rgba(244, 63, 94, 0.08);
+}
+
 .secondary-btn.danger:hover {
-  border-color: #fca5a5;
-  color: #ef4444;
+  border-color: var(--brand-rose);
+  background: rgba(244, 63, 94, 0.18);
+  color: #fff;
 }
 
 .credential-list {
@@ -222,17 +305,17 @@ main {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 10px 14px;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border-radius: 6px;
   gap: 12px;
 }
 
 .credential-info {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
 
@@ -263,23 +346,26 @@ main {
   font-size: 12px;
   margin: 12px 0;
   background: var(--panel-bg);
-  border-radius: 10px;
+  border-radius: 6px;
   overflow: hidden;
   border: 1px solid var(--panel-border);
 }
 
 .order-table th {
-  background: var(--card-bg);
+  background: #060911;
   color: var(--text-muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   font-weight: 600;
-  padding: 8px 10px;
+  padding: 9px 12px;
   text-align: left;
   border-bottom: 1px solid var(--panel-border);
 }
 
 .order-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--panel-border);
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.6);
   color: var(--text-main);
   overflow-wrap: anywhere;
 }
@@ -290,11 +376,11 @@ main {
 
 .code-preview {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
+  font-size: 11.5px;
   background: var(--code-bg);
   color: var(--code-text);
   border: 1px solid var(--code-border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 12px;
   max-height: 260px;
   overflow-y: auto;
@@ -309,6 +395,7 @@ main {
   overflow-wrap: anywhere;
   word-break: break-all;
   font-size: 12px;
+  font-family: ui-monospace, "SF Mono", monospace;
   line-height: 1.5;
   text-align: center;
   margin-top: 14px;
@@ -316,11 +403,11 @@ main {
 }
 
 #status:not(:empty) {
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: var(--brand-blue-soft);
-  border: 1px solid var(--brand-blue-border);
-  color: var(--text-main);
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: var(--brand-cyan-soft);
+  border: 1px solid var(--brand-cyan-border);
+  color: #bae6fd;
 }
 
 .auth-footer a {
@@ -330,7 +417,7 @@ main {
 }
 
 .auth-footer a:hover {
-  color: var(--text-main);
+  color: var(--brand-cyan);
   text-decoration: underline;
 }
 
@@ -340,8 +427,55 @@ main {
   color: var(--text-muted);
   text-align: center;
   line-height: 1.4;
-  max-width: 460px;
+  max-width: 500px;
   opacity: 0.8;
+}
+
+@media (max-width: 900px) {
+  .approval-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .approval-inspector .code-preview {
+    max-height: 240px;
+  }
+}
+
+@media (max-width: 768px) {
+  .approval-sticky-bar {
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(9, 13, 22, 0.94);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-top: 1px solid var(--card-border);
+    padding: 12px 16px;
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+    margin: 16px -16px -16px;
+    z-index: 40;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.6);
+  }
+  .approval-sticky-bar .pill-btn {
+    min-height: 52px;
+    margin: 0;
+    font-size: 15px;
+  }
+  .credential-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .credential-actions {
+    width: 100%;
+    display: flex;
+    gap: 8px;
+  }
+  .credential-actions .secondary-btn {
+    flex: 1;
+    min-height: 40px;
+  }
 }
 `;
 
@@ -413,51 +547,76 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
 </head>
 <body>
   ${raw(BACKGROUND_SVG)}
-  <main>
+  <main class="${proposal ? "approval-main" : ""}">
     <div class="brand-header">
       ${raw(BRAND_LOGO_SVG)}
-      <span class="brand-title">Schwab MCP</span>
+      <span class="brand-title">SCHWAB MCP</span>
     </div>
     ${proposal ? html`
+      <div class="terminal-prompt-tag">&gt;_ PASSKEY ORDER AUTHORIZATION</div>
       <h1 class="page-title">订单 Passkey 批准</h1>
       <p class="page-subtitle">请使用已绑定的 Passkey 核对并授权此笔交易</p>
-      <div class="auth-card">
-        <div class="info-row">
-          <span class="info-label">提案状态</span>
-          <span class="info-value">
-            <span class="tag-badge ${proposal.status === "PENDING" ? "" : "green"}">${proposal.status}</span>
-          </span>
+      <div class="approval-layout">
+        <div class="approval-cockpit">
+          <div class="auth-card">
+            <div class="info-row">
+              <span class="info-label">提案状态</span>
+              <span class="info-value">
+                <span class="tag-badge ${proposal.status === "PENDING" ? "" : "green"}">${proposal.status}</span>
+              </span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">批准截止</span>
+              <span class="info-value timestamp">${proposal.expiresAt}</span>
+            </div>
+            <div class="info-row column">
+              <span class="info-label">意图摘要</span>
+              <div class="uri-box">${proposal.intentDigest}</div>
+            </div>
+            <div class="card-divider"></div>
+            ${orderSummary(proposal.preview)}
+            <div class="card-divider"></div>
+            ${policyListHtml}
+            ${proposal.status === "PENDING" ? html`
+              <div class="approval-sticky-bar">
+                <button id="approve" class="pill-btn full-width" data-operation="approve">
+                  ${raw(FINGERPRINT_ICON_SVG)}
+                  <span>批准并提交</span>
+                </button>
+              </div>
+              <div class="action-hint">验证成功后服务器立即提交即时订单或激活延迟任务。无对话确认降级。</div>
+            ` : html`
+              <div class="policy-title" style="margin: 12px 0 4px;">执行结果</div>
+              <pre class="code-preview">${JSON.stringify(proposal.outcome, null, 2)}</pre>
+            `}
+          </div>
         </div>
-        <div class="info-row">
-          <span class="info-label">批准截止</span>
-          <span class="info-value">${proposal.expiresAt}</span>
+        <div class="approval-inspector">
+          <div class="auth-card terminal-card">
+            <div class="terminal-bar">
+              <div class="terminal-dots">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+              </div>
+              <span class="terminal-title">FROZEN_ORDER_PAYLOAD.json</span>
+              <span class="tag-badge">IMMUTABLE</span>
+            </div>
+            <div class="terminal-desc">请核对账户标识、每条订单腿的买卖方向及数量、价格类型、有效期；延迟订单同时核对条件和截止时间。下列完整 JSON 是本次批准并执行的内容。</div>
+            <pre class="code-preview">${JSON.stringify(proposal.preview, null, 2)}</pre>
+            <div class="inspector-badge-row">
+              <span class="tag-badge green">✓ Level 3 UV Required</span>
+              <span class="tag-badge">RFC 7636 S256 Bound</span>
+            </div>
+          </div>
         </div>
-        <div class="info-row column">
-          <span class="info-label">意图摘要</span>
-          <div class="uri-box">${proposal.intentDigest}</div>
-        </div>
-        <div class="card-divider"></div>
-        ${orderSummary(proposal.preview)}
-        <div class="card-divider"></div>
-        <div class="policy-title" style="margin-bottom: 4px;">冻结订单完整预览</div>
-        <div class="policy-desc" style="margin-bottom: 8px;">请核对账户标识、每条订单腿的买卖方向及数量、价格类型、有效期；延迟订单同时核对条件和截止时间。下列完整 JSON 是本次批准并执行的内容。</div>
-        <pre class="code-preview">${JSON.stringify(proposal.preview, null, 2)}</pre>
-        ${proposal.status === "PENDING" ? html`
-          <button id="approve" class="pill-btn full-width" data-operation="approve">
-            ${raw(FINGERPRINT_ICON_SVG)}
-            <span>批准并提交</span>
-          </button>
-          <div class="action-hint">验证成功后服务器立即提交即时订单或激活延迟任务。无对话确认降级。</div>
-        ` : html`
-          <div class="policy-title" style="margin: 12px 0 4px;">执行结果</div>
-          <pre class="code-preview">${JSON.stringify(proposal.outcome, null, 2)}</pre>
-        `}
       </div>
     ` : session.recovery ? html`
+      <div class="terminal-prompt-tag">&gt;_ DISASTER RECOVERY PROTOCOL</div>
       <h1 class="page-title">恢复 Passkey</h1>
       <p class="page-subtitle">本流程已独立完成 GitHub owner OAuth 验证</p>
       <div class="auth-card">
-        <div class="security-notice">
+        <div class="security-notice amber">
           ${raw(INFO_ICON_SVG)}
           <div>GitHub 账户是凭据恢复的信任入口。新凭据注册成功前不删除旧凭据。完成后旧凭据、浏览器会话、challenge 和待批准增强提案全部失效；已激活延迟任务保留，Advanced Security 保持开启。</div>
         </div>
@@ -486,6 +645,7 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
         </button>
       </div>
     ` : session.pending ? html`
+      <div class="terminal-prompt-tag">&gt;_ SECURITY POLICY VERIFICATION</div>
       <h1 class="page-title">${credentials.length ? "确认客户端安全设置" : "注册首个 Passkey"}</h1>
       <p class="page-subtitle">此客户端将${session.pending.advancedSecurity ? "开启" : "关闭"} Advanced Security。${credentials.length ? "需要已有 Passkey 验证以确认授权。" : "为您的 Charles Schwab MCP 启用硬件级安全防护。"}</p>
       <div class="auth-card">
@@ -520,6 +680,7 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
         </button>
       </div>
     ` : html`
+      <div class="terminal-prompt-tag">&gt;_ CREDENTIAL SECURITY MANAGER</div>
       <h1 class="page-title">Advanced Security</h1>
       <p class="page-subtitle">设置按客户端生效。其他未开启客户端仍沿用对话确认与 session 直下策略。</p>
       <div class="auth-card">
