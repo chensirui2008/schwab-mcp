@@ -82,8 +82,8 @@ function mcp(accessToken: string, method: string, params: unknown = {}) {
 async function tool(appEnv: AppEnv, tokens: Tokens, name: string, args: unknown = {}) {
   return dispatch(mcp(tokens.access_token, "tools/call", { name, arguments: args }), appEnv);
 }
-async function beginLogin(appEnv: AppEnv, path = "/dashboard", owner = true) {
-  const start = await dispatch(new Request(`${origin}${path}`), appEnv);
+async function beginLogin(appEnv: AppEnv, path = "/dashboard", owner = true, securityCookie?: string) {
+  const start = await dispatch(new Request(`${origin}${path}`, { headers: securityCookie ? { Cookie: securityCookie } : {} }), appEnv);
   expect(start.status).toBe(302);
   const github = new URL(start.headers.get("location") ?? "");
   expect(github.origin).toBe("https://github.com");
@@ -220,6 +220,43 @@ describe("Dashboard owner authentication and browser boundaries", () => {
     const now = Date.now(); vi.spyOn(Date, "now").mockReturnValue(now + 900_001);
     expect((await ui.get("session")).status).toBe(403);
     expect((await ui.post("clients/revoke", { clientId: "any" })).status).toBe(403);
+  });
+
+  it("renews an active session only through fresh owner OAuth and keeps page refresh from extending it", async () => {
+    const appEnv = setup(); const ui = await login(appEnv);
+    const page = () => dispatch(new Request(`${origin}/dashboard`, { headers: { Cookie: ui.securityCookie } }), appEnv);
+    const initial = await (await page()).text();
+    const expiresAt = Number(initial.match(/name="session-expires" content="(\d+)"/)?.[1]);
+    expect(expiresAt).toBeGreaterThan(Date.now());
+    const now = Date.now(); const clock = vi.spyOn(Date, "now").mockReturnValue(now + 120_000);
+    const refreshed = await (await page()).text();
+    expect(Number(refreshed.match(/name="session-expires" content="(\d+)"/)?.[1])).toBe(expiresAt);
+    expect(refreshed).toContain('href="/dashboard/login">重新登录 / 续期');
+    const callback = await beginLogin(appEnv, "/dashboard/login", true, ui.securityCookie);
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe("/dashboard");
+    const renewedCookie = cookie(callback, "__Host-schwab-security");
+    expect(renewedCookie).toBeTruthy(); expect(renewedCookie).not.toBe(ui.securityCookie);
+    const renewedPage = await dispatch(new Request(`${origin}/dashboard`, { headers: { Cookie: renewedCookie } }), appEnv);
+    const renewed = await renewedPage.text();
+    const renewedExpiry = Number(renewed.match(/name="session-expires" content="(\d+)"/)?.[1]);
+    expect(renewedExpiry).toBe(Date.now() + 900_000);
+    expect(renewed).not.toContain(`name="csrf" content="${ui.csrf}"`);
+    const renewedUi = browser(appEnv, renewedCookie, "");
+    clock.mockReturnValue(expiresAt + 1);
+    expect((await ui.get("session")).status).toBe(403);
+    expect((await renewedUi.get("session")).status).toBe(200);
+    clock.mockReturnValue(renewedExpiry + 1);
+    expect((await renewedUi.get("session")).status).toBe(403);
+  });
+
+  it("rejects non-owner and foreign-origin renewal requests", async () => {
+    const appEnv = setup(); const ui = await login(appEnv);
+    const callback = await beginLogin(appEnv, "/dashboard/login", false, ui.securityCookie);
+    expect(callback.status).toBe(403);
+    expect(cookie(callback, "__Host-schwab-security")).toBe("");
+    const foreign = await dispatch(new Request("https://evil.example/dashboard/login", { headers: { Cookie: ui.securityCookie } }), appEnv);
+    expect(foreign.status).toBe(403);
   });
 });
 

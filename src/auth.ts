@@ -369,6 +369,8 @@ async function requireDashboardClient(env: AppEnv, clientId: string): Promise<Cl
   return policy;
 }
 
+// Explicit renewal always starts owner OAuth, even while the old session is valid.
+app.get("/dashboard/login", c => beginSecurityLogin(c, false, "/dashboard"));
 app.get("/dashboard", async c => {
   if (!validDashboardOrigin(c)) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
   try {
