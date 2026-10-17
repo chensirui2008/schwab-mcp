@@ -1,0 +1,25 @@
+<svg width="512" height="512" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="logo-left" x1="18" y1="4.5" x2="5.5" y2="27.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <linearGradient id="logo-right" x1="18" y1="4.5" x2="30.5" y2="27.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+    <linearGradient id="logo-bottom" x1="5.5" y1="27.5" x2="30.5" y2="27.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="50%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#f43f5e" />
+    </linearGradient>
+    <filter id="logo-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="#10b981" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <g filter="url(#logo-glow)">
+    <path d="M18 4.5L5.5 27.5L18 20.5Z" fill="url(#logo-left)" />
+    <path d="M18 4.5L30.5 27.5L18 20.5Z" fill="url(#logo-right)" />
+    <path d="M5.5 27.5L30.5 27.5L18 20.5Z" fill="url(#logo-bottom)" />
+  </g>
+</svg>
