@@ -802,67 +802,6 @@ select.permission {
   color: var(--text);
 }
 
-/* REALTIME MCP PROTOCOL STREAM WINDOW (Obsidian Terminal Preview) */
-.protocol-stream-window {
-  background: var(--surface-lowest);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  margin-top: 18px;
-  overflow: hidden;
-  box-shadow: var(--shadow);
-}
-
-.stream-titlebar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  background: rgba(14, 20, 32, 0.9);
-  border-bottom: 1px solid var(--line);
-  font-size: 11px;
-}
-
-.stream-dots {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.stream-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-}
-.stream-dot.red { background: #ff5f56; }
-.stream-dot.yellow { background: #ffbd2e; }
-.stream-dot.green { background: #27c93f; }
-
-.stream-title {
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
-.stream-viewport {
-  padding: 12px 16px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.6;
-  color: #7bd0ff;
-  background: #060a10;
-  max-height: 140px;
-  overflow-y: auto;
-}
-
-.stream-line {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.stream-line .ts { color: var(--dim); }
-.stream-line .tag { color: var(--primary); font-weight: 600; }
-.stream-line .val { color: var(--text-bright); }
-
 /* MESSAGES & ALERTS */
 .message {
   padding: 10px 16px;
@@ -1495,7 +1434,7 @@ ${raw(BACKGROUND_SVG)}
       <div>
         <div class="eyebrow">&gt;_ SCHWAB MCP // OBSIDIAN TELEMETRY v${appVersion}</div>
         <h1>客户端与安全控制面板</h1>
-        <p>授权策略、实时协议流与硬件 Passkey 体系</p>
+        <p>授权策略、调用审计与 owner Passkey</p>
       </div>
     </div>
     <div class="actions">
@@ -1654,23 +1593,6 @@ ${raw(BACKGROUND_SVG)}
         </div>
       </div>
     </section>
-    <!-- REALTIME MCP PROTOCOL STREAM WINDOW (Obsidian Telemetry Terminal) -->
-    <div class="protocol-stream-window">
-      <div class="stream-titlebar">
-        <div class="stream-dots">
-          <span class="stream-dot red"></span>
-          <span class="stream-dot yellow"></span>
-          <span class="stream-dot green"></span>
-          <span class="stream-title">&gt;_ REALTIME MCP PROTOCOL STREAM (JSON-RPC 2.0)</span>
-        </div>
-        <span class="badge good" style="font-size:10px">&bull; STREAM: LIVE &middot; ENCLAVE_ACTIVE</span>
-      </div>
-      <div class="stream-viewport custom-scrollbar">
-        <p class="stream-line"><span class="ts">[PROTOCOL INIT]</span> <span class="tag">RPC_DAEMON:</span> <span class="val">listening on Streamable HTTP /mcp socket &middot; TLS 1.3 encrypted</span></p>
-        <p class="stream-line"><span class="ts">[SEC_ENCLAVE]</span> <span class="tag">HARDWARE_UV:</span> <span class="val">FIDO2 WebAuthn authenticator binding active &middot; Level 3</span></p>
-        <p class="stream-line"><span class="ts">[AUDIT_LOG]</span> <span class="tag">SCHWAB_VAULT:</span> <span class="val">Durable Object SQLite store mounted &middot; zero plaintext credentials</span></p>
-      </div>
-    </div>
   </main>
   <footer class="footer">
     <div class="footer-left">

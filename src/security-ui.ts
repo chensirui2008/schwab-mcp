@@ -590,11 +590,6 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
             <div class="card-divider"></div>
             ${orderSummary(proposal.preview)}
             <div class="card-divider"></div>
-            <div class="inspector-badge-row" style="padding:4px 0 10px;">
-              <span class="tag-badge green">✓ BALANCE_CHECK: PASSED</span>
-              <span class="tag-badge green">✓ NOTIONAL_LIMIT: PASSED</span>
-              <span class="tag-badge green">✓ WASH_SALE: VERIFIED</span>
-            </div>
             ${policyListHtml}
             ${proposal.status === "PENDING" ? html`
               <div class="approval-sticky-bar">
