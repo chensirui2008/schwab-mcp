@@ -150,8 +150,8 @@ export class SecurityStore {
     const existing = this.storage.sql.exec<{ permission_initialized: number }>("SELECT permission_initialized FROM client_security WHERE client_id = ?", clientId).toArray()[0];
     if (existing) {
       if (existing.permission_initialized === 0) this.storage.sql.exec(
-        "UPDATE client_security SET permission_level = ?, permission_initialized = 1 WHERE client_id = ? AND permission_initialized = 0",
-        permissionLevel, clientId,
+        "UPDATE client_security SET permission_level = ?, permission_initialized = 1, updated_at = ? WHERE client_id = ? AND permission_initialized = 0",
+        permissionLevel, Date.now(), clientId,
       );
       return this.policy(clientId);
     }
@@ -174,10 +174,14 @@ export class SecurityStore {
     };
   }
   assertIdentity(identity: ClientIdentity): void {
-    const policy = this.policy(identity.clientId);
-    const initialized = this.storage.sql.exec<{ permission_initialized: number }>("SELECT permission_initialized FROM client_security WHERE client_id = ?", identity.clientId).toArray()[0]?.permission_initialized;
-    if (initialized !== 1) throw new SecurityError("SECURITY_POLICY_CHANGED");
-    if (policy.revoked || policy.permissionLevel !== "full_access" || policy.version !== identity.securityPolicyVersion || policy.advancedSecurity !== identity.advancedSecurity) throw new SecurityError("SECURITY_POLICY_CHANGED");
+    const row = this.storage.sql.exec<{ advanced: number; version: number; permission_level: string; revoked: number; permission_initialized: number }>(
+      "SELECT advanced, version, permission_level, revoked, permission_initialized FROM client_security WHERE client_id = ?",
+      identity.clientId,
+    ).toArray()[0];
+    if (!row || row.permission_initialized !== 1) throw new SecurityError("SECURITY_POLICY_CHANGED");
+    if (row.revoked === 1 || row.permission_level !== "full_access" || row.version !== identity.securityPolicyVersion || (row.advanced === 1) !== identity.advancedSecurity) {
+      throw new SecurityError("SECURITY_POLICY_CHANGED");
+    }
   }
   commitPolicy(clientId: string, advancedSecurity: boolean, expected: number, permissionLevel?: PermissionLevel): ClientPolicy {
     return this.storage.transactionSync(() => {

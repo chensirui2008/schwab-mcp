@@ -101,6 +101,7 @@ main {
   flex-direction: column;
   align-items: center;
   overflow-wrap: anywhere;
+  margin: auto 0;
 }
 
 main:has(.approval-layout) {

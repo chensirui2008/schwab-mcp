@@ -116,7 +116,11 @@ async function login(appEnv: AppEnv) {
   expect(page.headers.get("Cache-Control")).toBe("no-store");
   expect(page.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   expect(page.headers.get("X-Frame-Options")).toBe("DENY");
-  const csrf = (await page.text()).match(/name="csrf" content="([^"]+)"/)?.[1] ?? "";
+  expect(page.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
+  const html = await page.text();
+  expect(html).toContain('name="session-expires" content="');
+  const csrf = html.match(/name="csrf" content="([^"]+)"/)?.[1] ?? "";
   expect(csrf).toBeTruthy();
   return browser(appEnv, securityCookie, csrf);
 }
@@ -289,6 +293,8 @@ describe("Dashboard client policies and live OAuth enforcement", () => {
     expect(list.status).toBe(200); expect((await list.text()).includes('"name":"prepare_trade"')).toBe(permissionLevel === "full_access");
     const ui = await login(appEnv);
     expect((await clients(ui)).find(row => row.clientId === client.clientId)).toMatchObject({ permissionLevel, version: 7 });
+    const updated = await runInDurableObject(vaultStub(appEnv), (_instance, state) => state.storage.sql.exec<{ updated_at: number }>("SELECT updated_at FROM client_security WHERE client_id = ?", client.clientId).one().updated_at);
+    expect(updated).toBeGreaterThan(0);
   });
 
   it.each(["throw", "http", "malformed"] as const)("fails MCP and refresh closed on a %s authoritative policy outage", async failure => {
@@ -361,6 +367,31 @@ describe("Dashboard Passkey policy ceremonies", () => {
     expect((await ui.post("clients/advanced-security", body)).status).toBe(200);
     expect((await clients(ui)).find(row => row.clientId === client.clientId)).toMatchObject({ advancedSecurity: false, version: enabled.version + 1 });
     expect((await ui.post("clients/advanced-security", body)).status).toBe(403);
+  });
+
+  it("authenticates with an existing credential when enabling Advanced Security on another client", async () => {
+    const appEnv = setup(); const first = await authorize(appEnv); const second = await authorize(appEnv); const ui = await login(appEnv);
+    const key = await activate(ui, first.clientId);
+    expect((await clientRow(ui, first.clientId)).advancedSecurity).toBe(true);
+    const response = await ui.post("clients/advanced-security", { clientId: second.clientId, advancedSecurity: true });
+    expect(response.status).toBe(200);
+    const challenge = await response.json<Challenge>();
+    expect(challenge.registration).toBe(false);
+    const verified = await ui.post("clients/advanced-security", {
+      clientId: second.clientId,
+      advancedSecurity: true,
+      challengeId: challenge.challengeId,
+      response: await key.authenticate(challenge.options.challenge),
+    });
+    expect(verified.status).toBe(200);
+    expect((await clientRow(ui, second.clientId)).advancedSecurity).toBe(true);
+  });
+
+  it("rejects enabling Advanced Security on read_only clients", async () => {
+    const appEnv = setup(); const readOnlyClient = await authorize(appEnv, "read_only"); const ui = await login(appEnv);
+    const response = await ui.post("clients/advanced-security", { clientId: readOnlyClient.clientId, advancedSecurity: true });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "SECURITY_POLICY_CHANGED" } });
   });
 
   it.each(["client", "mode", "session", "version", "signature"] as const)("binds a real signature to its %s and does not mutate a mismatched policy", async failure => {
@@ -496,10 +527,16 @@ describe("Dashboard persisted tool invocation audit", () => {
   it("retains only the newest 5000 rows and prunes the thirty-day boundary on append", async () => {
     const appEnv = setup(); const ui = await login(appEnv); const now = Date.now();
     await runInDurableObject(vaultStub(appEnv), (_instance, state) => {
-      state.storage.transactionSync(() => {
-        for (let i = 0; i < 5002; i++) state.storage.sql.exec("INSERT INTO tool_invocation_audit (id, client_id, tool_name, request_id, status, duration_ms, created_at) VALUES (?, 'retention', 'get_quotes', ?, 'SUCCESS', 1, ?)", `seed-${String(i)}`, `request-${String(i)}`, now - i);
-        state.storage.sql.exec("INSERT INTO tool_invocation_audit (id, client_id, tool_name, request_id, status, duration_ms, created_at) VALUES ('expired', 'retention', 'get_quotes', 'expired-request', 'SUCCESS', 1, ?)", now - 30 * 24 * 60 * 60 * 1000);
-      });
+      state.storage.sql.exec(`
+        WITH RECURSIVE cnt(i) AS (
+          SELECT 0
+          UNION ALL
+          SELECT i + 1 FROM cnt WHERE i < 5001
+        )
+        INSERT INTO tool_invocation_audit (id, client_id, tool_name, request_id, status, duration_ms, created_at)
+        SELECT 'seed-' || i, 'retention', 'get_quotes', 'request-' || i, 'SUCCESS', 1, ? - i FROM cnt;
+      `, now);
+      state.storage.sql.exec("INSERT INTO tool_invocation_audit (id, client_id, tool_name, request_id, status, duration_ms, created_at) VALUES ('expired', 'retention', 'get_quotes', 'expired-request', 'SUCCESS', 1, ?)", now - 30 * 24 * 60 * 60 * 1000);
     });
     expect((await postVault(appEnv, "/audit/tool", { id: "newest", clientId: "retention", toolName: "get_quotes", requestId: "latest-request", status: "SUCCESS", durationMs: 1, createdAt: now + 1 })).status).toBe(200);
     const page = await audit(ui, "?clientId=retention&limit=1");
