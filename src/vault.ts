@@ -440,7 +440,9 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const current = this.proposal(binding.proposalId);
     if (!current || current.status !== "PENDING" || current.approval_method !== "passkey" || current.intent_digest !== binding.intentDigest || current.client_id !== binding.clientId || current.policy_version !== binding.policyVersion || current.expires_at !== binding.expiresAt || current.expires_at <= Date.now() || !tradingEnabled(this.env)) throw new SecurityError();
     const policy = this.security.policy(binding.clientId);
-    if (policy.revoked || policy.permissionLevel !== "full_access" || !policy.advancedSecurity || policy.version !== binding.policyVersion) throw new SecurityError("SECURITY_POLICY_CHANGED");
+    // Editing a protected task requires Passkey approval even for ordinary clients.
+    // The frozen proposal determines the approval method; live policy controls access.
+    if (policy.revoked || policy.permissionLevel !== "full_access" || policy.version !== binding.policyVersion) throw new SecurityError("SECURITY_POLICY_CHANGED");
   }
 
   private async securityRequest(request: Request, path: string): Promise<Response> {
