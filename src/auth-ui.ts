@@ -684,12 +684,20 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
 }
 
 export function renderSchwabConnectedPage(): string {
+  return renderCompletionPage(false);
+}
+
+export function renderPasskeyAuthorizedPage(): string {
+  return renderCompletionPage(true);
+}
+
+function renderCompletionPage(passkey: boolean): string {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Schwab 已连接 · Schwab MCP</title>
+  <title>${passkey ? "授权完成" : "Schwab 已连接"} · Schwab MCP</title>
   ${FAVICON_LINK}
   <style>${COMMON_STYLES}</style>
 </head>
@@ -700,11 +708,11 @@ export function renderSchwabConnectedPage(): string {
     <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
       <div class="telemetry-node">
         <span class="status-pulse-dot"></span>
-        <span>&gt;_ SCHWAB_MCP // BROKERAGE_HANDSHAKE_PASSED</span>
+        <span>&gt;_ SCHWAB_MCP // ${passkey ? "PASSKEY_AUTHORIZATION_PASSED" : "BROKERAGE_HANDSHAKE_PASSED"}</span>
       </div>
       <div class="telemetry-chips">
-        <span class="tag-badge green">&bull; ONLINE</span>
-        <span class="tag-badge">VAULT_ENCRYPTED</span>
+        <span class="tag-badge green">&bull; ${passkey ? "DONE" : "ONLINE"}</span>
+        <span class="tag-badge">${passkey ? "PASSKEY_VERIFIED" : "VAULT_ENCRYPTED"}</span>
       </div>
     </div>
     <div class="brand-header">
@@ -712,25 +720,25 @@ export function renderSchwabConnectedPage(): string {
       <span class="brand-title">SCHWAB MCP</span>
     </div>
 
-    <div class="terminal-prompt-tag">&gt;_ BROKERAGE CONNECTION VERIFIED</div>
+    <div class="terminal-prompt-tag">&gt;_ ${passkey ? "PASSKEY AUTHORIZATION SUCCESS" : "BROKERAGE CONNECTION VERIFIED"}</div>
 
-    <h1 class="page-title">Schwab 账户已成功连接</h1>
-    <p class="page-subtitle">OAuth 凭据已安全持久化至 SQLite 隔离存储 · 守护进程运行中</p>
+    <h1 class="page-title">${passkey ? "授权完成，可以关闭页面" : "Schwab 账户已成功连接"}</h1>
+    <p class="page-subtitle">${passkey ? "Passkey 批准已完成，请返回 MCP 客户端查看执行状态与结果。" : "OAuth 凭据已安全持久化至 SQLite 隔离存储 · 守护进程运行中"}</p>
 
     <div class="auth-card">
       <div class="info-row">
-        <span class="info-label">连接状态</span>
+        <span class="info-label">${passkey ? "授权状态" : "连接状态"}</span>
         <span class="info-value">
-          已授权绑定
-          <span class="tag-badge green">正常 ONLINE</span>
+          ${passkey ? "已通过 Passkey 批准" : "已授权绑定"}
+          <span class="tag-badge green">${passkey ? "完成 DONE" : "正常 ONLINE"}</span>
         </span>
       </div>
       <div class="card-divider"></div>
       <div class="info-row">
         <span class="info-label">安全防护</span>
         <span class="info-value">
-          SchwabVault DO 加密持久化
-          <span class="tag-badge">ENCLAVE SEALED</span>
+          ${passkey ? "Passkey 身份验证已通过" : "SchwabVault DO 加密持久化"}
+          <span class="tag-badge">${passkey ? "VERIFIED" : "ENCLAVE SEALED"}</span>
         </span>
       </div>
 

@@ -12,7 +12,7 @@ const dec = s => Uint8Array.from(atob(s.replaceAll('-','+').replaceAll('_','/'))
 async function api(path, body) {
   const r = await fetch('/security/api/' + path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify(body)});
   const v = await r.json();
-  if (!r.ok) throw new Error(v.error?.message || '验证失败，请刷新页面重试。');
+  if (!r.ok || v.error) throw new Error(v.error?.message || '验证失败，请刷新页面重试。');
   return v;
 }
 async function ceremony(v) {
@@ -57,6 +57,10 @@ async function act(operation, target) {
       return;
     }
     if (operation === 'approve') {
+      if (['EXECUTED', 'ACTIVE'].includes(result.status) || result.result?.status === 'ACTIVE') {
+        location.replace('/security/approvals/' + encodeURIComponent(data.proposalId) + '/complete');
+        return;
+      }
       status.textContent = JSON.stringify(result, null, 2);
       document.querySelector('#approve').hidden = true;
     } else location.reload();
