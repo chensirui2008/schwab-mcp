@@ -3,6 +3,8 @@ import { runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppEnv } from "../src/env";
 
+interface ConfirmationProposal { proposalId: string; confirmationToken: string; confirmationText: string }
+
 function stub(): DurableObjectStub {
   const appEnv = env as unknown as AppEnv;
   return appEnv.SCHWAB_VAULT.get(appEnv.SCHWAB_VAULT.idFromName(crypto.randomUUID()));
@@ -14,7 +16,13 @@ function requestUrl(input: RequestInfo | URL | undefined): string {
   return input instanceof URL ? input.href : input.url;
 }
 
+async function authorizeClient(vault: DurableObjectStub): Promise<void> {
+  const response = await vault.fetch("https://vault/client/policy?clientId=test-legacy&ensure=true&permissionLevel=full_access&advancedSecurity=false&version=0");
+  expect(response.status).toBe(200);
+}
+
 async function saveToken(vault: DurableObjectStub): Promise<void> {
+  await authorizeClient(vault);
   const response = await vault.fetch("https://vault/token", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -49,11 +57,11 @@ async function prepare(vault: DurableObjectStub, overrides: Record<string, unkno
     }),
   });
   expect(response.status).toBe(200);
-  const payload = await response.json<{ result: { proposalId: string; confirmationToken: string; confirmationText: string } }>();
+  const payload = await response.json<{ result: ConfirmationProposal }>();
   return payload.result;
 }
 
-async function confirm(vault: DurableObjectStub, proposal: Awaited<ReturnType<typeof prepare>>): Promise<Response> {
+async function confirm(vault: DurableObjectStub, proposal: ConfirmationProposal): Promise<Response> {
   return vault.fetch("https://vault/trade/confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -133,6 +141,7 @@ describe("trade confirmation state machine", () => {
 
   it("rejects sensitive fields embedded in official order JSON", async () => {
     const vault = stub();
+    await authorizeClient(vault);
     const response = await vault.fetch("https://vault/trade/prepare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

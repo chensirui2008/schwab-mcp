@@ -19,6 +19,8 @@ async function setup() {
   const appEnv = env as unknown as AppEnv;
   const vault = appEnv.SCHWAB_VAULT.get(appEnv.SCHWAB_VAULT.idFromName(crypto.randomUUID()));
   const post = (path: string, data: unknown) => vault.fetch(`https://vault${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+  const ordinaryPolicy = await vault.fetch("https://vault/client/policy?clientId=plain&ensure=true&permissionLevel=full_access&advancedSecurity=false&version=0");
+  expect(ordinaryPolicy.status).toBe(200);
   const sessionResponse = await post("/security/session/create", { pending });
   const initial = await sessionResponse.json<{ sessionId: string; session: BrowserSession }>();
   const key = await authenticator();
@@ -28,7 +30,7 @@ async function setup() {
   expect(registered.status).toBe(200);
   const proof = await registered.json<{ authorizationTicket: string }>();
   const ticket = await (await post("/security/authorization", { ticket: proof.authorizationTicket })).json<{ ticket: string }>();
-  expect((await post("/security/commit-policy", { clientId: "enhanced", advancedSecurity: true, expected: 0, ticket: ticket.ticket })).status).toBe(200);
+  expect((await post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: true, expected: 0, ticket: ticket.ticket })).status).toBe(200);
   const created = await (await post("/security/session/create", {})).json<{ sessionId: string; session: BrowserSession }>();
   const browser = (path: string, data: Record<string, unknown> = {}) => post(`/security${path}`, { ...data, sessionId: created.sessionId, csrf: created.session.csrf });
   const identity: ClientIdentity = { clientId: "enhanced", advancedSecurity: true, securityPolicyVersion: 1 };
@@ -149,6 +151,20 @@ describe("Passkey trading", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     const edit = await t.prepare({ executionMode: "DELAYED", replacesTaskId: active.result.taskId, condition: { type: "TIME", operator: "AFTER", at: new Date(Date.now() + 60_000).toISOString() }, validUntil: new Date(Date.now() + 120_000).toISOString() }, plain);
     expect(edit.approvalMethod).toBe("passkey");
+    expect(edit.confirmationToken).toBeUndefined();
+    const editOptions = await t.approveOptions(edit.proposalId);
+    const approved = await t.browser("/verify", { challengeId: editOptions.challengeId, response: await t.key.authenticate(editOptions.options.challenge) });
+    expect(approved.status).toBe(200);
+    const replacement = await approved.json<{ result: { taskId: string; version: number } }>();
+    expect(replacement.result.taskId).toBeTypeOf("string");
+    expect(replacement.result.version).toBe(2);
+    const tasks = await runInDurableObject(t.vault, (_instance, state) => state.storage.sql.exec(
+      "SELECT id, status, approval_method, client_id, policy_version FROM delayed_trade ORDER BY version",
+    ).toArray());
+    expect(tasks).toEqual([
+      expect.objectContaining({ id: active.result.taskId, status: "CANCELLED", approval_method: "passkey" }),
+      expect.objectContaining({ id: replacement.result.taskId, status: "ACTIVE", approval_method: "passkey", client_id: plain.clientId, policy_version: plain.securityPolicyVersion }),
+    ]);
     const stale = await t.prepare(); const staleOptions = await t.approveOptions(stale.proposalId);
     await runInDurableObject(t.vault, (_instance, state) => {
       const store = new SecurityStore(state.storage, env as unknown as AppEnv);
@@ -157,6 +173,26 @@ describe("Passkey trading", () => {
     expect((await t.browser("/verify", { challengeId: staleOptions.challengeId, response: await t.key.authenticate(staleOptions.options.challenge) })).status).toBe(403);
     expect((await t.post("/trade/prepare", { identity: t.identity, input })).status).toBe(403);
     expect((await t.post("/trade/session/enable", { identity: { clientId: "enhanced", advancedSecurity: false, securityPolicyVersion: 0 }, input: { userInstruction: "enable" } })).status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["downgrade", "revoke", "version"] as const)("rejects ordinary-client protected task edits after a policy %s", async change => {
+    const t = await setup();
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const delayed = { executionMode: "DELAYED", condition: { type: "TIME", operator: "AFTER", at: new Date(Date.now() + 60_000).toISOString() }, validUntil: new Date(Date.now() + 120_000).toISOString() };
+    const original = await t.prepare(delayed);
+    const options = await t.approveOptions(original.proposalId);
+    const active = await (await t.browser("/verify", { challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) })).json<{ result: { taskId: string } }>();
+    const edit = await t.prepare({ ...delayed, replacesTaskId: active.result.taskId }, plain);
+    const challenge = await t.approveOptions(edit.proposalId);
+    const update = await t.post("/client/policy/update", {
+      clientId: plain.clientId, expected: plain.securityPolicyVersion,
+      ...(change === "revoke" ? { revoked: true } : { permissionLevel: change === "downgrade" ? "read_only" : "full_access" }),
+    });
+    expect(update.status).toBe(200);
+    expect((await t.browser("/verify", { challengeId: challenge.challengeId, response: await t.key.authenticate(challenge.options.challenge) })).status).toBe(403);
+    const tasks = await runInDurableObject(t.vault, (_instance, state) => state.storage.sql.exec("SELECT id, status FROM delayed_trade").toArray());
+    expect(tasks).toEqual([{ id: active.result.taskId, status: "ACTIVE" }]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -194,12 +230,12 @@ describe("Passkey management and recovery", () => {
     const remove = await (await t.browser("/options", { operation: "delete", target: otherKey.id })).json<Options>();
     expect((await t.browser("/verify", { challengeId: remove.challengeId, response: await t.key.authenticate(remove.options.challenge) })).status).toBe(200);
     expect((await t.browser("/options", { operation: "delete", target: t.key.id })).status).toBe(403);
-    expect((await t.post("/security/commit-policy", { clientId: "enhanced", advancedSecurity: false, expected: 1 })).status).toBe(403);
+    expect((await t.post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: false, expected: 1 })).status).toBe(403);
     const disabling = await (await t.post("/security/session/create", { pending: { ...pending, advancedSecurity: false, policyVersion: 1 } })).json<{ sessionId: string; session: BrowserSession }>();
     const options = await (await t.post("/security/options", { sessionId: disabling.sessionId, csrf: disabling.session.csrf, operation: "authorize" })).json<Options>();
     const verified = await (await t.post("/security/verify", { sessionId: disabling.sessionId, csrf: disabling.session.csrf, challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) })).json<{ authorizationTicket: string }>();
     const ticket = await (await t.post("/security/authorization", { ticket: verified.authorizationTicket })).json<{ ticket: string }>();
-    expect((await t.post("/security/commit-policy", { clientId: "enhanced", advancedSecurity: false, expected: 1, ticket: ticket.ticket })).status).toBe(200);
+    expect((await t.post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: false, expected: 1, ticket: ticket.ticket })).status).toBe(200);
   });
 
   it("atomically replaces keys only after fresh registration, invalidates old sessions and pending proposals but keeps activated tasks", async () => {

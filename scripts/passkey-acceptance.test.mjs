@@ -11,6 +11,22 @@ const bundle = await build({ entryPoints: ['src/security-ui.ts'], bundle: true, 
 const { renderSecurityPage } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const html = String(await renderSecurityPage({ csrf: 'test', expiresAt: Date.now() + 900_000, credentialVersion: 1, recovery: false }, [{ id: 'last', name: 'last' }]));
 const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)][0][1];
+test('dashboard omits unused Passkey targets and preserves credential targets', async () => {
+  const bundle = await build({ entryPoints: ['src/dashboard-ui.ts'], bundle: true, write: false, platform: 'node', format: 'esm' });
+  const { renderDashboardPage } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+  const page = String(await renderDashboardPage({ session: { csrf: 'test', expiresAt: Date.now() + 900_000, credentialVersion: 1, recovery: false }, appVersion: 'test', allowedUserId: '123456' }));
+  const helper = page.match(/async function securityOptions\([^]*?\n\}/)?.[0];
+  assert.ok(helper);
+  const requests = [];
+  const context = { api: async (path, method, body) => requests.push({ path, method, body: JSON.parse(JSON.stringify(body)) }) };
+  runInNewContext(helper, context);
+  for (const operation of ['register', 'add']) {
+    await runInNewContext(`securityOptions('${operation}', '', 'My key')`, context);
+    assert.deepEqual(requests.at(-1), { path: '/security/api/options', method: 'POST', body: { operation, name: 'My key' } });
+  }
+  await runInNewContext("securityOptions('rename', 'credential-id', 'New name')", context);
+  assert.deepEqual(requests.at(-1).body, { operation: 'rename', target: 'credential-id', name: 'New name' });
+});
 test('cancelled native verification preserves disabled last-key deletion and permits retry', async () => {
   const buttons = [{ disabled: true }, { disabled: false }];
   const status = { textContent: '' };

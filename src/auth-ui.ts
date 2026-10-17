@@ -10,85 +10,27 @@ export interface AuthorizePageProps {
 // Finish the same-origin form navigation before starting GitHub OAuth. A 302
 // directly from the form POST remains subject to the form-action 'self' CSP.
 export function renderGitHubContinuePage(url: string) {
-  return html`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>继续 GitHub 身份验证</title></head><body><p>正在跳转至 GitHub 身份验证…</p><p><a id="github-continue" href="${url}">若未自动跳转，点击继续 GitHub 身份验证</a></p><script>location.replace(document.getElementById('github-continue').href);</script></body></html>`;
+  return html`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>继续 GitHub 身份验证 · Schwab MCP</title><style>body{margin:0;min-height:100vh;background:#090d16;color:#f8fafc;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}a{color:#38bdf8;text-underline-offset:4px}p{font-size:14px;color:#94a3b8;margin:8px 0}</style></head><body><p>&gt;_ 正在跳转至 GitHub 身份验证…</p><p><a id="github-continue" href="${url}">若未自动跳转，点击继续验证</a></p><script>location.replace(document.getElementById('github-continue').href);</script></body></html>`;
 }
 
-function createBackgroundSvg(): string {
-  const particles: string[] = [];
-  const colors = [
-    "#1d4ed8", "#2563eb", "#3b82f6", "#0284c7", "#38bdf8", // blues
-    "#4f46e5", "#6366f1", "#7c3aed", "#8b5cf6", "#a855f7", // purples
-    "#c026d3", "#d946ef", "#ec4899", "#f43f5e", "#ef4444", // pinks/reds
-    "#ea580c", "#f97316", "#f59e0b", "#fbbf24", "#eab308", // oranges/yellows
-    "#10b981", "#14b8a6", "#06b6d4"                         // teals
-  ];
+export const BACKGROUND_SVG = `<svg class="bg-telemetry" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="radial-glow" cx="50%" cy="30%" r="65%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.08"/>
+      <stop offset="50%" stop-color="#10b981" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#090d16" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="terminal-grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1e293b" stroke-width="0.75" stroke-opacity="0.45"/>
+      <circle cx="32" cy="32" r="0.75" fill="#38bdf8" fill-opacity="0.25"/>
+    </pattern>
+  </defs>
+  <rect width="1440" height="900" fill="#090d16"/>
+  <rect width="1440" height="900" fill="url(#terminal-grid)"/>
+  <rect width="1440" height="900" fill="url(#radial-glow)"/>
+</svg>`;
 
-  let seed = 42819;
-  function rnd() {
-    seed = (seed * 16807) % 2147483647;
-    return (seed - 1) / 2147483646;
-  }
-
-  const cx = 520;
-  const cy = 500;
-
-  const arms = [
-    { startTheta: 2.2, endTheta: 6.4, r0: 80, r1: 820, count: 100, colorStart: 0 },
-    { startTheta: 3.4, endTheta: 7.8, r0: 95, r1: 890, count: 110, colorStart: 5 },
-    { startTheta: 0.7, endTheta: 5.0, r0: 85, r1: 780, count: 90, colorStart: 11 },
-    { startTheta: 4.9, endTheta: 8.6, r0: 120, r1: 910, count: 80, colorStart: 17 }
-  ];
-
-  for (const arm of arms) {
-    for (let i = 0; i < arm.count; i++) {
-      const t = i / arm.count;
-      const theta = arm.startTheta + t * (arm.endTheta - arm.startTheta) + (rnd() - 0.5) * 0.42;
-      const r = arm.r0 + Math.pow(t, 1.32) * (arm.r1 - arm.r0) + (rnd() - 0.5) * 85;
-
-      const x = cx + Math.cos(theta) * r * 1.32;
-      const y = cy + Math.sin(theta) * r * 0.95;
-
-      if (x < -30 || x > 1470 || y < -30 || y > 930) continue;
-      if (x > 460 && x < 980 && y > 240 && y < 660 && rnd() > 0.08) continue;
-
-      const cIdx = Math.floor(arm.colorStart + t * 14 + rnd() * 2) % colors.length;
-      const color = colors[cIdx] ?? "#2563eb";
-      const opacity = (0.35 + rnd() * 0.55).toFixed(2);
-      const isRect = rnd() > 0.36;
-
-      if (isRect) {
-        const w = (2 + rnd() * 1.0).toFixed(1);
-        const h = (5 + rnd() * 4).toFixed(1);
-        const tangentDeg = ((theta + Math.PI / 2 + (rnd() - 0.5) * 0.35) * 180 / Math.PI).toFixed(1);
-        particles.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="1" fill="${color}" opacity="${opacity}" transform="rotate(${tangentDeg} ${x.toFixed(1)} ${y.toFixed(1)})"/>`);
-      } else {
-        const rad = (1.2 + rnd() * 1.3).toFixed(1);
-        particles.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${rad}" fill="${color}" opacity="${opacity}"/>`);
-      }
-    }
-  }
-
-  for (let i = 0; i < 75; i++) {
-    const x = rnd() * 1440;
-    const y = rnd() * 900;
-    if (x > 450 && x < 990 && y > 230 && y < 670) continue;
-    const color = colors[Math.floor(rnd() * colors.length)] ?? "#2563eb";
-    const opacity = (0.22 + rnd() * 0.42).toFixed(2);
-    if (rnd() > 0.5) {
-      const rot = (rnd() * 360).toFixed(1);
-      particles.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="2.2" height="6" rx="1" fill="${color}" opacity="${opacity}" transform="rotate(${rot} ${x.toFixed(1)} ${y.toFixed(1)})"/>`);
-    } else {
-      const rad = (1.2 + rnd() * 1.2).toFixed(1);
-      particles.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${rad}" fill="${color}" opacity="${opacity}"/>`);
-    }
-  }
-
-  return `<svg class="bg-particles" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" fill="none" xmlns="http://www.w3.org/2000/svg"><g>${particles.join("")}</g></svg>`;
-}
-
-const BACKGROUND_SVG = createBackgroundSvg();
-
-const BRAND_LOGO_SVG = `<svg class="brand-logo" width="34" height="34" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+export const BRAND_LOGO_SVG = `<svg class="brand-logo" width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="logo-left" x1="18" y1="4.5" x2="5.5" y2="27.5" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#38bdf8" />
@@ -103,77 +45,57 @@ const BRAND_LOGO_SVG = `<svg class="brand-logo" width="34" height="34" viewBox="
       <stop offset="50%" stop-color="#f59e0b" />
       <stop offset="100%" stop-color="#f43f5e" />
     </linearGradient>
+    <filter id="logo-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="#10b981" flood-opacity="0.35"/>
+    </filter>
   </defs>
-  <path d="M18 4.5L5.5 27.5L18 20.5Z" fill="url(#logo-left)" />
-  <path d="M18 4.5L30.5 27.5L18 20.5Z" fill="url(#logo-right)" />
-  <path d="M5.5 27.5L30.5 27.5L18 20.5Z" fill="url(#logo-bottom)" />
+  <g filter="url(#logo-glow)">
+    <path d="M18 4.5L5.5 27.5L18 20.5Z" fill="url(#logo-left)" />
+    <path d="M18 4.5L30.5 27.5L18 20.5Z" fill="url(#logo-right)" />
+    <path d="M5.5 27.5L30.5 27.5L18 20.5Z" fill="url(#logo-bottom)" />
+  </g>
 </svg>`;
 
-const COMMON_STYLES = `
+export const COMMON_STYLES = `
   :root {
-    --bg: #ffffff;
-    --card-bg: #f8fafc;
-    --card-border: #e2e8f0;
-    --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 6px 16px 0 rgba(0, 0, 0, 0.02);
+    color-scheme: dark;
+    --bg: #090d16;
+    --card-bg: #0f1523;
+    --card-border: #1e293b;
+    --card-border-focus: #38bdf8;
+    --card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5), 0 2px 6px -1px rgba(0, 0, 0, 0.3);
 
-    --text-main: #1f2937;
-    --text-sub: #4b5563;
-    --text-muted: #5f6368;
+    --text-main: #f8fafc;
+    --text-sub: #94a3b8;
+    --text-muted: #64748b;
 
-    --panel-bg: #ffffff;
-    --panel-border: #e5e7eb;
-    --divider: #edf2f7;
+    --panel-bg: #0b111e;
+    --panel-border: #1e293b;
+    --divider: #1e293b;
 
-    --btn-bg: #1f1f1f;
-    --btn-hover: #374151;
-    --btn-active: #111827;
-    --btn-text: #ffffff;
+    --btn-primary-bg: #10b981;
+    --btn-primary-hover: #059669;
+    --btn-primary-active: #047857;
+    --btn-primary-text: #04130c;
 
-    --brand-blue: #0284c7;
-    --brand-blue-soft: #f0f9ff;
-    --brand-blue-border: #bae6fd;
+    --brand-cyan: #38bdf8;
+    --brand-cyan-soft: rgba(56, 189, 248, 0.08);
+    --brand-cyan-border: rgba(56, 189, 248, 0.25);
 
-    --accent-green: #059669;
-    --accent-green-soft: #ecfdf5;
-    --accent-green-border: #a7f3d0;
+    --brand-emerald: #10b981;
+    --brand-emerald-soft: rgba(16, 185, 129, 0.1);
+    --brand-emerald-border: rgba(16, 185, 129, 0.25);
 
-    --code-bg: #ffffff;
-    --code-border: #e2e8f0;
-    --code-text: #0284c7;
-  }
+    --brand-amber: #f59e0b;
+    --brand-amber-soft: rgba(245, 158, 11, 0.1);
+    --brand-amber-border: rgba(245, 158, 11, 0.25);
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #090d16;
-      --card-bg: #111726;
-      --card-border: #1e293b;
-      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 8px 24px 0 rgba(0, 0, 0, 0.2);
+    --brand-rose: #f43f5e;
 
-      --text-main: #f8fafc;
-      --text-sub: #94a3b8;
-      --text-muted: #64748b;
-
-      --panel-bg: #0b111e;
-      --panel-border: #1e293b;
-      --divider: #1e293b;
-
-      --btn-bg: #f8fafc;
-      --btn-hover: #e2e8f0;
-      --btn-active: #cbd5e1;
-      --btn-text: #0f172a;
-
-      --brand-blue: #38bdf8;
-      --brand-blue-soft: rgba(56, 189, 248, 0.08);
-      --brand-blue-border: rgba(56, 189, 248, 0.2);
-
-      --accent-green: #34d399;
-      --accent-green-soft: rgba(52, 211, 153, 0.08);
-      --accent-green-border: rgba(52, 211, 153, 0.2);
-
-      --code-bg: #0a0e1a;
-      --code-border: #1e293b;
-      --code-text: #7dd3fc;
-    }
+    --code-bg: #060911;
+    --code-border: #1e293b;
+    --code-text: #7dd3fc;
+    --radius: 8px;
   }
 
   * {
@@ -183,7 +105,7 @@ const COMMON_STYLES = `
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background-color: var(--bg);
     color: var(--text-main);
     min-height: 100vh;
@@ -199,7 +121,7 @@ const COMMON_STYLES = `
     overflow-x: hidden;
   }
 
-  .bg-particles {
+  .bg-telemetry {
     position: fixed;
     top: 0;
     left: 0;
@@ -207,19 +129,14 @@ const COMMON_STYLES = `
     height: 100vh;
     pointer-events: none;
     z-index: 0;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .bg-particles {
-      opacity: 0.85;
-    }
+    opacity: 0.85;
   }
 
   .main-wrapper {
     position: relative;
     z-index: 1;
     width: 100%;
-    max-width: 520px;
+    max-width: 540px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -230,7 +147,7 @@ const COMMON_STYLES = `
     align-items: center;
     justify-content: center;
     gap: 12px;
-    margin-bottom: 8px;
+    margin-bottom: 12px;
   }
 
   .brand-logo {
@@ -238,15 +155,39 @@ const COMMON_STYLES = `
   }
 
   .brand-title {
-    font-size: 26px;
-    font-weight: 550;
-    letter-spacing: -0.02em;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
     color: var(--text-main);
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+  }
+
+  .terminal-prompt-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--brand-emerald);
+    background: var(--brand-emerald-soft);
+    border: 1px solid var(--brand-emerald-border);
+    padding: 3px 8px;
+    border-radius: 9999px;
+    margin-bottom: 14px;
+    letter-spacing: 0.05em;
+  }
+
+  .terminal-prompt-tag::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--brand-emerald);
+    box-shadow: 0 0 6px var(--brand-emerald);
   }
 
   .page-title {
     font-size: 19px;
-    font-weight: 600;
+    font-weight: 700;
     letter-spacing: -0.015em;
     color: var(--text-main);
     margin-bottom: 6px;
@@ -254,20 +195,20 @@ const COMMON_STYLES = `
   }
 
   .page-subtitle {
-    font-size: 14px;
-    color: var(--text-muted);
-    margin-bottom: 24px;
+    font-size: 13px;
+    color: var(--text-sub);
+    margin-bottom: 22px;
     text-align: center;
-    line-height: 1.4;
+    line-height: 1.45;
   }
 
   .auth-card {
     width: 100%;
     background: var(--card-bg);
     border: 1px solid var(--card-border);
-    border-radius: 16px;
+    border-radius: var(--radius);
     box-shadow: var(--card-shadow);
-    padding: 20px 22px;
+    padding: 22px 24px;
     text-align: left;
   }
 
@@ -283,13 +224,15 @@ const COMMON_STYLES = `
     flex-direction: column;
     align-items: flex-start;
     gap: 6px;
-    margin-top: 10px;
+    margin-top: 12px;
   }
 
   .info-label {
     color: var(--text-muted);
     font-weight: 500;
-    font-size: 12.5px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
 
   .info-value {
@@ -298,41 +241,49 @@ const COMMON_STYLES = `
     display: flex;
     align-items: center;
     gap: 8px;
+    font-size: 13px;
   }
 
   .tag-badge {
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 600;
     padding: 2px 7px;
-    border-radius: 9999px;
-    background: var(--brand-blue-soft);
-    color: var(--brand-blue);
-    border: 1px solid var(--brand-blue-border);
+    border-radius: 4px;
+    background: var(--brand-cyan-soft);
+    color: var(--brand-cyan);
+    border: 1px solid var(--brand-cyan-border);
+    letter-spacing: 0.02em;
   }
 
   .tag-badge.green {
-    background: var(--accent-green-soft);
-    color: var(--accent-green);
-    border-color: var(--accent-green-border);
+    background: var(--brand-emerald-soft);
+    color: var(--brand-emerald);
+    border-color: var(--brand-emerald-border);
+  }
+
+  .tag-badge.amber {
+    background: var(--brand-amber-soft);
+    color: var(--brand-amber);
+    border-color: var(--brand-amber-border);
   }
 
   .uri-box {
     width: 100%;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    font-size: 11.5px;
+    font-size: 12px;
     color: var(--code-text);
     word-break: break-all;
     background: var(--code-bg);
     padding: 8px 12px;
-    border-radius: 8px;
+    border-radius: 6px;
     border: 1px solid var(--code-border);
-    line-height: 1.4;
+    line-height: 1.45;
   }
 
   .card-divider {
     height: 1px;
     background: var(--divider);
-    margin: 14px 0;
+    margin: 16px 0;
   }
 
   .policy-list {
@@ -351,7 +302,7 @@ const COMMON_STYLES = `
     flex-shrink: 0;
     width: 28px;
     height: 28px;
-    border-radius: 8px;
+    border-radius: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -359,15 +310,15 @@ const COMMON_STYLES = `
   }
 
   .policy-icon.blue {
-    background: var(--brand-blue-soft);
-    color: var(--brand-blue);
-    border: 1px solid var(--brand-blue-border);
+    background: var(--brand-cyan-soft);
+    color: var(--brand-cyan);
+    border: 1px solid var(--brand-cyan-border);
   }
 
   .policy-icon.green {
-    background: var(--accent-green-soft);
-    color: var(--accent-green);
-    border: 1px solid var(--accent-green-border);
+    background: var(--brand-emerald-soft);
+    color: var(--brand-emerald);
+    border: 1px solid var(--brand-emerald-border);
   }
 
   .policy-icon svg {
@@ -389,35 +340,44 @@ const COMMON_STYLES = `
 
   .policy-desc {
     color: var(--text-sub);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .security-notice {
     background: var(--panel-bg);
     border: 1px solid var(--panel-border);
-    border-radius: 10px;
+    border-radius: 6px;
     padding: 10px 12px;
     display: flex;
     gap: 10px;
-    align-items: center;
+    align-items: flex-start;
     font-size: 12px;
     color: var(--text-sub);
-    margin-top: 14px;
-    line-height: 1.4;
+    margin-top: 16px;
+    line-height: 1.45;
   }
 
   .security-notice.success {
-    background: var(--accent-green-soft);
-    border-color: var(--accent-green-border);
+    background: var(--brand-emerald-soft);
+    border-color: var(--brand-emerald-border);
     color: var(--text-main);
+  }
+
+  .security-notice.amber {
+    background: var(--brand-amber-soft);
+    border-color: var(--brand-amber-border);
+    color: #fde68a;
   }
 
   .security-notice svg {
     flex-shrink: 0;
-    color: var(--text-muted);
+    margin-top: 2px;
+    color: var(--brand-amber);
   }
 
   .security-notice.success svg {
-    color: var(--accent-green);
+    color: var(--brand-emerald);
   }
 
   .security-notice strong {
@@ -430,94 +390,121 @@ const COMMON_STYLES = `
     display: flex;
     flex-direction: column;
     align-items: center;
-    margin-top: 24px;
+    margin-top: 20px;
   }
 
   .permission-options {
     border: 0;
-    margin-top: 18px;
+    margin-top: 16px;
   }
 
   .permission-options legend {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
     margin-bottom: 8px;
   }
 
   .permission-option {
     display: flex;
-    gap: 10px;
+    gap: 12px;
     align-items: flex-start;
-    padding: 12px;
+    padding: 12px 14px;
     margin-top: 8px;
     border: 1px solid var(--panel-border);
-    border-radius: 10px;
+    border-radius: 6px;
     background: var(--panel-bg);
     cursor: pointer;
-    font-size: 12.5px;
+    font-size: 13px;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+
+  .permission-option:hover {
+    border-color: #334155;
+    background: #0d1527;
   }
 
   .permission-option:has(input:checked) {
-    border-color: var(--brand-blue);
+    border-color: var(--brand-cyan);
+    background: rgba(56, 189, 248, 0.04);
+    box-shadow: 0 0 0 1px var(--brand-cyan-border);
   }
 
   .permission-option:focus-within {
-    outline: 2px solid var(--brand-blue);
+    outline: 2px solid var(--brand-cyan);
     outline-offset: 2px;
   }
 
   .permission-option input {
-    margin-top: 4px;
-    accent-color: var(--brand-blue);
+    margin-top: 3px;
+    accent-color: var(--brand-cyan);
+    width: 16px;
+    height: 16px;
   }
 
   .pill-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 9px;
-    background: var(--btn-bg);
-    color: var(--btn-text);
+    gap: 10px;
+    background: var(--btn-primary-bg);
+    color: var(--btn-primary-text);
     border: none;
-    border-radius: 9999px;
-    padding: 12px 36px;
+    border-radius: 6px;
+    padding: 13px 28px;
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 700;
     cursor: pointer;
     font-family: inherit;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 3px 8px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 0 12px var(--brand-emerald-soft);
     transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
     text-decoration: none;
+    width: 100%;
+    min-height: 48px;
+    letter-spacing: 0.02em;
   }
 
   .pill-btn:hover {
-    background: var(--btn-hover);
-    transform: translateY(-1px);
-    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.15), 0 6px 16px rgba(0, 0, 0, 0.1);
+    background: var(--btn-primary-hover);
+    box-shadow: 0 0 16px rgba(16, 185, 129, 0.4);
   }
 
   .pill-btn:active {
-    background: var(--btn-active);
-    transform: translateY(0);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    background: var(--btn-primary-active);
+    transform: translateY(1px);
   }
 
   .pill-btn svg {
-    width: 16px;
-    height: 16px;
+    width: 17px;
+    height: 17px;
     fill: currentColor;
     flex-shrink: 0;
   }
 
+  .pill-btn.secondary {
+    background: var(--panel-bg);
+    color: var(--text-main);
+    border: 1px solid var(--card-border);
+    box-shadow: none;
+  }
+
+  .pill-btn.secondary:hover {
+    background: #1e293b;
+    border-color: #334155;
+    color: #ffffff;
+  }
+
   .action-hint {
-    margin-top: 8px;
+    margin-top: 10px;
     font-size: 11.5px;
     color: var(--text-muted);
     text-align: center;
   }
 
   .auth-footer {
-    margin-top: 28px;
+    margin-top: 24px;
     text-align: center;
     font-size: 12px;
     color: var(--text-muted);
@@ -525,10 +512,29 @@ const COMMON_STYLES = `
     align-items: center;
     justify-content: center;
     gap: 8px;
+    flex-wrap: wrap;
   }
 
   .footer-dot {
-    opacity: 0.5;
+    opacity: 0.4;
+  }
+
+  /* Mobile-first touch adaptations */
+  @media (max-width: 640px) {
+    body {
+      padding: 16px 12px;
+    }
+    .auth-card {
+      padding: 18px 16px;
+    }
+    .permission-option {
+      padding: 14px 12px;
+      min-height: 48px;
+    }
+    .pill-btn {
+      min-height: 52px;
+      font-size: 14px;
+    }
   }
 `;
 
@@ -538,7 +544,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Schwab MCP 授权</title>
+  <title>客户端授权 · Schwab MCP</title>
   <style>${COMMON_STYLES}</style>
 </head>
 <body>
@@ -547,22 +553,25 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
   <div class="main-wrapper">
     <div class="brand-header">
       ${raw(BRAND_LOGO_SVG)}
-      <span class="brand-title">Schwab MCP</span>
+      <span class="brand-title">SCHWAB MCP</span>
     </div>
+
+    <div class="terminal-prompt-tag">&gt;_ OAUTH 2.1 CONSENT GATEWAY</div>
 
     <h1 class="page-title">允许连接 Schwab MCP？</h1>
     <p class="page-subtitle">客户端正在申请接入您的个人 Charles Schwab MCP 实例</p>
 
     <div class="auth-card">
       <div class="info-row">
-        <span class="info-label">客户端</span>
+        <span class="info-label">客户端标识</span>
         <span class="info-value">
           ${props.clientName}
           <span class="tag-badge">OAuth 2.1</span>
+          <span class="tag-badge green">RFC 7636 S256</span>
         </span>
       </div>
       <div class="info-row column">
-        <span class="info-label">回调地址</span>
+        <span class="info-label">重定向回调地址</span>
         <div class="uri-box">${props.redirectUri}</div>
       </div>
 
@@ -597,7 +606,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
       </div>
 
       <fieldset class="permission-options">
-        <legend>选择此客户端的权限</legend>
+        <legend>选择此客户端的权限等级</legend>
         <label class="permission-option">
           <input type="radio" name="permissionLevel" value="read_only" form="authorize-form" required ${props.advancedSecurity ? "" : "checked"}>
           <span>
@@ -613,10 +622,15 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
           </span>
         </label>
       </fieldset>
-      <label class="permission-option" id="advanced-option">
+
+      <label class="permission-option" id="advanced-option" style="margin-top: 10px;">
         <input type="checkbox" name="advancedSecurity" form="authorize-form" ${props.advancedSecurity ? "checked" : ""}>
-        <span><span class="policy-title">Advanced Security · Passkey 订单批准</span><br><span class="policy-desc">仅完整访问可开启。每笔建单、改单及延迟任务创建和修改均需浏览器 Passkey 批准；禁止 session 直下。设置按客户端生效，其他未开启的完整访问客户端仍沿用普通策略。GitHub 账户是凭据恢复的信任入口。</span></span>
+        <span>
+          <span class="policy-title">Advanced Security · Passkey 订单批准</span><br>
+          <span class="policy-desc">仅完整访问可开启。每笔建单、改单及延迟任务创建和修改均需浏览器 Passkey 批准；禁止 session 直下。设置按客户端生效。</span>
+        </span>
       </label>
+
       <script>
         const advanced = document.querySelector('[name="advancedSecurity"]');
         function updateAdvanced() { advanced.disabled = !document.querySelector('[name="permissionLevel"][value="full_access"]').checked; }
@@ -624,7 +638,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
         updateAdvanced();
       </script>
 
-      <div class="security-notice">
+      <div class="security-notice amber">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/>
           <line x1="12" y1="16" x2="12" y2="12"/>
@@ -671,8 +685,10 @@ export function renderSchwabConnectedPage(): string {
   <div class="main-wrapper">
     <div class="brand-header">
       ${BRAND_LOGO_SVG}
-      <span class="brand-title">Schwab MCP</span>
+      <span class="brand-title">SCHWAB MCP</span>
     </div>
+
+    <div class="terminal-prompt-tag">&gt;_ BROKERAGE HANDSHAKE SUCCESS</div>
 
     <h1 class="page-title">Schwab 账户已成功连接</h1>
     <p class="page-subtitle">OAuth 凭据已安全持久化至 SQLite 隔离存储</p>
@@ -682,17 +698,20 @@ export function renderSchwabConnectedPage(): string {
         <span class="info-label">连接状态</span>
         <span class="info-value">
           已授权绑定
-          <span class="tag-badge green">正常</span>
+          <span class="tag-badge green">正常 ONLINE</span>
         </span>
       </div>
       <div class="card-divider"></div>
       <div class="info-row">
         <span class="info-label">安全防护</span>
-        <span class="info-value">SchwabVault DO 加密持久化</span>
+        <span class="info-value">
+          SchwabVault DO 加密持久化
+          <span class="tag-badge">ENCLAVE SEALED</span>
+        </span>
       </div>
 
       <div class="security-notice success">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/>
           <polyline points="12 6 12 12 16 14"/>
         </svg>

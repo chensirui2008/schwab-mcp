@@ -256,7 +256,7 @@ describe("S256 PKCE protocol", () => {
     await exchange(appEnv, request, code);
   });
 
-  it.each(["read_only", "full_access"] as const)("preserves existing %s access and refresh tokens without upgrading props", async (permissionLevel) => {
+  it.each(["read_only", "full_access"] as const)("preserves existing %s access, refresh permissions and granted scope", async (permissionLevel) => {
     for (const usePkce of [false, true]) {
       const { appEnv, helpers } = setup();
       const request = await authRequest(helpers);
@@ -276,7 +276,7 @@ describe("S256 PKCE protocol", () => {
       expect(refreshed.status).toBe(200);
       const renewed = await refreshed.json<Tokens>();
       const decoded = await helpers.unwrapToken<AuthorizationProps>(renewed.access_token);
-      expect(decoded?.grant.props).toEqual(props);
+      expect(decoded?.grant.scope).toEqual([READ_SCOPE]);
       const list = await dispatch(mcpRequest(renewed.access_token, "tools/list"), appEnv);
       expect(list.status).toBe(200);
       expect((await list.text()).includes('"name":"prepare_trade"')).toBe(permissionLevel === "full_access");
@@ -673,7 +673,7 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     const result = await ui.post("verify", { challengeId: options.challengeId, response: await key.register(options.options.challenge) });
     expect(result.status).toBe(503);
     expect(await result.json()).toMatchObject({ error: "temporarily_unavailable" });
-    const policy = await vaultStub(appEnv).fetch("https://vault/security/policy", { method: "POST", body: JSON.stringify({ clientId: request.clientId }) });
+    const policy = await vaultStub(appEnv).fetch("https://vault/security/policy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId: request.clientId }) });
     expect(await policy.json()).toMatchObject({ advancedSecurity: false, version: 0 });
     expect((await dispatch(mcpRequest(old.access_token, "tools/list"), appEnv)).status).toBe(200);
   });
