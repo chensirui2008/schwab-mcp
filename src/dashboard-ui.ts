@@ -1,6 +1,6 @@
 import { html, raw } from "hono/html";
 import type { BrowserSession } from "./security-store";
-import { BACKGROUND_SVG, BRAND_LOGO_SVG } from "./auth-ui";
+import { BACKGROUND_SVG, BRAND_LOGO_SVG, FAVICON_LINK } from "./auth-ui";
 
 export interface DashboardPageProps {
   session: BrowserSession;
@@ -1326,6 +1326,7 @@ export function renderDashboardPage(props: DashboardPageProps) {
   <meta name="csrf" content="${session.csrf}">
   <meta name="session-expires" content="${session.expiresAt}">
   <title>Schwab MCP · 控制面板</title>
+  ${FAVICON_LINK}
   <style>${raw(DASHBOARD_STYLES)}</style>
 </head>
 <body>

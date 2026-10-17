@@ -1,6 +1,6 @@
 import { html, raw } from "hono/html";
 import type { BrowserSession } from "./security-store";
-import { BACKGROUND_SVG, BRAND_LOGO_SVG, COMMON_STYLES } from "./auth-ui";
+import { BACKGROUND_SVG, BRAND_LOGO_SVG, COMMON_STYLES, FAVICON_LINK } from "./auth-ui";
 
 // Native WebAuthn only; no framework, CDN or browser bearer token.
 const SCRIPT = `
@@ -544,6 +544,7 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf" content="${session.csrf}">
   <title>Advanced Security · Schwab MCP</title>
+  ${FAVICON_LINK}
   <style>${raw(SECURITY_STYLES)}</style>
 </head>
 <body>

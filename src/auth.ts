@@ -5,7 +5,7 @@ import { renderDashboardPage } from "./dashboard-ui";
 import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { renderAuthorizePage, renderGitHubContinuePage, renderSchwabConnectedPage } from "./auth-ui";
+import { BRAND_LOGO_SVG, renderAuthorizePage, renderGitHubContinuePage, renderSchwabConnectedPage } from "./auth-ui";
 import type { ErrorCode, PublicError } from "./types";
 import type { AppEnv } from "./env";
 import { tradingEnabled, vaultStub } from "./env";
@@ -210,12 +210,18 @@ app.use("*", async (c, next) => {
   // Apply to the final response, including early errors built with Response.json().
   if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard")) {
     c.header("Cache-Control", "no-store");
-    c.header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
+    c.header("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
     c.header("X-Frame-Options", "DENY");
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
   }
 });
+
+app.get("/favicon.svg", c => c.body(BRAND_LOGO_SVG, 200, {
+  "Content-Type": "image/svg+xml",
+  "Cache-Control": "public, max-age=86400",
+  "X-Content-Type-Options": "nosniff",
+}));
 
 async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: boolean, returnTo = "/security") {
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
