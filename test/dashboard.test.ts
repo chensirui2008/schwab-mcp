@@ -324,6 +324,28 @@ describe("Dashboard client policies and live OAuth enforcement", () => {
 });
 
 describe("Dashboard Passkey policy ceremonies", () => {
+  it("registers and adds Passkeys without a target while preserving the client policy", async () => {
+    const appEnv = setup(); const client = await authorize(appEnv); const ui = await login(appEnv);
+    const before = await clientRow(ui, client.clientId);
+    const key = await authenticator();
+    const options = await ui.security("options", { operation: "register", name: "Desktop" });
+    expect(options.status).toBe(200);
+    const registration = await options.json<Challenge>();
+    expect((await ui.security("verify", { challengeId: registration.challengeId, response: await key.register(registration.options.challenge) })).status).toBe(200);
+    const add = await ui.security("options", { operation: "add", name: "Phone" });
+    expect(add.status).toBe(200);
+    const challenge = await add.json<Challenge>();
+    const proof = await (await ui.security("verify", { challengeId: challenge.challengeId, response: await key.authenticate(challenge.options.challenge) })).json<{ registrationTicket: string }>();
+    const phone = await authenticator();
+    const next = await (await ui.security("add-options", { ticket: proof.registrationTicket, name: "Phone" })).json<Challenge>();
+    expect((await ui.security("add-verify", { challengeId: next.challengeId, response: await phone.register(next.options.challenge) })).status).toBe(200);
+    const saved = await (await ui.get("session")).json<{ credentials: { id: string; name: string }[] }>();
+    expect(saved.credentials).toHaveLength(2);
+    expect(saved.credentials).toContainEqual({ id: key.id, name: "Desktop" });
+    expect(saved.credentials).toContainEqual({ id: phone.id, name: "Phone" });
+    expect(await clientRow(ui, client.clientId)).toEqual(before);
+  });
+
   it("registers the first credential, enables and disables with real signatures, increments policy versions and rejects replay", async () => {
     const appEnv = setup(); const client = await authorize(appEnv); const ui = await login(appEnv);
     const before = await clientRow(ui, client.clientId);

@@ -229,7 +229,7 @@ async function loadAudit() {
   }
 }
 async function securityOptions(operation, target = '', name = 'Passkey') {
-  return api('/security/api/options','POST',{operation,target,name});
+  return api('/security/api/options','POST',{operation,name,...(target ? {target} : {})});
 }
 async function loadPasskeys() {
   const list = $('passkeys-list');
