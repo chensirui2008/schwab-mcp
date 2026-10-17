@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Schwab MCP // OAUTH CONSENT GATEWAY [VITE PREVIEW]</title>
+  <link rel="icon" type="image/svg+xml" href="/docs/assets/logo.svg">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070b12;
+      --surface: #0f131c;
+      --surface-low: #141a24;
+      --surface-container: #1a2230;
+      --outline: #86948a;
+      --outline-variant: #3c4a42;
+      --line: #1e2d42;
+      --text: #dfe2ef;
+      --text-bright: #f0ffe9;
+      --muted: #86948a;
+      --primary: #4edea3;
+      --primary-container: #10b981;
+      --on-primary: #003824;
+      --secondary: #7bd0ff;
+      --tertiary: #ffb95f;
+      --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(to right, rgba(60, 74, 66, 0.1) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(60, 74, 66, 0.1) 1px, transparent 1px);
+      background-size: 24px 24px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px 20px 48px;
+    }
+    a { color: var(--secondary); text-decoration: none; }
+    .nav-dock-top { width: 100%; max-width: 640px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: rgba(10, 14, 23, 0.95); border: 1px solid var(--outline-variant); border-radius: 6px; margin-bottom: 16px; font-size: 11px; }
+    .nav-dock-top a { margin-right: 12px; }
+    .status-pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); display: inline-block; }
+    .card { width: 100%; max-width: 640px; background: var(--surface-low); border: 1px solid var(--line); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge.good { background: rgba(78, 222, 163, 0.12); color: var(--primary); border: 1px solid rgba(78, 222, 163, 0.35); }
+    .info-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .uri-box { background: #060a10; border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--secondary); word-break: break-all; margin-top: 4px; }
+    .option-card { background: var(--surface-container); border: 1px solid var(--outline-variant); border-radius: 6px; padding: 12px 14px; display: flex; gap: 10px; cursor: pointer; }
+    .option-card.selected { border-color: var(--primary); box-shadow: 0 0 12px rgba(78, 222, 163, 0.2); }
+    .btn-submit { width: 100%; padding: 12px; background: var(--primary-container); color: var(--on-primary); font-size: 13px; font-weight: 700; border: 1px solid var(--primary); border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .btn-submit:hover { background: var(--primary); }
+  </style>
+</head>
+<body>
+  <div class="nav-dock-top">
+    <div>
+      <span class="status-pulse-dot"></span>
+      <strong style="color:var(--primary);margin-left:8px;">&gt;_ SCHWAB_MCP // OAUTH_CONSENT_GATEWAY [VITE PREVIEW]</strong>
+    </div>
+    <div>
+      <a href="/index.html">[01] 控制面板</a>
+      <a href="/security.html">[02] 订单 Passkey 批准</a>
+      <a href="/authorize.html" style="color:var(--primary);font-weight:700;">[03] 客户端 OAuth 授权</a>
+      <a href="/connected.html">[04] Schwab 连接完成</a>
+    </div>
+  </div>
+  <div class="card">
+    <div style="font-size:11px;color:var(--primary);font-weight:700;letter-spacing:0.06em;">&gt;_ OAUTH 2.1 INCOMING CLIENT CHALLENGE</div>
+    <h1 style="font-size:18px;font-weight:700;color:var(--text-bright);margin:0;">允许连接 Schwab MCP？</h1>
+    <p style="font-size:12px;color:var(--muted);margin:0;">Claude Desktop 正在申请接入您的个人 Charles Schwab MCP 实例</p>
+    <div class="info-row">
+      <span style="color:var(--muted)">客户端标识</span>
+      <span><strong>Claude Desktop CLI</strong> <span class="badge good">RFC 7636 S256</span></span>
+    </div>
+    <div>
+      <span style="font-size:11px;color:var(--muted)">重定向回调地址</span>
+      <div class="uri-box">http://127.0.0.1:8080/oauth/callback</div>
+    </div>
+    <div style="font-size:11px;font-weight:700;color:var(--muted);margin-top:6px;">选择权限等级</div>
+    <div class="option-card">
+      <input type="radio" name="perm" id="opt-ro">
+      <div>
+        <label for="opt-ro" style="font-weight:700;font-size:12px;color:var(--text-bright);cursor:pointer;">只读 · Read only</label>
+        <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">允许读取账户与行情；不向模型暴露交易工具。</p>
+      </div>
+    </div>
+    <div class="option-card selected">
+      <input type="radio" name="perm" id="opt-fa" checked>
+      <div>
+        <label for="opt-fa" style="font-weight:700;font-size:12px;color:var(--text-bright);cursor:pointer;">完整访问 · Full access</label>
+        <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">向模型暴露所有工具；保留现有二次确认、session 直下模式和撤单规则。</p>
+      </div>
+    </div>
+    <div class="option-card" style="border-color:var(--tertiary);">
+      <input type="checkbox" id="opt-sec" checked>
+      <div>
+        <label for="opt-sec" style="font-weight:700;font-size:12px;color:var(--tertiary);cursor:pointer;">Advanced Security · Passkey 订单批准 (推荐)</label>
+        <p style="font-size:11px;color:var(--muted);margin:2px 0 0;">每笔建单、改单均需浏览器硬件 Passkey 批准；禁止 session 直下。</p>
+      </div>
+    </div>
+    <button class="btn-submit">➔ 继续 GitHub 身份验证并授权</button>
+  </div>
+</body>
+</html>

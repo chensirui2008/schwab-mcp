@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf" content="preview-csrf-token">
+  <meta name="session-expires" content="9999999999999">
+  <title>Schwab MCP // CONTROL CENTER [VITE PREVIEW]</title>
+  <link rel="icon" type="image/svg+xml" href="/docs/assets/logo.svg">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070b12;
+      --surface: #0f131c;
+      --surface-lowest: #0a0e17;
+      --surface-low: #141a24;
+      --surface-container: #1a2230;
+      --surface-high: #222c3d;
+      --surface-highest: #2c384d;
+      --outline: #86948a;
+      --outline-variant: #3c4a42;
+      --line: #1e2d42;
+      --line-focus: #4edea3;
+      --text: #dfe2ef;
+      --text-bright: #f0ffe9;
+      --muted: #86948a;
+      --dim: #5c6b61;
+      --primary: #4edea3;
+      --primary-container: #10b981;
+      --on-primary: #003824;
+      --primary-glow: 0 0 12px rgba(78, 222, 163, 0.3);
+      --secondary: #7bd0ff;
+      --secondary-glow: 0 0 12px rgba(123, 208, 255, 0.25);
+      --tertiary: #ffb95f;
+      --error: #ffb4ab;
+      --error-container: #93000a;
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 8px;
+      --radius-full: 9999px;
+      --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.6), 0 2px 8px -1px rgba(0, 0, 0, 0.4);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(to right, rgba(60, 74, 66, 0.1) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(60, 74, 66, 0.1) 1px, transparent 1px);
+      background-size: 24px 24px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      line-height: 1.5;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--secondary); text-decoration: none; }
+    a:hover { text-decoration: underline; color: #a5e0ff; }
+    button, input, select { font-family: inherit; font-size: 13px; }
+    .shell { max-width: 1440px; padding: 16px 20px 48px; margin: auto; }
+    .nav-dock-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: rgba(10, 14, 23, 0.95); border: 1px solid var(--outline-variant); border-radius: var(--radius-md); margin-bottom: 16px; font-size: 11px; }
+    .nav-dock-top a { margin-right: 12px; }
+    .status-pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); display: inline-block; box-shadow: var(--primary-glow); }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 18px; background: var(--surface-low); border: 1px solid var(--line); border-radius: var(--radius-lg); margin-bottom: 18px; box-shadow: var(--shadow); }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: var(--primary); margin-bottom: 2px; }
+    h1 { font-size: 18px; font-weight: 700; color: var(--text-bright); margin: 0; }
+    h2 { font-size: 14px; font-weight: 700; color: var(--text-bright); margin: 0; }
+    p { margin: 0; font-size: 12px; color: var(--muted); }
+    .status-deck { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+    .status-cell { background: var(--surface-low); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .status-cell-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(60, 74, 66, 0.4); padding-bottom: 8px; font-size: 11px; font-weight: 700; color: var(--muted); }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; }
+    .badge.good { background: rgba(78, 222, 163, 0.12); color: var(--primary); border: 1px solid rgba(78, 222, 163, 0.35); }
+    .badge.bad { background: rgba(255, 180, 171, 0.12); color: var(--error); border: 1px solid rgba(255, 180, 171, 0.35); }
+    .badge.warn { background: rgba(255, 185, 95, 0.12); color: var(--tertiary); border: 1px solid rgba(255, 185, 95, 0.35); }
+    .badge.neutral { background: var(--surface-container); color: var(--muted); border: 1px solid var(--outline-variant); }
+    .panel { background: var(--surface-low); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow); margin-bottom: 18px; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); background: rgba(10, 14, 23, 0.8); }
+    .button { display: inline-flex; align-items: center; justify-content: center; padding: 6px 14px; background: var(--surface-container); border: 1px solid var(--outline-variant); border-radius: var(--radius-sm); color: var(--text-bright); font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
+    .button:hover { background: var(--surface-high); border-color: var(--outline); }
+    .button.primary { background: var(--primary-container); border-color: var(--primary); color: var(--on-primary); box-shadow: 0 0 10px rgba(16, 185, 129, 0.25); }
+    .button.primary:hover { background: var(--primary); }
+    .button.danger { background: rgba(147, 0, 10, 0.4); border-color: var(--error); color: var(--error); }
+    .button.danger:hover { background: rgba(147, 0, 10, 0.7); }
+    .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+    .tab { padding: 8px 14px; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
+    .tab:hover { color: var(--text-bright); background: var(--surface-low); }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .tab.active span { color: var(--primary); }
+    .tab span { font-size: 10px; color: var(--dim); margin-right: 4px; }
+    .table-scroll { overflow-x: auto; max-width: 100%; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { padding: 9px 14px; background: var(--surface-container); color: var(--muted); font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    td { padding: 10px 14px; border-bottom: 1px solid rgba(30, 45, 66, 0.6); vertical-align: middle; }
+    tr:hover td { background: rgba(26, 34, 48, 0.4); }
+    .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); background: var(--surface-lowest); border-bottom: 1px solid var(--line); }
+    .stats.overview-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .stat { padding: 12px 16px; border-right: 1px solid var(--line); }
+    .stat:last-child { border-right: none; }
+    .stat .label { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    .stat-value { font-size: 18px; font-weight: 700; color: var(--primary); }
+    .filters { display: flex; align-items: flex-end; gap: 12px; padding: 12px 18px; background: rgba(10, 14, 23, 0.5); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .filters .field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); min-width: 180px; flex: 1; }
+    .filters input, .filters select { background: var(--surface-container); border: 1px solid var(--outline-variant); border-radius: var(--radius-sm); color: var(--text-bright); padding: 6px 10px; font-size: 12px; }
+    .filters .actions { display: flex; gap: 8px; }
+    .pagination { display: flex; justify-content: space-between; align-items: center; padding: 10px 18px; background: var(--surface-lowest); border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+    .credentials { list-style: none; margin: 12px 0 18px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+    .credential { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--surface-container); border: 1px solid var(--outline-variant); border-radius: var(--radius-md); }
+    .credential h3 { margin: 0 0 3px; color: var(--text-bright); font-size: 13px; }
+    .credential-id { font-size: 11px; color: var(--secondary); }
+    .add-passkey { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 18px; max-width: 480px; }
+    .add-passkey .field { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 11px; color: var(--muted); }
+    .add-passkey input { background: var(--surface-container); border: 1px solid var(--outline-variant); border-radius: var(--radius-sm); color: var(--text-bright); padding: 6px 10px; font-size: 12px; }
+    .recovery { margin-top: 24px; padding: 14px 18px; background: rgba(147, 0, 10, 0.15); border: 1px solid rgba(255, 180, 171, 0.3); border-radius: var(--radius-md); display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    .protocol-stream-window { background: var(--surface-lowest); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; margin-top: 18px; }
+    .stream-titlebar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; background: rgba(14, 20, 32, 0.9); border-bottom: 1px solid var(--line); font-size: 11px; }
+    .stream-dots { display: flex; gap: 6px; align-items: center; }
+    .stream-dot { width: 9px; height: 9px; border-radius: 50%; }
+    .stream-dot.red { background: #ff5f56; }
+    .stream-dot.yellow { background: #ffbd2e; }
+    .stream-dot.green { background: #27c93f; }
+    .stream-viewport { padding: 12px 16px; font-size: 11px; line-height: 1.6; color: #7bd0ff; background: #060a10; max-height: 140px; overflow-y: auto; }
+    .footer { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: rgba(10, 14, 23, 0.95); border: 1px solid var(--outline-variant); border-radius: var(--radius-md); font-size: 11px; color: var(--muted); margin-top: 18px; }
+    @media (max-width: 768px) {
+      .shell { padding: 10px 12px 64px; }
+      .status-deck { grid-template-columns: 1fr; }
+      .topline { flex-direction: column; align-items: flex-start; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat:last-child { grid-column: 1 / -1; }
+      .stats.overview-stats { grid-template-columns: 1fr; }
+      .filters { flex-direction: column; align-items: stretch; }
+      .credential { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .footer { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="nav-dock-top">
+      <div>
+        <span class="status-pulse-dot"></span>
+        <strong style="color:var(--primary);margin-left:8px;">&gt;_ SCHWAB_MCP // OBSIDIAN TELEMETRY [VITE DEV CONSOLE]</strong>
+      </div>
+      <div>
+        <a href="/index.html" style="color:var(--primary);font-weight:700;">[01] 控制面板</a>
+        <a href="/security.html">[02] 订单 Passkey 批准</a>
+        <a href="/authorize.html">[03] 客户端 OAuth 授权</a>
+        <a href="/connected.html">[04] Schwab 连接完成</a>
+      </div>
+    </div>
+    <header class="topline">
+      <div class="brand">
+        <div>
+          <div class="eyebrow">&gt;_ SCHWAB MCP // OBSIDIAN TELEMETRY v0.2.0</div>
+          <h1>客户端与安全控制面板</h1>
+          <p>授权策略、实时协议流与硬件 Passkey 体系 · 响应式终端控制台</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="refresh-all-btn" class="button primary">&#x21bb; 刷新全部</button>
+      </div>
+    </header>
+    <section class="status-deck">
+      <div class="status-cell">
+        <div class="status-cell-header">
+          <span>01 / SCHWAB LINK</span>
+          <span class="badge good">&bull; CONNECTED</span>
+        </div>
+        <p>Access 到期：28m 14s (Auto-rotate)</p>
+        <p>Refresh 到期：6d 19h</p>
+        <p style="color:var(--dim);font-size:11px;">安全协议：TLS 1.3 // REST+JSON</p>
+      </div>
+      <div class="status-cell">
+        <div class="status-cell-header">
+          <span>02 / RUNTIME ENGINE</span>
+          <span class="badge warn">ENABLE_TRADING=false</span>
+        </div>
+        <p>由部署配置控制；只读安全沙箱活跃</p>
+        <p style="color:var(--dim);font-size:11px;">安全策略：IMMUTABLE_ENCLAVE</p>
+      </div>
+      <div class="status-cell">
+        <div class="status-cell-header">
+          <span>03 / BROWSER ENCLAVE</span>
+          <span class="badge good">15m 有效期</span>
+        </div>
+        <p>GitHub owner #12345678 (VERIFIED)</p>
+        <p style="color:var(--dim);font-size:11px;">沙箱状态：EPHEMERAL_ISOLATION</p>
+      </div>
+    </section>
+
+    <!-- TABS -->
+    <div class="tabs" role="tablist">
+      <button id="tab-btn-clients" class="tab active" role="tab" aria-selected="true" data-tab="clients"><span>[01/ACCESS]</span> 授权客户端 (2)</button>
+      <button id="tab-btn-audit" class="tab" role="tab" aria-selected="false" data-tab="audit"><span>[02/ACTIVITY]</span> 调用审计 (1,428)</button>
+      <button id="tab-btn-passkeys" class="tab" role="tab" aria-selected="false" data-tab="passkeys"><span>[03/SECURITY]</span> Passkey 管理 (FIDO2 L3)</button>
+    </div>
+
+    <!-- PANEL 1: CLIENTS -->
+    <section id="panel-clients" class="panel">
+      <div class="section-head">
+        <div>
+          <h2>已授权 MCP 客户端矩阵</h2>
+          <p>每个客户端独立授权。权限调整与撤销即时生效；Advanced Security 变更须由 Passkey 验证。</p>
+        </div>
+        <button class="button">&#x21bb; 刷新客户端</button>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>客户端 / 重定向 URI</th>
+              <th>状态</th>
+              <th>权限等级</th>
+              <th>Advanced Security</th>
+              <th>授权 / 最后调用</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div style="font-weight:600;color:var(--text-bright);">Claude Desktop CLI</div>
+                <code style="font-size:11px;color:var(--secondary);">http://127.0.0.1:8080/oauth/callback</code>
+              </td>
+              <td><span class="badge good">&bull; ACTIVE</span></td>
+              <td>
+                <select style="background:var(--surface-container);border:1px solid var(--outline-variant);color:var(--text-bright);padding:3px 8px;border-radius:4px;font-size:11px;">
+                  <option selected>完整交易 (Full Access)</option>
+                  <option>只读 (Read Only)</option>
+                </select>
+              </td>
+              <td><span class="badge good">✓ Passkey Enforced</span></td>
+              <td>2m ago · 3,638 tx</td>
+              <td><button class="button danger" onclick="alert('预览操作：撤销客户端授权')">撤销授权</button></td>
+            </tr>
+            <tr>
+              <td>
+                <div style="font-weight:600;color:var(--text-bright);">Trading Copilot Agent</div>
+                <code style="font-size:11px;color:var(--secondary);">http://127.0.0.1:8080/oauth/copilot</code>
+              </td>
+              <td><span class="badge good">&bull; ACTIVE</span></td>
+              <td>
+                <select style="background:var(--surface-container);border:1px solid var(--outline-variant);color:var(--text-bright);padding:3px 8px;border-radius:4px;font-size:11px;">
+                  <option>完整交易 (Full Access)</option>
+                  <option selected>只读 (Read Only)</option>
+                </select>
+              </td>
+              <td><span class="badge neutral">普通模式</span></td>
+              <td>1h ago · 892 tx</td>
+              <td><button class="button danger" onclick="alert('预览操作：撤销客户端授权')">撤销授权</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- PANEL 2: AUDIT -->
+    <section id="panel-audit" class="panel" style="display:none;">
+      <div class="section-head">
+        <div>
+          <h2>协议工具调用审计</h2>
+          <p>只读与交易工具的脱敏调用记录。保留最近 30 天，最多 5,000 条；统计依据当前筛选。</p>
+        </div>
+        <button class="button">&#x21bb; 刷新日志</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="label">匹配调用量</span><div class="stat-value">1,428</div></div>
+        <div class="stat"><span class="label">成功率</span><div class="stat-value">99.8%</div></div>
+        <div class="stat"><span class="label">成功</span><div class="stat-value">1,425</div></div>
+        <div class="stat"><span class="label">错误</span><div class="stat-value" style="color:var(--error);">3</div></div>
+        <div class="stat"><span class="label">近 24 小时调用</span><div class="stat-value">342</div></div>
+      </div>
+      <div class="filters">
+        <label class="field">Client ID（精确匹配）<input type="text" placeholder="全部客户端" value=""></label>
+        <label class="field">工具名称（精确匹配）<input type="text" placeholder="例如 get_quotes" value=""></label>
+        <label class="field">执行状态<select><option>全部状态</option><option>成功 SUCCESS</option><option>错误 ERROR</option></select></label>
+        <div class="actions">
+          <button class="button primary" onclick="alert('已应用筛选')">应用筛选</button>
+          <button class="button">清除</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>Client ID</th>
+              <th>工具</th>
+              <th>状态</th>
+              <th>耗时</th>
+              <th>脱敏参数 / 错误</th>
+              <th>完整 Request ID</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>14:32:01</td>
+              <td><code>mcp-claude-desktop</code></td>
+              <td><code>schwab_get_quotes</code></td>
+              <td><span class="badge good">SUCCESS</span></td>
+              <td>1.2 ms</td>
+              <td>symbols=["NVDA","AAPL"]</td>
+              <td><code>req_8f93a1002c91</code></td>
+            </tr>
+            <tr>
+              <td>14:31:58</td>
+              <td><code>mcp-claude-desktop</code></td>
+              <td><code>schwab_get_balances</code></td>
+              <td><span class="badge good">SUCCESS</span></td>
+              <td>0.8 ms</td>
+              <td>account_hash="0x8f1a..."</td>
+              <td><code>req_2910ac8b1093</code></td>
+            </tr>
+            <tr>
+              <td>14:28:14</td>
+              <td><code>trading-copilot</code></td>
+              <td><code>schwab_get_price_history</code></td>
+              <td><span class="badge good">SUCCESS</span></td>
+              <td>2.4 ms</td>
+              <td>symbol="MSFT", period="1D"</td>
+              <td><code>req_d892a01948ba</code></td>
+            </tr>
+            <tr>
+              <td>14:15:22</td>
+              <td><code>trading-copilot</code></td>
+              <td><code>schwab_place_order</code></td>
+              <td><span class="badge bad">ERROR</span></td>
+              <td>0.5 ms</td>
+              <td style="color:var(--error);">READ_ONLY_ENFORCED: 客户端处于只读模式</td>
+              <td><code>req_e901aa7211bf</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination">
+        <span>显示第 1–4 条 · 共 1,428 条记录</span>
+        <div style="display:flex;gap:8px;">
+          <button class="button" disabled>&larr; 上一页</button>
+          <button class="button">下一页 &rarr;</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL 3: PASSKEYS -->
+    <section id="panel-passkeys" class="panel" style="display:none;">
+      <div class="section-head">
+        <div>
+          <h2>Owner 硬件 Passkey 管理</h2>
+          <p>凭据由 owner 共享。添加、重命名、删除均需验证已有 Passkey；最后一个凭据不可删除。</p>
+        </div>
+        <button class="button">&#x21bb; 刷新凭据</button>
+      </div>
+      <div class="stats overview-stats">
+        <div class="stat"><span class="label">已授权客户端</span><div class="stat-value">2</div></div>
+        <div class="stat"><span class="label">保留调用记录</span><div class="stat-value">1,428</div></div>
+        <div class="stat"><span class="label">已登记 Passkey</span><div class="stat-value">2</div></div>
+      </div>
+      <div style="padding:18px;">
+        <h3 style="margin-bottom:12px;font-size:13px;color:var(--text-bright);">已登记硬件凭据 (2)</h3>
+        <ul class="credentials">
+          <li class="credential">
+            <div>
+              <h3>YubiKey 5C NFC (Primary Hardware Key)</h3>
+              <code class="credential-id">cred_9f81a0293bca8810e71920</code>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="button" onclick="const n = prompt('新的 Passkey 名称：', 'YubiKey 5C NFC'); if (n) alert('已更名为：' + n)">重命名</button>
+              <button class="button danger" onclick="confirm('确定删除此 Passkey 吗？') && alert('已删除')">删除</button>
+            </div>
+          </li>
+          <li class="credential">
+            <div>
+              <h3>Apple Touch ID (MacBook Pro Secure Enclave)</h3>
+              <code class="credential-id">cred_10a9c8b74f32e910023a18</code>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="button" onclick="const n = prompt('新的 Passkey 名称：', 'MacBook Pro Touch ID'); if (n) alert('已更名为：' + n)">重命名</button>
+              <button class="button danger" onclick="confirm('确定删除此 Passkey 吗？') && alert('已删除')">删除</button>
+            </div>
+          </li>
+        </ul>
+        <div class="add-passkey">
+          <div class="field">
+            <label for="new-passkey-name">新 Passkey 标识名</label>
+            <input id="new-passkey-name" type="text" placeholder="例如：iPhone FaceID" value="备用安全密钥">
+          </div>
+          <button class="button primary" onclick="alert('将在系统提示中调用 WebAuthn 注册：' + document.getElementById('new-passkey-name').value)">+ 添加 Passkey</button>
+        </div>
+        <div class="recovery">
+          <p style="margin:0;font-size:12px;">所有硬件凭据均丢失？通过独立 GitHub owner OAuth 灾难恢复。恢复将原子替换凭据并使旧会话失效。</p>
+          <a class="button danger" href="/security.html">Passkey 灾难恢复</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- PROTOCOL STREAM WINDOW -->
+    <div class="protocol-stream-window">
+      <div class="stream-titlebar">
+        <div class="stream-dots">
+          <span class="stream-dot red"></span>
+          <span class="stream-dot yellow"></span>
+          <span class="stream-dot green"></span>
+          <strong style="color:var(--muted);margin-left:6px;">&gt;_ REALTIME MCP PROTOCOL STREAM (JSON-RPC 2.0)</strong>
+        </div>
+        <span class="badge good" style="font-size:10px">&bull; STREAM: LIVE &middot; 120 msg/sec</span>
+      </div>
+      <div class="stream-viewport">
+        <p style="margin:2px 0;"><span style="color:var(--dim)">[14:32:01.482] REQ:</span> {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "schwab_get_quotes", "arguments": {"symbols": ["NVDA", "AAPL"]}}} &rarr; <span style="color:var(--primary)">200 OK (1.2ms)</span></p>
+        <p style="margin:2px 0;"><span style="color:var(--dim)">[14:31:58.310] REQ:</span> {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "schwab_get_balances"}} &rarr; <span style="color:var(--primary)">200 OK (0.8ms)</span></p>
+        <p style="margin:2px 0;"><span style="color:var(--dim)">[14:28:14.901] REQ:</span> {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "schwab_get_price_history", "arguments": {"symbol": "MSFT"}}} &rarr; <span style="color:var(--primary)">200 OK (2.4ms)</span></p>
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+      <div>SYSTEM READY // LISTENING ON 127.0.0.1:8080 &middot; LATENCY: 0.12ms &middot; F1 Docs &middot; F2 Clients &middot; F3 Audit &middot; F5 Refresh</div>
+      <div style="color:var(--dim)">HARDWARE_UV: READY &middot; CIPHER: ED25519-CRT &middot; AIRGAP: LEVEL-4</div>
+    </footer>
+  </div>
+
+  <script>
+    // Tab switching interactivity
+    const tabs = document.querySelectorAll('.tab');
+    const panels = {
+      clients: document.getElementById('panel-clients'),
+      audit: document.getElementById('panel-audit'),
+      passkeys: document.getElementById('panel-passkeys')
+    };
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => {
+          t.classList.remove('active');
+          t.setAttribute('aria-selected', 'false');
+        });
+        tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
+
+        const target = tab.dataset.tab;
+        Object.keys(panels).forEach(key => {
+          panels[key].style.display = (key === target) ? 'block' : 'none';
+        });
+      });
+    });
+
+    // Refresh simulation
+    document.getElementById('refresh-all-btn').addEventListener('click', () => {
+      const btn = document.getElementById('refresh-all-btn');
+      btn.textContent = '⏳ 正在刷新...';
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.innerHTML = '&#x21bb; 刷新全部';
+        btn.disabled = false;
+      }, 500);
+    });
+  </script>
+</body>
+</html>

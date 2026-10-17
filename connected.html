@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Schwab MCP // BROKERAGE HANDSHAKE PASSED [VITE PREVIEW]</title>
+  <link rel="icon" type="image/svg+xml" href="/docs/assets/logo.svg">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070b12;
+      --surface: #0f131c;
+      --surface-low: #141a24;
+      --outline: #86948a;
+      --outline-variant: #3c4a42;
+      --line: #1e2d42;
+      --text: #dfe2ef;
+      --text-bright: #f0ffe9;
+      --muted: #86948a;
+      --primary: #4edea3;
+      --primary-container: #10b981;
+      --on-primary: #003824;
+      --secondary: #7bd0ff;
+      --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(to right, rgba(60, 74, 66, 0.1) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(60, 74, 66, 0.1) 1px, transparent 1px);
+      background-size: 24px 24px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px 20px 48px;
+    }
+    a { color: var(--secondary); text-decoration: none; }
+    .nav-dock-top { width: 100%; max-width: 580px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: rgba(10, 14, 23, 0.95); border: 1px solid var(--outline-variant); border-radius: 6px; margin-bottom: 16px; font-size: 11px; }
+    .nav-dock-top a { margin-right: 12px; }
+    .status-pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); display: inline-block; }
+    .card { width: 100%; max-width: 580px; background: var(--surface-low); border: 1px solid var(--line); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge.good { background: rgba(78, 222, 163, 0.12); color: var(--primary); border: 1px solid rgba(78, 222, 163, 0.35); }
+    .info-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .btn-close { width: 100%; padding: 12px; background: var(--primary-container); color: var(--on-primary); font-size: 13px; font-weight: 700; border: 1px solid var(--primary); border-radius: 6px; cursor: pointer; }
+    .btn-close:hover { background: var(--primary); }
+  </style>
+</head>
+<body>
+  <div class="nav-dock-top">
+    <div>
+      <span class="status-pulse-dot"></span>
+      <strong style="color:var(--primary);margin-left:8px;">&gt;_ SCHWAB_MCP // BROKERAGE_HANDSHAKE_PASSED [VITE PREVIEW]</strong>
+    </div>
+    <div>
+      <a href="/index.html">[01] 控制面板</a>
+      <a href="/security.html">[02] 订单 Passkey 批准</a>
+      <a href="/authorize.html">[03] 客户端 OAuth 授权</a>
+      <a href="/connected.html" style="color:var(--primary);font-weight:700;">[04] Schwab 连接完成</a>
+    </div>
+  </div>
+  <div class="card">
+    <div style="font-size:11px;color:var(--primary);font-weight:700;letter-spacing:0.06em;">&gt;_ BROKERAGE CONNECTION VERIFIED</div>
+    <h1 style="font-size:18px;font-weight:700;color:var(--text-bright);margin:0;">Schwab 账户已成功连接</h1>
+    <p style="font-size:12px;color:var(--muted);margin:0;">OAuth 凭据已安全持久化至 SQLite 隔离存储 · 守护进程运行中</p>
+    <div class="info-row">
+      <span style="color:var(--muted)">连接状态</span>
+      <span>已授权绑定 <span class="badge good">正常 ONLINE</span></span>
+    </div>
+    <div class="info-row">
+      <span style="color:var(--muted)">安全防护</span>
+      <span>SchwabVault DO 加密持久化 <span class="badge good">ENCLAVE SEALED</span></span>
+    </div>
+    <div style="padding:10px 14px;background:rgba(78,222,163,0.1);border:1px solid rgba(78,222,163,0.3);border-radius:6px;color:var(--primary);font-size:12px;">
+      ✓ 您现在可以安全关闭此浏览器窗口，并返回您的 MCP 客户端继续使用。
+    </div>
+    <button class="btn-close" onclick="alert('预览模式：在生产环境中此按钮将关闭标签页。')">✕ 完成并关闭页面</button>
+  </div>
+</body>
+</html>

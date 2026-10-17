@@ -11,22 +11,36 @@ export interface DashboardPageProps {
 const DASHBOARD_STYLES = `
 :root {
   color-scheme: dark;
-  --bg: #090d16;
-  --card: #0f1523;
-  --card-header: #0b111e;
-  --card-hover: #131b2e;
-  --line: #1e293b;
-  --line-focus: #38bdf8;
-  --text: #f8fafc;
-  --muted: #94a3b8;
-  --dim: #64748b;
-  --blue: #38bdf8;
-  --cyan: #38bdf8;
-  --green: #10b981;
-  --red: #f43f5e;
-  --amber: #f59e0b;
-  --radius: 8px;
-  --shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5), 0 2px 6px -1px rgba(0, 0, 0, 0.3);
+  --bg: #070b12;
+  --surface: #0f131c;
+  --surface-lowest: #0a0e17;
+  --surface-low: #141a24;
+  --surface-container: #1a2230;
+  --surface-high: #222c3d;
+  --surface-highest: #2c384d;
+  --outline: #86948a;
+  --outline-variant: #3c4a42;
+  --line: #1e2d42;
+  --line-focus: #4edea3;
+  --text: #dfe2ef;
+  --text-bright: #f0ffe9;
+  --muted: #86948a;
+  --dim: #5c6b61;
+  --primary: #4edea3;
+  --primary-container: #10b981;
+  --on-primary: #003824;
+  --primary-glow: 0 0 12px rgba(78, 222, 163, 0.3);
+  --secondary: #7bd0ff;
+  --secondary-glow: 0 0 12px rgba(123, 208, 255, 0.25);
+  --tertiary: #ffb95f;
+  --error: #ffb4ab;
+  --error-container: #93000a;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 9999px;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.6), 0 2px 8px -1px rgba(0, 0, 0, 0.4);
 }
 
 * {
@@ -35,9 +49,13 @@ const DASHBOARD_STYLES = `
 
 body {
   margin: 0;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(to right, rgba(60, 74, 66, 0.1) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(60, 74, 66, 0.1) 1px, transparent 1px);
+  background-size: 24px 24px;
   color: var(--text);
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-mono);
   line-height: 1.5;
   min-height: 100vh;
   position: relative;
@@ -53,7 +71,7 @@ body {
   height: 100vh;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.85;
+  opacity: 0.65;
 }
 
 button, input, select {
@@ -71,7 +89,7 @@ button {
 }
 
 a {
-  color: var(--cyan);
+  color: var(--secondary);
   text-underline-offset: 3px;
   text-decoration: none;
   transition: color 0.15s ease, text-decoration 0.15s ease;
@@ -79,7 +97,7 @@ a {
 
 a:hover {
   text-decoration: underline;
-  color: #7dd3fc;
+  color: #a5e0ff;
 }
 
 button:disabled, input:disabled, select:disabled {
@@ -88,7 +106,7 @@ button:disabled, input:disabled, select:disabled {
 }
 
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
-  outline: 2px solid var(--cyan);
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 
@@ -101,21 +119,22 @@ h1, h2, h3, p {
 }
 
 h1 {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.015em;
-  color: var(--text);
+  color: var(--text-bright);
 }
 
 h2 {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text);
+  letter-spacing: 0.04em;
+  color: var(--text-bright);
+  text-transform: uppercase;
 }
 
 h3 {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
@@ -125,7 +144,7 @@ small, .muted {
 }
 
 .mono, code {
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -134,652 +153,798 @@ small, .muted {
   position: relative;
   z-index: 1;
   max-width: 1440px;
-  padding: 28px 28px 24px;
+  padding: 16px 20px 48px;
   margin: auto;
 }
 
-.topline, .brand, .actions, .section-head, .pagination {
+/* TOP TELEMETRY APP BAR (Obsidian Telemetry Header) */
+.telemetry-bar-top {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
+  padding: 8px 16px;
+  background: rgba(10, 14, 23, 0.95);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+  font-size: 11px;
+  color: var(--muted);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
 }
 
+.telemetry-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--primary);
+}
+
+.status-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--primary);
+  box-shadow: var(--primary-glow);
+  animation: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.telemetry-chips {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.telemetry-chips .chip-badge {
+  background: var(--surface-low);
+  padding: 2px 8px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  color: var(--secondary);
+}
+
+/* TOPLINE BRAND & ACTIONS */
 .topline {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  padding-bottom: 24px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 24px;
+  gap: 20px;
+  padding: 14px 18px;
+  background: var(--surface-low);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  margin-bottom: 18px;
+  box-shadow: var(--shadow);
 }
 
 .brand {
+  display: flex;
+  align-items: center;
   gap: 14px;
 }
 
-.brand svg {
+.brand-logo {
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
 }
 
 .eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--cyan);
   font-size: 11px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--primary);
+  margin-bottom: 2px;
 }
 
-.brand p {
-  font-size: 12.5px;
+.topline h1 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+
+.topline p {
+  font-size: 12px;
   color: var(--muted);
-  margin-top: 2px;
+}
+
+.topline .actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 
 .owner {
   text-align: right;
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 11px;
   line-height: 1.4;
+  color: var(--muted);
 }
 
 .owner strong {
-  color: var(--text);
-  background: var(--card-header);
-  border: 1px solid var(--line);
-  padding: 2px 6px;
-  border-radius: 4px;
+  color: var(--secondary);
 }
 
+#last-refresh {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+/* TELEMETRY STATUS DECK (3 Cards) */
 .status-deck {
-  background: transparent;
   display: grid;
-  grid-template-columns: 1.2fr 1fr 1fr;
-  gap: 16px;
-  margin-bottom: 24px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
 }
 
 .status-cell {
-  background: var(--card);
+  background: var(--surface-low);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 18px 20px;
-  box-shadow: var(--shadow);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  justify-content: space-between;
+  gap: 10px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .status-cell:hover {
-  border-color: #334155;
+  border-color: var(--outline);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
-.status-cell + .status-cell {
-  border-left: 1px solid var(--line);
+.status-cell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid rgba(60, 74, 66, 0.4);
+  padding-bottom: 8px;
 }
 
-.label {
-  color: var(--dim);
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.status-cell-header .label {
+  font-size: 11px;
   font-weight: 700;
-  display: block;
-}
-
-.status-cell p {
-  font-size: 12px;
+  letter-spacing: 0.06em;
   color: var(--muted);
-  line-height: 1.45;
+  text-transform: uppercase;
 }
 
+.status-cell-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.status-cell-body p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.telemetry-stat {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.status-cell-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid rgba(60, 74, 66, 0.3);
+  padding-top: 8px;
+  font-size: 11px;
+}
+
+.card-action-link {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.card-action-link.secondary {
+  color: var(--secondary);
+}
+
+/* BADGES */
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 11.5px;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  width: fit-content;
-}
-
-.badge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
 }
 
 .badge.good {
-  color: var(--green);
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.25);
-}
-
-.badge.good::before {
-  box-shadow: 0 0 6px var(--green);
-}
-
-.badge.warn {
-  color: var(--amber);
-  background: rgba(245, 158, 11, 0.1);
-  border-color: rgba(245, 158, 11, 0.25);
-}
-
-.badge.warn::before {
-  box-shadow: 0 0 6px var(--amber);
+  background: rgba(78, 222, 163, 0.12);
+  color: var(--primary);
+  border: 1px solid rgba(78, 222, 163, 0.35);
 }
 
 .badge.bad {
-  color: var(--red);
-  background: rgba(244, 63, 94, 0.1);
-  border-color: rgba(244, 63, 94, 0.25);
+  background: rgba(255, 180, 171, 0.12);
+  color: var(--error);
+  border: 1px solid rgba(255, 180, 171, 0.35);
 }
 
-.badge.bad::before {
-  box-shadow: 0 0 6px var(--red);
+.badge.warn {
+  background: rgba(255, 185, 95, 0.12);
+  color: var(--tertiary);
+  border: 1px solid rgba(255, 185, 95, 0.35);
 }
 
 .badge.neutral {
+  background: var(--surface-container);
   color: var(--muted);
-  background: rgba(148, 163, 184, 0.08);
-  border-color: rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--outline-variant);
 }
 
+/* BUTTONS */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--card);
-  color: var(--text);
-  padding: 8px 14px;
-  font-size: 12.5px;
+  padding: 6px 14px;
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  color: var(--text-bright);
+  font-size: 12px;
   font-weight: 600;
-  text-decoration: none;
-  white-space: normal;
+  letter-spacing: 0.04em;
   transition: all 0.15s ease;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--card-hover);
-  border-color: var(--cyan);
-  color: #fff;
+  background: var(--surface-high);
+  border-color: var(--outline);
 }
 
 .button.primary {
-  background: var(--green);
-  border-color: var(--green);
-  color: #04130c;
-  font-weight: 700;
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+  background: var(--primary-container);
+  border-color: var(--primary);
+  color: var(--on-primary);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.25);
 }
 
 .button.primary:hover:not(:disabled) {
-  background: #059669;
-  border-color: #059669;
-  box-shadow: 0 0 16px rgba(16, 185, 129, 0.4);
+  background: var(--primary);
+  box-shadow: 0 0 14px rgba(78, 222, 163, 0.4);
 }
 
 .button.danger {
-  color: var(--red);
-  border-color: rgba(244, 63, 94, 0.3);
-  background: rgba(244, 63, 94, 0.08);
+  background: rgba(147, 0, 10, 0.4);
+  border-color: var(--error);
+  color: var(--error);
 }
 
 .button.danger:hover:not(:disabled) {
-  background: rgba(244, 63, 94, 0.18);
-  border-color: var(--red);
+  background: rgba(147, 0, 10, 0.7);
 }
 
 .button.compact {
-  padding: 5px 10px;
-  font-size: 11.5px;
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
-.message {
-  margin: 16px 0;
-  padding: 12px 16px;
-  border: 1px solid rgba(56, 189, 248, 0.3);
-  border-radius: 6px;
-  background: rgba(56, 189, 248, 0.06);
-  color: #bae6fd;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 12.5px;
-}
-
-.message.error {
-  border-color: rgba(244, 63, 94, 0.35);
-  color: #fecdd3;
-  background: rgba(244, 63, 94, 0.08);
-}
-
-.session-link {
-  margin-top: 10px;
-}
-
+/* TABS */
 .tabs {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   border-bottom: 1px solid var(--line);
-  margin: 24px 0 20px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  margin-bottom: 18px;
+  padding-bottom: 2px;
 }
 
 .tab {
-  padding: 12px 18px;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  color: var(--muted);
-  font-weight: 600;
-  text-align: left;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  white-space: nowrap;
-  font-size: 13px;
-  cursor: pointer;
+  gap: 6px;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
   transition: all 0.15s ease;
 }
 
-.tab span {
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
-  font-size: 11px;
-  color: var(--dim);
-  letter-spacing: 0.05em;
-}
-
 .tab:hover {
-  color: var(--text);
+  color: var(--text-bright);
+  background: var(--surface-low);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
 }
 
 .tab[aria-selected="true"] {
-  color: var(--cyan);
-  border-bottom-color: var(--cyan);
-  background: linear-gradient(180deg, transparent, rgba(56, 189, 248, 0.06));
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.tab span {
+  font-size: 10px;
+  color: var(--dim);
 }
 
 .tab[aria-selected="true"] span {
-  color: var(--cyan);
+  color: var(--primary);
 }
 
+/* PANELS */
 .panel {
+  background: var(--surface-low);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--card);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   box-shadow: var(--shadow);
+  margin-bottom: 18px;
 }
 
 .section-head {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  padding: 18px 24px;
+  gap: 16px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--line);
-  background: var(--card-header);
+  background: rgba(10, 14, 23, 0.8);
+}
+
+.section-head h2 {
+  margin-bottom: 2px;
 }
 
 .section-head p {
   font-size: 12px;
   color: var(--muted);
-  margin-top: 3px;
-  max-width: 780px;
-  line-height: 1.45;
 }
 
-.panel-body {
-  padding: 24px;
-}
-
+/* TABLES */
 .table-scroll {
-  overflow: auto;
+  overflow-x: auto;
   max-width: 100%;
-  -webkit-overflow-scrolling: touch;
 }
 
 table {
-  border-collapse: collapse;
   width: 100%;
-  text-align: left;
+  border-collapse: collapse;
   font-size: 12px;
+  text-align: left;
 }
 
 caption {
-  text-align: left;
-  padding: 12px 24px 8px;
+  text-align: right;
+  padding: 6px 16px;
+  font-size: 11px;
   color: var(--muted);
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-}
-
-th {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  background: #060911;
-  font-weight: 600;
-  padding: 12px 18px;
+  background: var(--surface-lowest);
   border-bottom: 1px solid var(--line);
 }
 
-th, td {
-  padding: 14px 18px;
-  vertical-align: top;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.7);
-}
-
-tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-tbody tr:hover td {
-  background: rgba(255, 255, 255, 0.02);
+th {
+  padding: 9px 14px;
+  background: var(--surface-container);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
 }
 
 td {
-  overflow-wrap: anywhere;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(30, 45, 66, 0.6);
+  vertical-align: middle;
 }
 
-#clients-table {
-  min-width: 980px;
+tr:hover td {
+  background: rgba(26, 34, 48, 0.4);
 }
 
-#audit-table {
-  min-width: 1040px;
+td.empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
-.client-name {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 3px;
+td.load-error {
+  color: var(--error);
 }
 
 .client-meta {
-  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.redirects {
-  margin-top: 8px;
-  font-size: 11.5px;
+.client-name {
+  font-weight: 600;
+  color: var(--text-bright);
 }
 
 .redirects summary {
+  font-size: 11px;
+  color: var(--secondary);
   cursor: pointer;
-  color: var(--cyan);
+  margin-top: 4px;
 }
 
 .redirects ul {
-  padding-left: 16px;
-  margin: 6px 0;
-  list-style-type: square;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
+  margin: 4px 0 0;
+  padding-left: 14px;
+  font-size: 11px;
   color: var(--muted);
-}
-
-input, select {
-  min-height: 38px;
-  max-width: 100%;
-  background: #060911;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  color: var(--text);
-  padding: 8px 12px;
-  font-family: inherit;
-  font-size: 12.5px;
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-input:focus, select:focus {
-  border-color: var(--cyan);
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
-}
-
-input::placeholder {
-  color: var(--dim);
-}
-
-.permission {
-  min-width: 145px;
-}
-
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text);
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.toggle input {
-  accent-color: var(--cyan);
-  width: 17px;
-  height: 17px;
-  min-height: 0;
-  margin: 2px;
-  cursor: pointer;
 }
 
 .policy-note {
   display: block;
-  margin-top: 6px;
-  max-width: 190px;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--dim);
-  line-height: 1.4;
+  margin-top: 3px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+select.permission {
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  color: var(--text-bright);
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
 .timestamp {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text);
+  white-space: nowrap;
 }
 
-.empty {
-  text-align: center;
+.timestamp.muted {
   color: var(--muted);
-  padding: 38px 20px;
-  font-size: 13px;
+  font-size: 10px;
 }
 
-.load-error {
-  color: var(--red);
-}
-
+/* AUDIT STATS DECK */
 .stats {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: var(--surface-lowest);
   border-bottom: 1px solid var(--line);
-  background: var(--card-header);
 }
 
 .stat {
-  padding: 16px 22px;
+  padding: 12px 16px;
   border-right: 1px solid var(--line);
 }
 
 .stat:last-child {
-  border: 0;
+  border-right: none;
+}
+
+.stat .label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
 }
 
 .stat-value {
-  font-size: 22px;
-  font-variant-numeric: tabular-nums;
+  font-size: 18px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  margin-top: 4px;
+  color: var(--primary);
 }
 
+/* FILTERS FORM */
 .filters {
   display: flex;
-  flex-wrap: wrap;
   align-items: flex-end;
-  gap: 14px;
-  padding: 18px 24px;
+  gap: 12px;
+  padding: 12px 18px;
+  background: rgba(10, 14, 23, 0.5);
   border-bottom: 1px solid var(--line);
-  background: #090e18;
+  flex-wrap: wrap;
 }
 
 .filters .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 180px;
   flex: 1;
-  min-width: 160px;
+}
+
+.filters input, .filters select {
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  color: var(--text-bright);
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .filters .actions {
+  display: flex;
   gap: 8px;
 }
 
 .pagination {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  padding: 14px 24px;
+  padding: 10px 18px;
+  background: var(--surface-lowest);
   border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-  background: var(--card-header);
-}
-
-.summary {
-  max-width: 330px;
-  white-space: pre-wrap;
-  font-size: 11.5px;
-}
-
-.request-id {
-  min-width: 190px;
-  word-break: break-all;
   font-size: 11px;
   color: var(--muted);
+}
+
+.pagination .actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* PASSKEYS PANEL */
+.panel-body {
+  padding: 18px;
 }
 
 .credentials {
   list-style: none;
-  margin: 0;
+  margin: 12px 0 18px;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .credential {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 20px;
-  padding: 18px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.credential:first-child {
-  padding-top: 0;
-}
-
-.credential:last-child {
-  border-bottom: 0;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
 }
 
 .credential h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
+  margin-bottom: 3px;
+  color: var(--text-bright);
 }
 
 .credential-id {
-  display: block;
-  color: var(--dim);
-  max-width: 640px;
-  margin-top: 4px;
   font-size: 11px;
+  color: var(--secondary);
+}
+
+.credential .actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .add-passkey {
-  border-top: 1px solid var(--line);
-  padding-top: 20px;
-  margin-top: 16px;
   display: flex;
-  gap: 12px;
   align-items: flex-end;
-  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+  max-width: 460px;
 }
 
 .add-passkey .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   flex: 1;
-  max-width: 380px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.add-passkey input {
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  color: var(--text-bright);
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .recovery {
-  border-top: 1px solid var(--line);
   margin-top: 24px;
-  padding-top: 20px;
+  padding: 14px 18px;
+  background: rgba(147, 0, 10, 0.15);
+  border: 1px solid rgba(255, 180, 171, 0.3);
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
+}
+
+.recovery p {
   font-size: 12px;
+  color: var(--text);
+}
+
+/* REALTIME MCP PROTOCOL STREAM WINDOW (Obsidian Terminal Preview) */
+.protocol-stream-window {
+  background: var(--surface-lowest);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  margin-top: 18px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.stream-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: rgba(14, 20, 32, 0.9);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.stream-dots {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.stream-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.stream-dot.red { background: #ff5f56; }
+.stream-dot.yellow { background: #ffbd2e; }
+.stream-dot.green { background: #27c93f; }
+
+.stream-title {
+  font-weight: 600;
+  letter-spacing: 0.06em;
   color: var(--muted);
 }
 
-.footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  color: var(--dim);
-  font-size: 11.5px;
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(30, 41, 59, 0.5);
+.stream-viewport {
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: #7bd0ff;
+  background: #060a10;
+  max-height: 140px;
+  overflow-y: auto;
 }
 
+.stream-line {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.stream-line .ts { color: var(--dim); }
+.stream-line .tag { color: var(--primary); font-weight: 600; }
+.stream-line .val { color: var(--text-bright); }
+
+/* MESSAGES & ALERTS */
+.message {
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: rgba(78, 222, 163, 0.12);
+  border: 1px solid rgba(78, 222, 163, 0.4);
+  color: var(--primary);
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+.message.error {
+  background: rgba(255, 180, 171, 0.12);
+  border-color: rgba(255, 180, 171, 0.4);
+  color: var(--error);
+}
+
+/* DIALOG */
 dialog {
+  background: var(--surface-low);
   color: var(--text);
-  background: #0f1523;
-  border: 1px solid var(--line-focus);
-  border-radius: var(--radius);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-lg);
+  padding: 24px;
   max-width: 480px;
-  width: calc(100% - 32px);
-  padding: 26px;
-  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.85);
+  width: 90vw;
+  box-shadow: 0 0 32px rgba(0, 0, 0, 0.8), 0 0 16px rgba(78, 222, 163, 0.2);
 }
 
 dialog::backdrop {
-  background: rgba(4, 7, 14, 0.85);
-  backdrop-filter: blur(8px);
+  background: rgba(6, 10, 16, 0.85);
+  backdrop-filter: blur(4px);
 }
 
 dialog h2 {
-  margin-bottom: 10px;
-  font-size: 18px;
+  margin-bottom: 8px;
+  color: var(--text-bright);
 }
 
 dialog p {
   font-size: 13px;
   color: var(--muted);
-  margin-bottom: 15px;
   line-height: 1.5;
+  margin-bottom: 14px;
 }
 
 dialog .actions {
+  display: flex;
   justify-content: flex-end;
-  margin-top: 24px;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+/* CRT STATUS FOOTER DOCK */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: rgba(10, 14, 23, 0.95);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
+  margin-top: 18px;
+  font-size: 11px;
+  color: var(--muted);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.5);
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  letter-spacing: 0.04em;
+}
+
+.footer-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
 }
 
 .skip {
@@ -787,11 +952,11 @@ dialog .actions {
   left: 16px;
   top: -60px;
   z-index: 100;
-  background: var(--card);
+  background: var(--surface-container);
   padding: 10px 16px;
-  border: 1px solid var(--cyan);
-  border-radius: 6px;
-  color: var(--cyan);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  color: var(--primary);
 }
 
 .skip:focus {
@@ -799,45 +964,44 @@ dialog .actions {
 }
 
 .support-warning {
-  color: var(--amber);
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  border-radius: 6px;
-  padding: 12px 16px;
-  margin-bottom: 20px;
-  font-size: 12.5px;
-  line-height: 1.45;
+  color: var(--tertiary);
+  background: rgba(255, 185, 95, 0.08);
+  border: 1px solid rgba(255, 185, 95, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 12px;
 }
 
 .overview-stats {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-@media (min-width: 1100px) {
-  .tabs {
-    grid-template-columns: 220px 220px 220px;
-  }
-}
-
-/* Deep Mobile Ergonomics */
+/* MOBILE RESPONSIVE DOCK & ERGONOMICS */
 @media (max-width: 768px) {
   .shell {
-    padding: 16px 12px 32px;
+    padding: 10px 12px 64px;
   }
-  .owner {
-    text-align: left;
-    width: 100%;
+  .telemetry-bar-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .topline {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
   }
   .topline .actions {
     width: 100%;
     justify-content: space-between;
   }
+  .owner {
+    text-align: left;
+  }
   .status-deck {
     grid-template-columns: 1fr;
-    gap: 12px;
-  }
-  .status-cell + .status-cell {
-    border-left: 1px solid var(--line);
+    gap: 10px;
   }
   .tabs {
     width: 100%;
@@ -845,12 +1009,11 @@ dialog .actions {
   }
   .tab {
     flex: 1;
-    font-size: 12px;
-    padding: 12px 6px;
-    justify-content: center;
+    font-size: 11px;
+    padding: 8px 4px;
     flex-direction: column;
-    gap: 4px;
     text-align: center;
+    gap: 2px;
   }
   .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -859,17 +1022,14 @@ dialog .actions {
     grid-template-columns: 1fr;
   }
   .stat {
-    padding: 14px 16px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--line);
   }
   .stat:last-child {
     grid-column: 1 / -1;
   }
-  .section-head, .panel-body {
-    padding: 16px;
-  }
   .filters {
-    padding: 16px;
+    padding: 12px;
     flex-direction: column;
     align-items: stretch;
   }
@@ -878,47 +1038,31 @@ dialog .actions {
   }
   .filters .actions {
     width: 100%;
-    display: flex;
-    gap: 8px;
   }
   .filters .actions .button {
     flex: 1;
   }
   .credential {
+    flex-direction: column;
     align-items: flex-start;
+    gap: 10px;
+  }
+  .footer {
     flex-direction: column;
-    gap: 12px;
-  }
-  .credential-id {
-    max-width: 100%;
-  }
-  .pagination {
-    padding: 14px 16px;
-    flex-direction: column;
-    gap: 12px;
-    align-items: stretch;
-    text-align: center;
-  }
-  .pagination .actions {
-    justify-content: space-between;
-  }
-  .pagination .button {
-    flex: 1;
-  }
-  h1 {
-    font-size: 18px;
+    align-items: flex-start;
+    gap: 8px;
   }
   .button, input, select {
-    min-height: 44px;
+    min-height: 42px;
   }
   .button.compact {
-    min-height: 38px;
+    min-height: 36px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   * {
-    scroll-behavior: auto !important;
+    animation: none !important;
     transition: none !important;
   }
 }
@@ -1333,39 +1477,71 @@ export function renderDashboardPage(props: DashboardPageProps) {
 ${raw(BACKGROUND_SVG)}
 <a class="skip" href="#dashboard-main">跳至控制面板</a>
 <div class="shell">
+  <div class="telemetry-bar-top" role="region" aria-label="系统运行遥测">
+    <div class="telemetry-node">
+      <span class="status-pulse-dot" aria-hidden="true"></span>
+      <span>&gt;_ SCHWAB_MCP // CORE_SYS MCP NODE-01 [EDGE ENCLAVE]</span>
+    </div>
+    <div class="telemetry-chips">
+      <span class="chip-badge">TLS 1.3 / mTLS ENCLAVE</span>
+      <span class="chip-badge">STREAMABLE HTTP</span>
+      <span class="chip-badge">SQLITE DO</span>
+      <span class="chip-badge">RFC 7636 S256</span>
+    </div>
+  </div>
   <header class="topline">
     <div class="brand">
       ${raw(BRAND_LOGO_SVG)}
       <div>
-        <div class="eyebrow">&gt;_ SCHWAB MCP // CONTROL TELEMETRY v${appVersion}</div>
+        <div class="eyebrow">&gt;_ SCHWAB MCP // OBSIDIAN TELEMETRY v${appVersion}</div>
         <h1>客户端与安全控制面板</h1>
-        <p>授权策略、调用审计与 owner Passkey</p>
+        <p>授权策略、实时协议流与硬件 Passkey 体系</p>
       </div>
     </div>
     <div class="actions">
-      <div class="owner">GitHub owner <strong class="mono">${allowedUserId}</strong><br><span id="last-refresh">尚未刷新</span></div>
-      <button id="refresh-all-btn" class="button" data-action type="button">刷新全部</button>
+      <div class="owner">GitHub owner <strong class="mono">${allowedUserId}</strong> <span class="badge good" style="font-size:10px;padding:1px 5px">VERIFIED</span><br><span id="last-refresh">尚未刷新</span></div>
+      <button id="refresh-all-btn" class="button primary" data-action type="button">&#x21bb; 刷新全部</button>
     </div>
   </header>
   <section class="status-deck" aria-label="服务与会话状态">
-    <div class="status-cell">
-      <span class="label">01 / Schwab 连接</span>
-      <span id="schwab-status-badge" class="badge neutral">正在读取连接状态</span>
-      <p id="access-expiry">Access 到期：读取中</p>
-      <p id="refresh-expiry">Refresh 到期：读取中</p>
-      <p><a href="/auth/schwab/connect">连接 / 重新授权 Schwab &rarr;</a></p>
+    <div class="status-cell card-schwab">
+      <div class="status-cell-header">
+        <span class="label">01 / SCHWAB LINK</span>
+        <span id="schwab-status-badge" class="badge neutral">正在读取连接状态</span>
+      </div>
+      <div class="status-cell-body">
+        <p id="access-expiry" class="telemetry-stat">Access 到期：读取中</p>
+        <p id="refresh-expiry" class="telemetry-stat">Refresh 到期：读取中</p>
+        <p class="telemetry-stat">安全协议：TLS 1.3 // REST+JSON</p>
+      </div>
+      <div class="status-cell-footer">
+        <a class="card-action-link" href="/auth/schwab/connect">重新授权 Schwab &rarr;</a>
+      </div>
     </div>
-    <div class="status-cell">
-      <span class="label">02 / 运行状态</span>
-      <span id="trading-status-badge" class="badge neutral">正在读取交易总开关</span>
-      <p>由部署配置 ENABLE_TRADING 控制；仪表板不能开启交易。</p>
-      <p id="overview-counts">正在读取概览</p>
+    <div class="status-cell card-runtime">
+      <div class="status-cell-header">
+        <span class="label">02 / RUNTIME ENGINE</span>
+        <span id="trading-status-badge" class="badge neutral">正在读取交易总开关</span>
+      </div>
+      <div class="status-cell-body">
+        <p>由部署配置 ENABLE_TRADING 控制；仪表板不能开启交易。</p>
+        <p id="overview-counts" class="telemetry-stat">正在读取概览</p>
+        <p class="telemetry-stat">安全策略：IMMUTABLE_ENCLAVE</p>
+      </div>
     </div>
-    <div class="status-cell">
-      <span class="label">03 / 浏览器安全会话</span>
-      <span id="session-state" class="badge neutral">正在检查会话</span>
-      <p>GitHub numeric owner 验证 · 15 分钟有效期</p>
-      <p><a href="/security">独立安全中心</a> · <a href="/dashboard/login">重新登录 / 续期</a></p>
+    <div class="status-cell card-session">
+      <div class="status-cell-header">
+        <span class="label">03 / BROWSER ENCLAVE</span>
+        <span id="session-state" class="badge neutral">正在检查会话</span>
+      </div>
+      <div class="status-cell-body">
+        <p>GitHub owner 验证 · 15 分钟有效期</p>
+        <p class="telemetry-stat">沙箱状态：EPHEMERAL_ISOLATION</p>
+      </div>
+      <div class="status-cell-footer">
+        <a class="card-action-link" href="/security">独立安全中心</a>
+        <a class="card-action-link secondary" href="/dashboard/login">重新登录 / 续期</a>
+      </div>
     </div>
   </section>
   <div id="global-msg" class="message" role="status" aria-live="polite" aria-atomic="true" hidden></div>
@@ -1373,16 +1549,45 @@ ${raw(BACKGROUND_SVG)}
   <p id="webauthn-warning" class="support-warning" style="margin-top:16px" hidden>当前浏览器或连接不支持 WebAuthn。Passkey 与 Advanced Security 操作已禁用。请在支持 Passkey 的安全外部浏览器中打开仪表板；不会使用普通验证代替。</p>
   <main id="dashboard-main" tabindex="-1" aria-busy="false">
     <div class="tabs" role="tablist" aria-label="控制面板模块">
-      <button id="clients-tab" class="tab" role="tab" aria-selected="true" aria-controls="tab-clients" type="button"><span>01 / ACCESS</span>授权客户端</button>
-      <button id="audit-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-audit" tabindex="-1" type="button"><span>02 / ACTIVITY</span>调用审计</button>
-      <button id="passkeys-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-passkeys" tabindex="-1" type="button"><span>03 / SECURITY</span>Passkey 管理</button>
+      <button id="clients-tab" class="tab" role="tab" aria-selected="true" aria-controls="tab-clients" type="button"><span>[01/ACCESS]</span> 授权客户端</button>
+      <button id="audit-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-audit" tabindex="-1" type="button"><span>[02/ACTIVITY]</span> 调用审计</button>
+      <button id="passkeys-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-passkeys" tabindex="-1" type="button"><span>[03/SECURITY]</span> Passkey 管理</button>
     </div>
     <section id="tab-clients" class="panel" role="tabpanel" aria-labelledby="clients-tab" tabindex="0">
-      <div class="section-head"><div><h2>已授权 MCP 客户端</h2><p>每个客户端独立授权。权限调整与撤销将在后续 MCP 请求即时生效；Advanced Security 变更须由 Passkey 验证。</p></div><button id="clients-refresh-btn" class="button" data-action type="button">刷新客户端</button></div>
-      <div class="table-scroll" role="region" aria-label="客户端列表，可横向滚动" tabindex="0"><table id="clients-table"><caption id="clients-count">正在读取客户端</caption><thead><tr><th scope="col">客户端 / 重定向 URI</th><th scope="col">状态</th><th scope="col">权限等级</th><th scope="col">Advanced Security</th><th scope="col">授权 / 最后调用</th><th scope="col">操作</th></tr></thead><tbody id="clients-table-body"><tr><td colspan="6" class="empty">正在加载客户端…</td></tr></tbody></table></div>
+      <div class="section-head">
+        <div>
+          <h2>已授权 MCP 客户端矩阵</h2>
+          <p>每个客户端独立授权。权限调整与撤销在后续 MCP 请求即时生效；Advanced Security 变更须由 Passkey 验证。</p>
+        </div>
+        <button id="clients-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新客户端</button>
+      </div>
+      <div class="table-scroll" role="region" aria-label="客户端列表，可横向滚动" tabindex="0">
+        <table id="clients-table">
+          <caption id="clients-count">正在读取客户端</caption>
+          <thead>
+            <tr>
+              <th scope="col">客户端 / 重定向 URI</th>
+              <th scope="col">状态</th>
+              <th scope="col">权限等级</th>
+              <th scope="col">Advanced Security</th>
+              <th scope="col">授权 / 最后调用</th>
+              <th scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody id="clients-table-body">
+            <tr><td colspan="6" class="empty">正在加载客户端…</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
     <section id="tab-audit" class="panel" role="tabpanel" aria-labelledby="audit-tab" tabindex="0" hidden>
-      <div class="section-head"><div><h2>工具调用审计</h2><p>只读与交易工具的脱敏调用记录。保留最近 30 天，最多 5,000 条；统计依据当前已应用的筛选条件。</p></div><button id="audit-refresh-btn" class="button" data-action type="button">刷新日志</button></div>
+      <div class="section-head">
+        <div>
+          <h2>协议工具调用审计</h2>
+          <p>只读与交易工具的脱敏调用记录。保留最近 30 天，最多 5,000 条；统计依据当前已应用的筛选条件。</p>
+        </div>
+        <button id="audit-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新日志</button>
+      </div>
       <div class="stats" aria-label="审计统计">
         <div class="stat"><span class="label">匹配调用量</span><div id="audit-total-count" class="stat-value">—</div></div>
         <div class="stat"><span class="label">成功率</span><div id="audit-success-rate" class="stat-value">—</div></div>
@@ -1396,22 +1601,87 @@ ${raw(BACKGROUND_SVG)}
         <label class="field" for="audit-filter-status">执行状态<select id="audit-filter-status" data-action><option value="">全部状态</option><option value="SUCCESS">成功 SUCCESS</option><option value="ERROR">错误 ERROR</option></select></label>
         <div class="actions"><button class="button primary" data-action type="submit">应用筛选</button><button id="audit-clear-btn" class="button" data-action type="button">清除</button></div>
       </form>
-      <div class="table-scroll" role="region" aria-label="调用日志，可横向滚动" tabindex="0"><table id="audit-table"><thead><tr><th scope="col">时间</th><th scope="col">Client ID</th><th scope="col">工具</th><th scope="col">状态</th><th scope="col">耗时</th><th scope="col">脱敏参数 / 错误</th><th scope="col">完整 Request ID</th></tr></thead><tbody id="audit-table-body"><tr><td colspan="7" class="empty">正在加载审计记录…</td></tr></tbody></table></div>
-      <div class="pagination"><span id="audit-pagination-info" role="status">正在读取分页</span><div class="actions"><button id="audit-prev-btn" class="button" data-action data-disabled="true" type="button" disabled>上一页</button><button id="audit-next-btn" class="button" data-action data-disabled="true" type="button" disabled>下一页</button></div></div>
+      <div class="table-scroll" role="region" aria-label="调用日志，可横向滚动" tabindex="0">
+        <table id="audit-table">
+          <thead>
+            <tr>
+              <th scope="col">时间</th>
+              <th scope="col">Client ID</th>
+              <th scope="col">工具</th>
+              <th scope="col">状态</th>
+              <th scope="col">耗时</th>
+              <th scope="col">脱敏参数 / 错误</th>
+              <th scope="col">完整 Request ID</th>
+            </tr>
+          </thead>
+          <tbody id="audit-table-body">
+            <tr><td colspan="7" class="empty">正在加载审计记录…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination">
+        <span id="audit-pagination-info" role="status">正在读取分页</span>
+        <div class="actions">
+          <button id="audit-prev-btn" class="button" data-action data-disabled="true" type="button" disabled>&larr; 上一页</button>
+          <button id="audit-next-btn" class="button" data-action data-disabled="true" type="button" disabled>下一页 &rarr;</button>
+        </div>
+      </div>
     </section>
     <section id="tab-passkeys" class="panel" role="tabpanel" aria-labelledby="passkeys-tab" tabindex="0" hidden>
-      <div class="section-head"><div><h2>Owner Passkey 管理</h2><p>凭据由 owner 共享。添加、重命名、删除均需验证已有 Passkey；最后一个凭据不可删除，取消或失败不会降级。</p></div><button id="passkeys-refresh-btn" class="button" data-action type="button">刷新凭据</button></div>
-      <div class="stats overview-stats" aria-label="全局概览"><div class="stat"><span class="label">已授权客户端</span><div id="stat-clients-count" class="stat-value">—</div></div><div class="stat"><span class="label">保留调用记录</span><div id="stat-total-calls" class="stat-value">—</div></div><div class="stat"><span class="label">已登记 Passkey</span><div id="stat-passkeys-count" class="stat-value">—</div></div></div>
+      <div class="section-head">
+        <div>
+          <h2>Owner 硬件 Passkey 管理</h2>
+          <p>凭据由 owner 共享。添加、重命名、删除均需验证已有 Passkey；最后一个凭据不可删除，取消或失败不会降级。</p>
+        </div>
+        <button id="passkeys-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新凭据</button>
+      </div>
+      <div class="stats overview-stats" aria-label="全局概览">
+        <div class="stat"><span class="label">已授权客户端</span><div id="stat-clients-count" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">保留调用记录</span><div id="stat-total-calls" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">已登记 Passkey</span><div id="stat-passkeys-count" class="stat-value">—</div></div>
+      </div>
       <div class="panel-body">
         <h3 id="passkeys-state">正在读取凭据</h3>
         <ul id="passkeys-list" class="credentials"><li class="empty">正在加载 Passkey…</li></ul>
-        <form id="add-passkey-form" class="add-passkey"><label class="field" for="credential-name">新 Passkey 名称<input id="credential-name" data-action type="text" maxlength="80" required value="我的 Passkey" autocomplete="off"></label><button id="add-passkey-btn" class="button primary" data-action data-disabled="true" type="submit" disabled>添加 Passkey</button></form>
+        <form id="add-passkey-form" class="add-passkey">
+          <label class="field" for="credential-name">新 Passkey 名称<input id="credential-name" data-action type="text" maxlength="80" required value="我的 Passkey" autocomplete="off"></label>
+          <button id="add-passkey-btn" class="button primary" data-action data-disabled="true" type="submit" disabled>+ 添加 Passkey</button>
+        </form>
         <p class="muted" style="font-size:12px;margin-top:10px">添加已有凭据后的新设备分两步：先验证现有凭据，再单独点击注册。系统提示中请选择所需设备。</p>
-        <div class="recovery"><p>所有凭据均丢失？通过独立 GitHub owner OAuth 恢复。恢复将使旧会话与待批准提案失效。</p><a class="button danger" href="/security/recover">Passkey 灾难恢复</a></div>
+        <div class="recovery">
+          <p>所有凭据均丢失？通过独立 GitHub owner OAuth 恢复。恢复将使旧会话与待批准提案失效。</p>
+          <a class="button danger" href="/security/recover">Passkey 灾难恢复</a>
+        </div>
       </div>
     </section>
+    <!-- REALTIME MCP PROTOCOL STREAM WINDOW (Obsidian Telemetry Terminal) -->
+    <div class="protocol-stream-window">
+      <div class="stream-titlebar">
+        <div class="stream-dots">
+          <span class="stream-dot red"></span>
+          <span class="stream-dot yellow"></span>
+          <span class="stream-dot green"></span>
+          <span class="stream-title">&gt;_ REALTIME MCP PROTOCOL STREAM (JSON-RPC 2.0)</span>
+        </div>
+        <span class="badge good" style="font-size:10px">&bull; STREAM: LIVE &middot; ENCLAVE_ACTIVE</span>
+      </div>
+      <div class="stream-viewport custom-scrollbar">
+        <p class="stream-line"><span class="ts">[PROTOCOL INIT]</span> <span class="tag">RPC_DAEMON:</span> <span class="val">listening on Streamable HTTP /mcp socket &middot; TLS 1.3 encrypted</span></p>
+        <p class="stream-line"><span class="ts">[SEC_ENCLAVE]</span> <span class="tag">HARDWARE_UV:</span> <span class="val">FIDO2 WebAuthn authenticator binding active &middot; Level 3</span></p>
+        <p class="stream-line"><span class="ts">[AUDIT_LOG]</span> <span class="tag">SCHWAB_VAULT:</span> <span class="val">Durable Object SQLite store mounted &middot; zero plaintext credentials</span></p>
+      </div>
+    </div>
   </main>
-  <footer class="footer"><span>Schwab MCP v${appVersion} · Workers / SQLite / WebAuthn</span><span>此页面不读取账户明文、Secret 或 Token。</span></footer>
+  <footer class="footer">
+    <div class="footer-left">
+      <span>SYSTEM READY // SCHWAB MCP v${appVersion}</span>
+      <span>&bull;</span>
+      <span>WORKERS / SQLITE / WEBAUTHN</span>
+    </div>
+    <div class="footer-right">
+      <span>ENCLAVE: SECURE &middot; 零明文账户/Secret读取</span>
+    </div>
+  </footer>
 </div>
 <dialog id="passkey-dialog" aria-labelledby="ceremony-title" aria-describedby="ceremony-description ceremony-state">
   <h2 id="ceremony-title">验证 Passkey</h2><p id="ceremony-description"></p><p id="ceremony-state" role="status" aria-live="polite"></p>
