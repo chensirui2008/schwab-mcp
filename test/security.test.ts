@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppEnv } from "../src/env";
 import { SecurityStore } from "../src/security-store";
 import { renderSecurityPage } from "../src/security-ui";
+import { AuthHandler } from "../src/auth";
 import type { BrowserSession, ClientIdentity, PendingAuthorization } from "../src/security-store";
 import { authenticator } from "./webauthn-fixture";
 
@@ -49,6 +50,14 @@ async function setup() {
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+async function completionPage(t: Awaited<ReturnType<typeof setup>>, proposalId: string) {
+  return AuthHandler.request(`https://example.com/security/approvals/${proposalId}/complete`, {
+    headers: { Cookie: `__Host-schwab-security=${t.created.sessionId}` },
+  }, { ...t.appEnv, SCHWAB_VAULT: {
+    idFromName: () => t.vault.id, get: () => t.vault,
+  } as unknown as DurableObjectNamespace });
+}
+
 describe("Passkey trading", () => {
   it("shows frozen replacement target and polling interval in proposal status and browser approval", async () => {
     const t = await setup();
@@ -84,6 +93,7 @@ describe("Passkey trading", () => {
     const ordinary = await t.prepare({}, plain);
     expect(ordinary.confirmationToken).toBeTypeOf("string");
     const proposal = await t.prepare();
+    expect((await completionPage(t, proposal.proposalId)).status).toBe(409);
     expect(proposal.approvalMethod).toBe("passkey");
     expect(proposal.approvalUrl).toContain(`/security/approvals/${proposal.proposalId}`);
     expect(proposal).not.toHaveProperty("confirmationToken");
@@ -97,6 +107,11 @@ describe("Passkey trading", () => {
     const approved = await t.browser("/verify", { challengeId: options.challengeId, response });
     expect(approved.status).toBe(200);
     expect(await approved.json()).toMatchObject({ result: { orderId: 123 } });
+    const completed = await completionPage(t, proposal.proposalId);
+    expect(completed.status).toBe(200);
+    expect(completed.headers.get("Cache-Control")).toBe("no-store");
+    expect(completed.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+    expect(await completed.text()).toContain("授权完成，可以关闭页面");
     const repeated = await t.browser("/verify", { challengeId: options.challengeId, response });
     expect(repeated.status).toBe(200);
     expect(await repeated.json()).toMatchObject({ status: "EXECUTED" });
@@ -148,6 +163,7 @@ describe("Passkey trading", () => {
     const options = await t.approveOptions(delayed.proposalId);
     const active = await (await t.browser("/verify", { challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) })).json<{ result: { taskId: string } }>();
     expect(active.result.taskId).toBeTypeOf("string");
+    expect(await (await completionPage(t, delayed.proposalId)).text()).toContain("授权完成，可以关闭页面");
     expect(fetchMock).not.toHaveBeenCalled();
     const edit = await t.prepare({ executionMode: "DELAYED", replacesTaskId: active.result.taskId, condition: { type: "TIME", operator: "AFTER", at: new Date(Date.now() + 60_000).toISOString() }, validUntil: new Date(Date.now() + 120_000).toISOString() }, plain);
     expect(edit.approvalMethod).toBe("passkey");
@@ -344,6 +360,7 @@ describe("Passkey submission outcomes", () => {
     const result = await t.browser("/verify", { challengeId: options.challengeId, response });
     expect(result.status).toBe(200);
     expect(await result.json()).toMatchObject({ status: "EXECUTION_UNCERTAIN", error: { code: "EXECUTION_UNCERTAIN", attempts: 1 } });
+    expect((await completionPage(t, proposal.proposalId)).status).toBe(409);
     const replay = await t.browser("/verify", { challengeId: options.challengeId, response });
     expect(await replay.json()).toMatchObject({ status: "EXECUTION_UNCERTAIN", outcome: { error: { code: "EXECUTION_UNCERTAIN" } } });
     expect(fetchMock).toHaveBeenCalledTimes(1);

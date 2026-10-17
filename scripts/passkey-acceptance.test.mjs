@@ -53,6 +53,34 @@ test('unsupported browser disables every operation', () => {
   assert.match(status.textContent, /不支持 WebAuthn/);
   assert.equal(buttons[0].disabled, true);
 });
+test('approval redirects only completed results and preserves errors', async () => {
+  for (const result of [
+    { status: 'EXECUTED' }, { result: { status: 'ACTIVE' } }, { status: 'ACTIVE' },
+    { status: 'FAILED', error: { message: 'Schwab rejected the order' } },
+    { status: 'EXECUTION_UNCERTAIN', error: { message: 'Verify order status' } },
+    { status: 'EXECUTION_UNCERTAIN' }, { status: 'EXECUTING' },
+  ]) {
+    const status = { textContent: '' };
+    const approval = { disabled: false, hidden: false };
+    const redirects = [];
+    const context = {
+      document: {
+        querySelectorAll: selector => selector === 'button' ? [approval] : [],
+        querySelector: selector => ({ '#status': status, '#approve': approval, 'meta[name="csrf"]': { content: 'test' }, '#page-data': { textContent: '{"proposalId":"proposal-123"}' } })[selector],
+      },
+      window: { PublicKeyCredential: function () {} }, navigator: { credentials: {} },
+      location: { replace: url => redirects.push(url) },
+      fetch: async path => ({ ok: true, json: async () => path.endsWith('/options') ? { challengeId: 'challenge' } : result }),
+      atob, btoa, Uint8Array,
+    };
+    runInNewContext(script, context);
+    runInNewContext('ceremony = async () => ({})', context);
+    await runInNewContext('act("approve")', context);
+    const success = result.status === 'EXECUTED' || result.status === 'ACTIVE' || result.result?.status === 'ACTIVE';
+    assert.deepEqual(redirects, success ? ['/security/approvals/proposal-123/complete'] : []);
+    if (result.error) assert.equal(status.textContent, result.error.message);
+  }
+});
 test('isolated fixture serves real UI, rejects foreign origins and cannot create an unregistered approval', async () => {
   const server = await startAcceptance(8792);
   try {

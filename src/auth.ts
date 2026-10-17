@@ -5,7 +5,7 @@ import { renderDashboardPage } from "./dashboard-ui";
 import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { BRAND_LOGO_SVG, renderAuthorizePage, renderGitHubContinuePage, renderSchwabConnectedPage } from "./auth-ui";
+import { BRAND_LOGO_SVG, renderAuthorizePage, renderGitHubContinuePage, renderPasskeyAuthorizedPage, renderSchwabConnectedPage } from "./auth-ui";
 import type { ErrorCode, PublicError } from "./types";
 import type { AppEnv } from "./env";
 import { tradingEnabled, vaultStub } from "./env";
@@ -234,6 +234,7 @@ async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: bo
 app.get("/security/recover", c => beginSecurityLogin(c, true));
 app.get("/security", renderSecurity);
 app.get("/security/approvals/:proposalId", renderSecurity);
+app.get("/security/approvals/:proposalId/complete", renderSecurity);
 async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
   if (new URL(c.req.url).origin !== new URL(c.env.SCHWAB_REDIRECT_URI).origin) return c.text("Invalid origin", 400);
   const sessionId = getCookie(c, SECURITY_COOKIE);
@@ -246,6 +247,10 @@ async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
   if (proposalId) {
     try {
       const proposal = await securityCall<Parameters<typeof renderSecurityPage>[2]>(c.env, "/proposal", { sessionId, proposalId });
+      if (c.req.path.endsWith("/complete")) {
+        if (!proposal || !["EXECUTED", "ACTIVE"].includes(proposal.status)) return c.text("授权尚未成功完成，请返回客户端查询状态。", 409);
+        return c.html(renderPasskeyAuthorizedPage());
+      }
       return await c.html(renderSecurityPage(state.session, state.credentials, proposal));
     } catch { return c.text("提案不可用，请返回客户端查询状态。", 403); }
   }
