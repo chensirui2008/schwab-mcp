@@ -18,6 +18,8 @@
   ],
   "scripts": {
     "dev": "wrangler dev",
+    "dev:ui": "vite",
+    "build:ui": "vite build",
     "deploy": "wrangler deploy",
     "types": "wrangler types env.d.ts --include-runtime false",
     "configure:deploy": "node scripts/configure-deploy.mjs",

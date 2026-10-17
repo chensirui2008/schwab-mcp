@@ -18,16 +18,16 @@ export function renderGitHubContinuePage(url: string) {
 export const BACKGROUND_SVG = `<svg class="bg-telemetry" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <radialGradient id="radial-glow" cx="50%" cy="30%" r="65%">
-      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.08"/>
-      <stop offset="50%" stop-color="#10b981" stop-opacity="0.03"/>
-      <stop offset="100%" stop-color="#090d16" stop-opacity="0"/>
+      <stop offset="0%" stop-color="#4edea3" stop-opacity="0.08"/>
+      <stop offset="50%" stop-color="#7bd0ff" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#070b12" stop-opacity="0"/>
     </radialGradient>
-    <pattern id="terminal-grid" width="32" height="32" patternUnits="userSpaceOnUse">
-      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1e293b" stroke-width="0.75" stroke-opacity="0.45"/>
-      <circle cx="32" cy="32" r="0.75" fill="#38bdf8" fill-opacity="0.25"/>
+    <pattern id="terminal-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#3c4a42" stroke-width="0.75" stroke-opacity="0.35"/>
+      <circle cx="24" cy="24" r="0.75" fill="#4edea3" fill-opacity="0.25"/>
     </pattern>
   </defs>
-  <rect width="1440" height="900" fill="#090d16"/>
+  <rect width="1440" height="900" fill="#070b12"/>
   <rect width="1440" height="900" fill="url(#terminal-grid)"/>
   <rect width="1440" height="900" fill="url(#radial-glow)"/>
 </svg>`;
@@ -61,42 +61,42 @@ export const BRAND_LOGO_SVG = `<svg class="brand-logo" width="36" height="36" vi
 export const COMMON_STYLES = `
   :root {
     color-scheme: dark;
-    --bg: #090d16;
-    --card-bg: #0f1523;
-    --card-border: #1e293b;
-    --card-border-focus: #38bdf8;
-    --card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5), 0 2px 6px -1px rgba(0, 0, 0, 0.3);
+    --bg: #070b12;
+    --card-bg: #0f131c;
+    --card-border: #1e2d42;
+    --card-border-focus: #4edea3;
+    --card-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.6), 0 2px 8px -1px rgba(0, 0, 0, 0.4);
 
-    --text-main: #f8fafc;
-    --text-sub: #94a3b8;
-    --text-muted: #64748b;
+    --text-main: #dfe2ef;
+    --text-sub: #86948a;
+    --text-muted: #5c6b61;
 
-    --panel-bg: #0b111e;
-    --panel-border: #1e293b;
-    --divider: #1e293b;
+    --panel-bg: #141a24;
+    --panel-border: #1e2d42;
+    --divider: #1e2d42;
 
     --btn-primary-bg: #10b981;
-    --btn-primary-hover: #059669;
-    --btn-primary-active: #047857;
-    --btn-primary-text: #04130c;
+    --btn-primary-hover: #4edea3;
+    --btn-primary-active: #003824;
+    --btn-primary-text: #003824;
 
-    --brand-cyan: #38bdf8;
-    --brand-cyan-soft: rgba(56, 189, 248, 0.08);
-    --brand-cyan-border: rgba(56, 189, 248, 0.25);
+    --brand-cyan: #7bd0ff;
+    --brand-cyan-soft: rgba(123, 208, 255, 0.08);
+    --brand-cyan-border: rgba(123, 208, 255, 0.25);
 
-    --brand-emerald: #10b981;
-    --brand-emerald-soft: rgba(16, 185, 129, 0.1);
-    --brand-emerald-border: rgba(16, 185, 129, 0.25);
+    --brand-emerald: #4edea3;
+    --brand-emerald-soft: rgba(78, 222, 163, 0.1);
+    --brand-emerald-border: rgba(78, 222, 163, 0.25);
 
-    --brand-amber: #f59e0b;
-    --brand-amber-soft: rgba(245, 158, 11, 0.1);
-    --brand-amber-border: rgba(245, 158, 11, 0.25);
+    --brand-amber: #ffb95f;
+    --brand-amber-soft: rgba(255, 185, 95, 0.1);
+    --brand-amber-border: rgba(255, 185, 95, 0.25);
 
-    --brand-rose: #f43f5e;
+    --brand-rose: #ffb4ab;
 
-    --code-bg: #060911;
-    --code-border: #1e293b;
-    --code-text: #7dd3fc;
+    --code-bg: #060a10;
+    --code-border: #1e2d42;
+    --code-text: #7bd0ff;
     --radius: 8px;
   }
 
@@ -109,6 +109,10 @@ export const COMMON_STYLES = `
   body {
     font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background-color: var(--bg);
+    background-image:
+      linear-gradient(to right, rgba(60, 74, 66, 0.1) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(60, 74, 66, 0.1) 1px, transparent 1px);
+    background-size: 24px 24px;
     color: var(--text-main);
     min-height: 100vh;
     display: flex;
@@ -549,17 +553,23 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
   <title>客户端授权 · Schwab MCP</title>
   ${FAVICON_LINK}
   <style>${COMMON_STYLES}</style>
-</head>
-<body>
-  ${raw(BACKGROUND_SVG)}
-
   <div class="main-wrapper">
+    <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
+      <div class="telemetry-node">
+        <span class="status-pulse-dot"></span>
+        <span>&gt;_ SCHWAB_MCP // OAUTH_CONSENT_GATEWAY</span>
+      </div>
+      <div class="telemetry-chips">
+        <span class="tag-badge green">&bull; RFC 7636 S256</span>
+        <span class="tag-badge">ENCLAVE_ISOLATED</span>
+      </div>
+    </div>
     <div class="brand-header">
       ${raw(BRAND_LOGO_SVG)}
       <span class="brand-title">SCHWAB MCP</span>
     </div>
 
-    <div class="terminal-prompt-tag">&gt;_ OAUTH 2.1 CONSENT GATEWAY</div>
+    <div class="terminal-prompt-tag">&gt;_ OAUTH 2.1 INCOMING CLIENT CHALLENGE</div>
 
     <h1 class="page-title">允许连接 Schwab MCP？</h1>
     <p class="page-subtitle">客户端正在申请接入您的个人 Charles Schwab MCP 实例</p>
@@ -687,15 +697,25 @@ export function renderSchwabConnectedPage(): string {
   ${BACKGROUND_SVG}
 
   <div class="main-wrapper">
+    <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
+      <div class="telemetry-node">
+        <span class="status-pulse-dot"></span>
+        <span>&gt;_ SCHWAB_MCP // BROKERAGE_HANDSHAKE_PASSED</span>
+      </div>
+      <div class="telemetry-chips">
+        <span class="tag-badge green">&bull; ONLINE</span>
+        <span class="tag-badge">VAULT_ENCRYPTED</span>
+      </div>
+    </div>
     <div class="brand-header">
       ${BRAND_LOGO_SVG}
       <span class="brand-title">SCHWAB MCP</span>
     </div>
 
-    <div class="terminal-prompt-tag">&gt;_ BROKERAGE HANDSHAKE SUCCESS</div>
+    <div class="terminal-prompt-tag">&gt;_ BROKERAGE CONNECTION VERIFIED</div>
 
     <h1 class="page-title">Schwab 账户已成功连接</h1>
-    <p class="page-subtitle">OAuth 凭据已安全持久化至 SQLite 隔离存储</p>
+    <p class="page-subtitle">OAuth 凭据已安全持久化至 SQLite 隔离存储 · 守护进程运行中</p>
 
     <div class="auth-card">
       <div class="info-row">

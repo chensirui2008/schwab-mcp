@@ -224,6 +224,8 @@ flowchart TD
 
 增强模式保留 `prepare_trade` 输入，返回 `proposalId`、`approvalMethod: "passkey"`、`approvalUrl`、冻结预览、摘要及到期时间，**不返回可执行的确认令牌或短语**。用电脑或手机外部浏览器打开链接，必要时先通过 GitHub owner 登录。核对账户 hash、每条订单腿、方向、数量、价格类型、有效期及完整 JSON，延迟任务还须核对条件和截止时间。点击“批准并提交”后才调用 WebAuthn；验证成功即提交即时订单或激活冻结的延迟任务。Agent 通过 `get_trade_proposal({ proposalId })` 获取当前客户端提案状态与执行结果。重复批准不会重复提交，`EXECUTION_UNCERTAIN` 仍须人工查询订单。
 
+Passkey 批准仅授权冻结提案，不执行余额、名义金额上限或洗售检查。批准前请自行核对完整订单。
+
 每笔即时建单、改单及延迟任务创建和修改都须 Passkey 批准；受保护延迟任务即使由普通客户端修改，也不能降级为对话确认。增强客户端不注册 `confirm_trade`、`enable_session_direct_trading`、`place_order_direct`，DO 也拒绝这些路径。撤单、取消延迟任务、关闭已有 session 保持原策略。`ENABLE_TRADING=false` 时也禁止浏览器批准、激活和触发交易。
 
 在 `/security` 管理 owner 共享的多个凭据，可以命名、添加、重命名、删除；添加、重命名或删除需要已有 Passkey 验证，不允许直接删除最后一个。**全部凭据丢失时**打开 `/security/recover`，此入口必走独立 GitHub owner OAuth，不能凭 MCP token 或已有安全浏览器会话重置。输入 **重置全部 Passkey**，注册替代凭据成功后才原子替换。恢复使旧凭据、浏览器会话、challenge 和所有待批准增强提案失效；已激活延迟任务和增强客户端策略继续保留。恢复后关闭功能仍需用新凭据验证。**GitHub 账户是凭据恢复的信任入口。**
@@ -244,6 +246,8 @@ flowchart TD
 - **Advanced Security**：开启、关闭均须绑定客户端、目标模式和当前策略版本的原生 Passkey 验证；首次开启可注册首个凭据。降为只读保留硬件策略，再升级不会静默关闭保护。不能通过仪表板修改部署总开关 `ENABLE_TRADING`。
 - **审计**：按客户端、工具和状态过滤、分页，显示成功/错误总数及近二十四小时活动。仅存 owner SQLite，保留三十天且最多最新 5,000 条；参数摘要只保留白名单计数、布尔及枚举，最多 512 UTF-8 字节，不保存原始参数、订单、凭据或上游错误原文。后台写入失败不改变工具结果，因此它是运维历史，不是保证无遗漏的合规账本。
 - **Passkey**：复用 `/security/api/*` 注册、添加、重命名和删除，禁止删除最后一个；独立 GitHub 恢复入口仍为 `/security/recover`。
+
+仪表板在页面加载或手动刷新时读取运行状态和审计历史，不提供实时 JSON-RPC 协议流，也不持续验证硬件认证器就绪状态。
 
 写请求要求同源 JSON、浏览器 cookie 和 CSRF header，实际请求体限制 64 KiB；页面/API 禁止缓存和嵌入。无需新增 Secret、binding、CDN 或前端依赖。自动签名测试和本地 runtime smoke 不能替代最终域名 Safari/手机硬件验收。
 

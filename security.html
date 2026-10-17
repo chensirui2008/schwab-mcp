@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Schwab MCP // ORDER PASSKEY APPROVAL [VITE PREVIEW]</title>
+  <link rel="icon" type="image/svg+xml" href="/docs/assets/logo.svg">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070b12;
+      --surface: #0f131c;
+      --surface-lowest: #0a0e17;
+      --surface-low: #141a24;
+      --surface-container: #1a2230;
+      --surface-high: #222c3d;
+      --outline: #86948a;
+      --outline-variant: #3c4a42;
+      --line: #1e2d42;
+      --text: #dfe2ef;
+      --text-bright: #f0ffe9;
+      --muted: #86948a;
+      --dim: #5c6b61;
+      --primary: #4edea3;
+      --primary-container: #10b981;
+      --on-primary: #003824;
+      --secondary: #7bd0ff;
+      --tertiary: #ffb95f;
+      --error: #ffb4ab;
+      --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(to right, rgba(60, 74, 66, 0.1) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(60, 74, 66, 0.1) 1px, transparent 1px);
+      background-size: 24px 24px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px 20px 48px;
+    }
+    a { color: var(--secondary); text-decoration: none; }
+    .nav-dock-top { width: 100%; max-width: 1200px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: rgba(10, 14, 23, 0.95); border: 1px solid var(--outline-variant); border-radius: 6px; margin-bottom: 16px; font-size: 11px; }
+    .nav-dock-top a { margin-right: 12px; }
+    .status-pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); display: inline-block; }
+    .notice { width: 100%; max-width: 1200px; padding: 10px 14px; background: rgba(123, 208, 255, 0.08); border: 1px solid rgba(123, 208, 255, 0.25); border-radius: 6px; color: var(--secondary); font-size: 11.5px; margin-bottom: 16px; }
+    .layout { width: 100%; max-width: 1200px; display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 20px; }
+    .card { background: var(--surface-low); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge.good { background: rgba(78, 222, 163, 0.12); color: var(--primary); border: 1px solid rgba(78, 222, 163, 0.35); }
+    .info-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .terminal-dots { display: flex; gap: 6px; align-items: center; }
+    .terminal-dot { width: 9px; height: 9px; border-radius: 50%; }
+    .terminal-dot.red { background: #ff5f56; }
+    .terminal-dot.yellow { background: #ffbd2e; }
+    .terminal-dot.green { background: #27c93f; }
+    pre { margin: 0; background: #060a10; border: 1px solid var(--line); border-radius: 6px; padding: 12px; font-size: 11.5px; color: #7bd0ff; overflow-x: auto; }
+    .btn-approve { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px; background: var(--primary-container); color: var(--on-primary); font-size: 14px; font-weight: 700; border: 1px solid var(--primary); border-radius: 6px; cursor: pointer; box-shadow: 0 0 16px rgba(78, 222, 163, 0.3); }
+    .btn-approve:hover { background: var(--primary); }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="nav-dock-top">
+    <div>
+      <span class="status-pulse-dot"></span>
+      <strong style="color:var(--primary);margin-left:8px;">&gt;_ SCHWAB::MCP//ORDER_PASSKEY_GATEWAY [VITE PREVIEW]</strong>
+    </div>
+    <div>
+      <a href="/index.html">[01] 控制面板</a>
+      <a href="/security.html" style="color:var(--primary);font-weight:700;">[02] 订单 Passkey 批准</a>
+      <a href="/authorize.html">[03] 客户端 OAuth 授权</a>
+      <a href="/connected.html">[04] Schwab 连接完成</a>
+    </div>
+  </div>
+  <div class="notice">
+    &bull; ZERO-KNOWLEDGE EXECUTION: Unconditional direct execution via Schwab Model Context Protocol. No conversational downgrade permitted.
+  </div>
+  <div class="layout">
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div class="card">
+        <div class="info-row">
+          <span style="color:var(--muted)">目标账户标识</span>
+          <span class="badge good">hash_a8f931c2 (AUTHENTICATED)</span>
+        </div>
+        <div style="font-size:20px;font-weight:700;color:var(--text-bright);margin:4px 0;">
+          <span style="color:var(--primary)">BUY</span> 100 SHARES &middot; AAPL
+        </div>
+        <div class="info-row">
+          <span>限价规格 (LIMIT PRICE)</span>
+          <strong style="color:var(--text-bright);">$234.50 USD / sh</strong>
+        </div>
+        <div class="info-row">
+          <span>预计名义总额</span>
+          <strong style="color:var(--primary);font-size:16px;">$23,450.00 USD</strong>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+          <span class="badge good">✓ BALANCE_CHECK: PASSED</span>
+          <span class="badge good">✓ NOTIONAL_LIMIT: PASSED</span>
+          <span class="badge good">✓ WASH_SALE: VERIFIED</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="info-row">
+          <span style="color:var(--muted)">提案编号</span>
+          <code>prop_9x7a4b2c89f1</code>
+        </div>
+        <div class="info-row">
+          <span style="color:var(--muted)">意图哈希摘要</span>
+          <code style="font-size:11px;color:var(--secondary)">sha256:d8b2d741e8b8d02f78b9... [MATCH]</code>
+        </div>
+        <div class="info-row">
+          <span style="color:var(--muted)">有效截止时间</span>
+          <span>5 分钟内有效</span>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#060a10;border-bottom:1px solid var(--line);">
+          <div class="terminal-dots">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+            <span style="font-size:11px;color:var(--muted);margin-left:6px;">schwab_place_order.json [FROZEN]</span>
+          </div>
+          <span class="badge good">IMMUTABLE</span>
+        </div>
+        <pre>{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "schwab_place_order",
+    "arguments": {
+      "account_hash": "hash_a8f931c2",
+      "order_type": "LIMIT",
+      "session": "NORMAL",
+      "duration": "DAY",
+      "price": 234.50,
+      "instruction": "BUY",
+      "quantity": 100,
+      "symbol": "AAPL"
+    }
+  }
+}</pre>
+      </div>
+      <div class="card" style="background:var(--surface-container);">
+        <div style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:12px;">
+          <span class="status-pulse-dot"></span>
+          <span>硬件认证器就绪：YubiKey 5C NFC / Apple Secure Enclave</span>
+        </div>
+        <p style="font-size:11px;color:var(--muted);">FIDO2 Level 3 &middot; WebAuthn User Verification Required</p>
+        <button class="btn-approve">⚡ Approve &amp; Execute via Passkey</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
