@@ -66,7 +66,7 @@ async function authorize(appEnv: AppEnv, permissionLevel: PermissionLevel = "ful
   const codeChallenge = encode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const { redirectTo } = await appEnv.OAUTH_PROVIDER.completeAuthorization({
     request: { responseType: "code", clientId, redirectUri, scope: [READ_SCOPE], state: "dashboard-test", codeChallenge, codeChallengeMethod: "S256" },
-    userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE], metadata: { permissionLevel, advancedSecurity: false }, revokeExistingGrants: false,
+    userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE], metadata: { permissionLevel, advancedSecurity: false, authorizationVersion: AUTHORIZATION_VERSION }, revokeExistingGrants: false,
     props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" },
   });
   const response = await dispatch(tokenRequest({ grant_type: "authorization_code", client_id: clientId, code: new URL(redirectTo).searchParams.get("code") ?? "", redirect_uri: redirectUri, code_verifier: verifier }), appEnv);
@@ -224,6 +224,46 @@ describe("Dashboard owner authentication and browser boundaries", () => {
 });
 
 describe("Dashboard client policies and live OAuth enforcement", () => {
+  it.each([undefined, "previous-policy"])("reports legacy grants (%s) without breaking current clients or initializing legacy policies", async authorizationVersion => {
+    const appEnv = setup();
+    const current = await authorize(appEnv);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1000);
+    const legacyClient = await appEnv.OAUTH_PROVIDER.createClient({ redirectUris: [redirectUri], clientName: "Legacy client", tokenEndpointAuthMethod: "none" });
+    const legacyTokens: string[] = [];
+    for (const clientId of [legacyClient.clientId, current.clientId]) {
+      const { redirectTo } = await appEnv.OAUTH_PROVIDER.completeAuthorization({
+        request: { responseType: "token", clientId, redirectUri, scope: [READ_SCOPE], state: "legacy" },
+        userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE],
+        metadata: { label: "Personal Schwab MCP", ...(authorizationVersion ? { authorizationVersion } : {}) }, props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner" },
+        revokeExistingGrants: false,
+      });
+      legacyTokens.push(new URLSearchParams(new URL(redirectTo).hash.slice(1)).get("access_token") ?? "");
+    }
+    const ui = await login(appEnv);
+    const overview = await ui.get("overview");
+    expect(overview.status).toBe(200);
+    expect(await overview.json()).toMatchObject({ clientCount: 1, legacyGrantCount: 2 });
+    expect(await clients(ui)).toEqual([expect.objectContaining({ clientId: current.clientId, permissionLevel: "full_access", revoked: false })]);
+    const policies = await runInDurableObject(vaultStub(appEnv), (_instance, state) => state.storage.sql.exec<{ client_id: string }>("SELECT client_id FROM client_security").toArray());
+    expect(policies).not.toContainEqual({ client_id: legacyClient.clientId });
+    for (const token of legacyTokens) expect((await dispatch(mcp(token, "tools/list"), appEnv)).status).toBe(401);
+    expect((await ui.post("clients/permission", { clientId: legacyClient.clientId, permissionLevel: "full_access" })).status).toBe(400);
+    expect((await ui.post("clients/revoke", { clientId: current.clientId })).status).toBe(200);
+    const remaining = await appEnv.OAUTH_PROVIDER.listUserGrants(appEnv.ALLOWED_GITHUB_USER_ID);
+    expect(remaining.items.every(grant => grant.clientId !== current.clientId)).toBe(true);
+  });
+
+  it("still rejects malformed permission metadata on a current grant", async () => {
+    const appEnv = setup(); await authorize(appEnv); const ui = await login(appEnv);
+    const page = await appEnv.OAUTH_PROVIDER.listUserGrants(appEnv.ALLOWED_GITHUB_USER_ID);
+    vi.spyOn(appEnv.OAUTH_PROVIDER, "listUserGrants").mockResolvedValue({ items: page.items.map(grant => ({ ...grant, metadata: { authorizationVersion: AUTHORIZATION_VERSION } })) });
+    for (const path of ["overview", "clients"]) {
+      const response = await ui.get(path);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: { code: "UPSTREAM_UNAVAILABLE" } });
+    }
+  });
+
   it("lists authorized clients, counts distinct clients across grant pages, and reports token health without credentials", async () => {
     const appEnv = setup(); const first = await authorize(appEnv, "full_access", "Trading desktop");
     const second = await authorize(appEnv, "read_only", "Research desktop");

@@ -1027,14 +1027,14 @@ async function loadOverview() {
   try {
     const data = await api('/dashboard/api/overview');
     if (typeof data.schwabConnected !== 'boolean' || typeof data.tradingEnabled !== 'boolean') throw new Error('服务器连接状态格式异常。');
-    requireCount(data.clientCount); requireCount(data.toolCallsCount); requireCount(data.passkeyCount);
+    requireCount(data.clientCount); requireCount(data.toolCallsCount); requireCount(data.passkeyCount); requireCount(data.legacyGrantCount);
     overview = data;
     updateOverviewStatus();
     $('trading-status-badge').className = 'badge ' + (data.tradingEnabled ? 'good' : 'neutral');
     $('trading-status-badge').textContent = data.tradingEnabled ? '交易总开关已开启' : '交易总开关已关闭';
     $('access-expiry').textContent = 'Access 到期：' + date(data.schwabStatus?.accessExpiresAt);
     $('refresh-expiry').textContent = 'Refresh 到期：' + date(data.schwabStatus?.refreshExpiresAt);
-    $('overview-counts').textContent = data.clientCount + ' 个客户端 / ' + data.toolCallsCount + ' 次调用 / ' + data.passkeyCount + ' 个 Passkey';
+    $('overview-counts').textContent = data.clientCount + ' 个客户端 / ' + data.toolCallsCount + ' 次调用 / ' + data.passkeyCount + ' 个 Passkey' + (data.legacyGrantCount ? '；' + data.legacyGrantCount + ' 条旧版 MCP 授权需在客户端重新授权' : '');
     $('stat-clients-count').textContent = data.clientCount;
     $('stat-total-calls').textContent = data.toolCallsCount;
     $('stat-passkeys-count').textContent = data.passkeyCount;
