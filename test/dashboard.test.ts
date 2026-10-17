@@ -353,7 +353,11 @@ describe("Dashboard client policies and live OAuth enforcement", () => {
     const additionalRefresh = await dispatch(tokenRequest({ grant_type: "refresh_token", client_id: client.clientId, refresh_token: additional.tokens.refresh_token }), appEnv);
     expect(additionalRefresh.status).toBe(400); expect(await additionalRefresh.json()).toMatchObject({ error: "invalid_grant" });
     expect((await dispatch(mcp(other.tokens.access_token, "tools/list"), appEnv)).status).toBe(200);
-    expect((await clients(ui)).find(row => row.clientId === client.clientId)).toMatchObject({ revoked: true });
+    expect(await clients(ui)).toEqual([expect.objectContaining({ clientId: other.clientId, revoked: false })]);
+    expect(await clients(await login(appEnv))).toEqual([expect.objectContaining({ clientId: other.clientId, revoked: false })]);
+    await runInDurableObject(vaultStub(appEnv), (_instance, state) => {
+      expect(new SecurityStore(state.storage, appEnv).policy(client.clientId).revoked).toBe(true);
+    });
   });
 
   it.each(["read_only", "full_access"] as const)("migrates a legacy security row repeatedly while preserving the existing %s token permission and Schwab credentials", async permissionLevel => {

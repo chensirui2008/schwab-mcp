@@ -407,6 +407,7 @@ app.get("/dashboard/api/clients", c => dashboardRequest(c, async () => {
   const lastInvocations = new Map(audit.clients.map(client => [client.clientId, client.lastInvocationAt]));
   const clients = [];
   for (const [clientId, policy] of policies) {
+    if (policy.revoked || !grantMap.has(clientId)) continue;
     const raw: unknown = await c.env.OAUTH_PROVIDER.lookupClient(clientId);
     const parsed = z.object({ clientId: clientIdSchema, clientName: z.string().optional(), redirectUris: z.array(z.string()) }).nullable().safeParse(raw);
     if (!parsed.success || (!parsed.data && grantMap.has(clientId))) throw new Error("Invalid registered client");
@@ -415,7 +416,7 @@ app.get("/dashboard/api/clients", c => dashboardRequest(c, async () => {
       clientId, clientName: parsed.data?.clientName ?? clientId, redirectUris: parsed.data?.redirectUris ?? [],
       createdAt: grant ? grant.createdAt * 1000 : policy.updatedAt, lastInvocationAt: lastInvocations.get(clientId) ?? null,
       permissionLevel: policy.permissionLevel, advancedSecurity: policy.advancedSecurity, version: policy.version,
-      revoked: policy.revoked || !grant,
+      revoked: false,
     });
   }
   return c.json({ clients });
