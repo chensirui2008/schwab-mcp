@@ -230,6 +230,17 @@ flowchart TD
 
 本地验证包含真实签名的软件认证器测试、OAuth 回归、部署配置及工具自省和 Wrangler dry-run 打包。浏览器页面使用受控本地 fixture 检查；**Safari、手机及真实设备 Passkey 操作仍须发布前人工验收**。参见[验证记录与人工验收](docs/passkey-validation.md)。
 
+## Owner 仪表板
+
+在已配置的 Schwab 回调 origin 打开 `/dashboard`，使用 GitHub numeric owner 登录；会话十五分钟。MCP Bearer、待完成 consent 的会话和恢复会话不能管理仪表板。
+
+- **客户端**：查看名称、重定向 URI、授权时间和最后调用；调整只读/完整访问或撤销全部 grant。每次 MCP 请求及换票都检查 SQLite 权威策略；策略不可用时失败关闭，不恢复旧 token 权限。策略变更使待批准提案失效，保留已激活延迟任务。
+- **Advanced Security**：开启、关闭均须绑定客户端、目标模式和当前策略版本的原生 Passkey 验证；首次开启可注册首个凭据。降为只读保留硬件策略，再升级不会静默关闭保护。不能通过仪表板修改部署总开关 `ENABLE_TRADING`。
+- **审计**：按客户端、工具和状态过滤、分页，显示成功/错误总数及近二十四小时活动。仅存 owner SQLite，保留三十天且最多最新 5,000 条；参数摘要只保留白名单计数、布尔及枚举，最多 512 UTF-8 字节，不保存原始参数、订单、凭据或上游错误原文。后台写入失败不改变工具结果，因此它是运维历史，不是保证无遗漏的合规账本。
+- **Passkey**：复用 `/security/api/*` 注册、添加、重命名和删除，禁止删除最后一个；独立 GitHub 恢复入口仍为 `/security/recover`。
+
+写请求要求同源 JSON、浏览器 cookie 和 CSRF header，实际请求体限制 64 KiB；页面/API 禁止缓存和嵌入。无需新增 Secret、binding、CDN 或前端依赖。自动签名测试和本地 runtime smoke 不能替代最终域名 Safari/手机硬件验收。
+
 ## 安全边界与交易防护机制
 
 ### 1. 部署总开关 (`ENABLE_TRADING`)

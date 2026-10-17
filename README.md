@@ -188,6 +188,17 @@ Credentials, policies and browser state live only in owner DO SQLite, using repe
 
 Local checks include real-signature software-authenticator tests, OAuth regressions, deployment/introspection checks and Wrangler dry-run packaging. Browser UI checks use controlled local fixtures; **actual Safari, phone and device Passkey operation remain manual release acceptance**. See [validation and manual acceptance](docs/passkey-validation.md).
 
+## Owner dashboard
+
+Open `/dashboard` on the configured Schwab callback origin. GitHub numeric owner login creates a fifteen-minute browser session; MCP Bearer tokens, consent-pending sessions and recovery sessions cannot administer the dashboard.
+
+- **Clients**: inspect names, redirect URIs, grant dates and last calls; change read-only/full-access permissions or revoke all grants. SQLite policy is checked on every MCP request and token exchange; policy outages fail closed rather than restoring stale token privileges. Changes invalidate pending proposals, not already activated delayed tasks.
+- **Advanced Security**: enabling and disabling require native Passkey verification bound to the client, desired mode and current policy version. First activation can register the first credential. Read-only downgrade preserves the hardware policy for a later upgrade. This never changes the deployment-controlled `ENABLE_TRADING` switch.
+- **Audit**: filter tool calls by client, tool and status, with pagination, success/error totals and 24-hour activity. Records stay in owner SQLite, limited to thirty days and the newest 5,000 rows. Parameter summaries contain only allowlisted counts, booleans and enums (at most 512 UTF-8 bytes), not raw arguments, orders, credentials or upstream error text. Background persistence failures do not change tool results, so this is operational history, not a guaranteed compliance ledger.
+- **Passkeys**: register, add, rename and delete using the existing `/security/api/*` ceremonies; deletion cannot remove the final credential. `/security/recover` remains the independent GitHub recovery entry.
+
+Dashboard writes require same-origin JSON, the browser cookie and CSRF header, with an actual 64 KiB body limit. Pages and APIs are no-store and deny framing. No new secrets, bindings, CDN or frontend dependencies are needed. Automated signatures and local runtime smoke do not replace final-origin Safari/mobile hardware acceptance.
+
 ## Safety & Security Guardrails
 
 1. **Deployment Killswitch (`ENABLE_TRADING`)**:

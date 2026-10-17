@@ -3,12 +3,16 @@ import type { AppEnv } from "./env";
 import { tradingEnabled } from "./env";
 import { SecurityError, SecurityStore } from "./security-store";
 import type { ApprovalBinding, ClientIdentity, PendingAuthorization } from "./security-store";
-import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { z } from "zod";
 import { logEvent } from "./log";
 import { toolSchemas, tradeConditionSchema } from "./schemas";
 import { assertSafeOrderPayload, canonicalJson, collectQuoteSymbols, evaluateCondition, randomToken, sha256, tokenMatches } from "./trading";
 import type { JsonValue, PublicError, TokenRecord, TradeCondition, TradeProposalInput, VaultRequest } from "./types";
+import {
+  clientIdSchema, credentialResponseSchema, dashboardPolicyInputSchema, isJsonContentType,
+  parseAuditQuery, pendingAuthorizationSchema, permissionSchema, policyUpdateSchema,
+  readBoundedJson, registrationResponseSchema, RequestBodyError, toolAuditInputSchema, truncateUtf8, versionSchema,
+} from "./security-validation";
 
 const ACCESS_REFRESH_SKEW_MS = 5 * 60 * 1000;
 const REFRESH_TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -239,6 +243,20 @@ export class SchwabVault extends DurableObject<AppEnv> {
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS tool_invocation_audit (
+        id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        parameters_summary TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        duration_ms INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_tool_audit_created ON tool_invocation_audit(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_audit_client ON tool_invocation_audit(client_id, created_at DESC);
     `);
     this.security = new SecurityStore(this.ctx.storage, env);
   }
@@ -246,8 +264,11 @@ export class SchwabVault extends DurableObject<AppEnv> {
   override async fetch(request: Request): Promise<Response> {
     try { return await this.dispatch(request); }
     catch (error) {
-      if (!(error instanceof SecurityError)) throw error;
-      return publicError({ code: error.code, message: "Security policy changed or verification failed", requestId: crypto.randomUUID() }, 403);
+      const requestId = crypto.randomUUID();
+      if (error instanceof SecurityError) return publicError({ code: error.code, message: "Security policy changed or verification failed", requestId }, 403);
+      if (error instanceof RequestBodyError || error instanceof z.ZodError) return publicError({ code: "INVALID_ARGUMENT", message: error instanceof RequestBodyError ? error.message : "Invalid request", requestId }, error instanceof RequestBodyError ? error.status : 400);
+      logEvent("vault_request_failed", { requestId });
+      return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Unable to complete the request", requestId }, 503);
     }
   }
 
@@ -257,15 +278,16 @@ export class SchwabVault extends DurableObject<AppEnv> {
       try { return await this.securityRequest(request, url.pathname); }
       catch (error) {
         const requestId = crypto.randomUUID();
-        const code = error instanceof SecurityError ? error.code : "SECURITY_VERIFICATION_FAILED";
+        if (!(error instanceof SecurityError)) throw error;
+        const code = error.code;
         logEvent("security_request_rejected", { requestId, code });
         return publicError({ code, message: "Security verification failed; restart the browser flow", requestId }, 403);
       }
     }
     if (request.method === "POST" && url.pathname.startsWith("/trade/")) {
       try {
-        const raw: { identity?: unknown } = await request.clone().json();
-        const identity = this.identity(raw.identity);
+        const raw: unknown = await request.clone().json();
+        const identity = this.identity(raw && typeof raw === "object" ? field(raw, "identity") : undefined);
         this.security.assertIdentity(identity);
         if (identity.advancedSecurity && ["/trade/confirm", "/trade/session/enable", "/trade/place-direct"].includes(url.pathname)) throw new SecurityError();
       } catch (error) {
@@ -274,13 +296,15 @@ export class SchwabVault extends DurableObject<AppEnv> {
       }
     }
     if (request.method === "POST" && url.pathname === "/trade/proposal") {
-      const raw: { identity: ClientIdentity; input: unknown } = await request.json();
+      const raw = z.object({ identity: z.object({ clientId: clientIdSchema, advancedSecurity: z.boolean(), securityPolicyVersion: versionSchema }), input: z.unknown(), requestId: z.string().optional() }).strict().parse(await readBoundedJson(request));
+      this.security.assertIdentity(raw.identity);
       const parsed = toolSchemas.getTradeProposal.safeParse(raw.input);
       if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid proposal query", requestId: crypto.randomUUID() }, 400);
       const proposal = this.proposal(parsed.data.proposalId);
       if (!proposal || proposal.client_id !== raw.identity.clientId) return publicError({ code: "TRADE_NOT_FOUND", message: "Trade proposal was not found", requestId: crypto.randomUUID() }, 404);
       return jsonResponse({ result: this.proposalView(proposal) });
     }
+    if (request.method === "POST" && ["/audit/tool", "/client/policy/update"].includes(url.pathname) && !isJsonContentType(request.headers.get("Content-Type"))) throw new RequestBodyError("JSON content type required");
     if (request.method === "POST" && url.pathname === "/state") {
       return this.saveState(request);
     }
@@ -331,7 +355,50 @@ export class SchwabVault extends DurableObject<AppEnv> {
     if (request.method === "POST" && url.pathname === "/trade/list-delayed") {
       return this.listDelayedTrades(request);
     }
+    if (request.method === "POST" && url.pathname === "/audit/tool") {
+      return this.recordToolAudit(request);
+    }
+    if (request.method === "GET" && url.pathname === "/audit/tools") {
+      return this.queryToolAudits(url.searchParams);
+    }
+    if (request.method === "GET" && url.pathname === "/audit/clients") {
+      this.pruneToolAudits();
+      return jsonResponse({ clients: this.ctx.storage.sql.exec<{ clientId: string; lastInvocationAt: number }>(
+        "SELECT client_id AS clientId, max(created_at) AS lastInvocationAt FROM tool_invocation_audit GROUP BY client_id ORDER BY client_id",
+      ).toArray() });
+    }
+    if (request.method === "GET" && url.pathname === "/client/policies") {
+      return jsonResponse({ policies: this.security.policies() });
+    }
+    if (request.method === "GET" && url.pathname === "/client/policy") {
+      const query = z.object({
+        clientId: clientIdSchema, ensure: z.enum(["true", "false"]).optional(),
+        permissionLevel: permissionSchema.optional(), advancedSecurity: z.enum(["true", "false"]).optional(),
+        version: z.string().regex(/^\d+$/).transform(Number).pipe(versionSchema).optional(),
+      }).strict().parse(this.uniqueQuery(url.searchParams));
+      if (query.ensure === "true") {
+        if (query.permissionLevel === undefined || query.advancedSecurity === undefined || query.version === undefined) throw new RequestBodyError("Missing initial policy");
+        return jsonResponse(this.security.ensurePolicy(query.clientId, query.permissionLevel, query.advancedSecurity === "true", query.version));
+      }
+      return jsonResponse(this.security.policy(query.clientId));
+    }
+    if (request.method === "POST" && url.pathname === "/client/policy/update") {
+      const body = policyUpdateSchema.parse(await readBoundedJson(request));
+      if (body.sessionId !== undefined) this.security.dashboardSession(body.sessionId, body.csrf);
+      return jsonResponse(this.security.updatePolicy(body.clientId, {
+        ...(body.permissionLevel === undefined ? {} : { permissionLevel: body.permissionLevel }),
+        ...(body.revoked === undefined ? {} : { revoked: body.revoked }),
+      }, body.expected));
+    }
     return new Response("Not found", { status: 404 });
+  }
+  private uniqueQuery(params: URLSearchParams): Record<string, string> {
+    const query: Record<string, string> = {};
+    for (const [key, value] of params) {
+      if (Object.hasOwn(query, key)) throw new RequestBodyError("Duplicate query parameter");
+      query[key] = value;
+    }
+    return query;
   }
 
   private identity(value: unknown): ClientIdentity {
@@ -372,52 +439,87 @@ export class SchwabVault extends DurableObject<AppEnv> {
   private checkApproval(binding: ApprovalBinding): void {
     const current = this.proposal(binding.proposalId);
     if (!current || current.status !== "PENDING" || current.approval_method !== "passkey" || current.intent_digest !== binding.intentDigest || current.client_id !== binding.clientId || current.policy_version !== binding.policyVersion || current.expires_at !== binding.expiresAt || current.expires_at <= Date.now() || !tradingEnabled(this.env)) throw new SecurityError();
-    if (this.security.policy(binding.clientId).version !== binding.policyVersion) throw new SecurityError("SECURITY_POLICY_CHANGED");
+    const policy = this.security.policy(binding.clientId);
+    if (policy.revoked || policy.permissionLevel !== "full_access" || !policy.advancedSecurity || policy.version !== binding.policyVersion) throw new SecurityError("SECURITY_POLICY_CHANGED");
   }
 
   private async securityRequest(request: Request, path: string): Promise<Response> {
-    const raw: {
-      clientId: string; advancedSecurity: boolean; expected: number; ticket?: string;
-      sessionId: string; csrf: string; recovery?: boolean; pending?: PendingAuthorization;
-      operation: "register" | "recover" | "authorize" | "add" | "delete" | "rename" | "approve";
-      target?: string; name?: string; resetConfirmation?: string; proposalId?: string;
-      challengeId: string; response: RegistrationResponseJSON | AuthenticationResponseJSON;
-    } = await request.json();
-    if (path === "/security/policy") return jsonResponse(this.security.policy(raw.clientId));
+    if (request.method !== "POST" || !isJsonContentType(request.headers.get("Content-Type"))) throw new SecurityError();
+    const input = await readBoundedJson(request);
+    const id = z.string().min(1).max(2048);
+    const browser = { sessionId: id, csrf: id };
+    if (path === "/security/policy") {
+      const raw = z.object({ clientId: clientIdSchema }).strict().parse(input);
+      return jsonResponse(this.security.policy(raw.clientId));
+    }
     if (path === "/security/commit-policy") {
+      const raw = z.object({ clientId: clientIdSchema, advancedSecurity: z.boolean(), expected: versionSchema, permissionLevel: permissionSchema, ticket: id.optional() }).strict().parse(input);
+      if (raw.advancedSecurity && raw.permissionLevel !== "full_access") throw new SecurityError();
       if (raw.advancedSecurity || this.security.policy(raw.clientId).advancedSecurity) {
         if (!raw.ticket) throw new SecurityError();
         const proof = this.security.read<{ pending: PendingAuthorization; credentialVersion: number }>(raw.ticket, "commit", true);
-        if (proof.credentialVersion !== this.security.version() || proof.pending.authRequest.clientId !== raw.clientId || proof.pending.advancedSecurity !== raw.advancedSecurity || proof.pending.policyVersion !== raw.expected) throw new SecurityError();
+        if (proof.credentialVersion !== this.security.version() || proof.pending.authRequest.clientId !== raw.clientId ||
+          proof.pending.advancedSecurity !== raw.advancedSecurity || proof.pending.policyVersion !== raw.expected ||
+          proof.pending.permissionLevel !== raw.permissionLevel) throw new SecurityError();
       }
-      return jsonResponse(this.security.commitPolicy(raw.clientId, raw.advancedSecurity, raw.expected));
+      return jsonResponse(this.security.commitPolicy(raw.clientId, raw.advancedSecurity, raw.expected, raw.permissionLevel));
     }
     if (path === "/security/authorization") {
-      if (!raw.ticket) throw new SecurityError();
+      const raw = z.object({ ticket: id }).strict().parse(input);
       const proof = this.security.read<{ pending: PendingAuthorization; credentialVersion: number }>(raw.ticket, "authorization", true);
       if (proof.credentialVersion !== this.security.version()) throw new SecurityError();
       return jsonResponse({ pending: proof.pending, ticket: this.security.save("commit", proof, Date.now() + 120_000) });
     }
-    if (path === "/security/session/create") return jsonResponse(this.security.createSession(raw.recovery, raw.pending));
-    const session = this.security.session(raw.sessionId, raw.csrf);
-    if (path === "/security/session") return jsonResponse({ session, credentials: this.security.credentials() });
+    if (path === "/security/session/create") {
+      const raw = z.object({ recovery: z.boolean().optional(), pending: pendingAuthorizationSchema.optional() }).strict().parse(input);
+      if (raw.recovery && raw.pending) throw new SecurityError();
+      if (raw.pending?.advancedSecurity && raw.pending.permissionLevel !== "full_access") throw new SecurityError();
+      return jsonResponse(this.security.createSession(raw.recovery, raw.pending));
+    }
+    if (path === "/security/session" || path === "/security/dashboard-session") {
+      const raw = z.object({ sessionId: id, csrf: id.optional() }).strict().parse(input);
+      const session = path === "/security/dashboard-session" ? this.security.dashboardSession(raw.sessionId, raw.csrf) : this.security.session(raw.sessionId, raw.csrf);
+      return jsonResponse({ session, credentials: this.security.credentials() });
+    }
+    if (path === "/security/dashboard-policy-options" || path === "/security/dashboard-policy-verify") {
+      const envelope = z.object({ ...browser, input: dashboardPolicyInputSchema }).strict().parse(input);
+      const raw = envelope.input;
+      this.security.dashboardSession(envelope.sessionId, envelope.csrf);
+      if (path.endsWith("-options")) {
+        if (raw.challengeId || raw.response) throw new RequestBodyError("Unexpected proof");
+        return jsonResponse(await this.security.dashboardPolicyOptions(envelope.sessionId, envelope.csrf, raw.clientId, raw.advancedSecurity));
+      }
+      if (!raw.challengeId || !raw.response) throw new RequestBodyError("Passkey proof required");
+      const result = await this.security.verify(envelope.sessionId, envelope.csrf, raw.challengeId, raw.response, () => { throw new SecurityError(); }, raw);
+      if (!result.policy) throw new SecurityError();
+      return jsonResponse({ ok: true, policy: result.policy });
+    }
     if (path === "/security/proposal") {
-      if (session.recovery) throw new SecurityError();
-      const proposal = this.proposal(raw.proposalId ?? "");
+      const raw = z.object({ sessionId: id, csrf: id.optional(), proposalId: id }).strict().parse(input);
+      const session = this.security.session(raw.sessionId, raw.csrf);
+      if (session.recovery || session.pending) throw new SecurityError();
+      const proposal = this.proposal(raw.proposalId);
       if (!proposal || proposal.approval_method !== "passkey") throw new SecurityError();
       return jsonResponse(this.proposalView(proposal));
     }
     if (path === "/security/options") {
+      const raw = z.object({ ...browser, operation: z.enum(["register", "recover", "authorize", "add", "delete", "rename", "approve"]), target: id.optional(), name: z.string().min(1).max(80).optional(), resetConfirmation: z.string().optional(), proposalId: id.optional() }).strict().parse(input);
       const binding = raw.operation === "approve" ? this.approvalBinding(raw.proposalId ?? "") : undefined;
       if (binding) this.checkApproval(binding);
       return jsonResponse(await this.security.options(raw.sessionId, raw.csrf, raw.operation, raw.target, raw.name, binding, raw.resetConfirmation));
     }
-    if (path === "/security/add-options" && raw.ticket) return jsonResponse(await this.security.addOptions(raw.sessionId, raw.csrf, raw.ticket, raw.name ?? "Passkey"));
+    if (path === "/security/add-options") {
+      const raw = z.object({ ...browser, ticket: id, name: z.string().min(1).max(80).optional() }).strict().parse(input);
+      return jsonResponse(await this.security.addOptions(raw.sessionId, raw.csrf, raw.ticket, raw.name ?? "Passkey"));
+    }
     if (path === "/security/add-verify") {
-      await this.security.addVerify(raw.sessionId, raw.csrf, raw.challengeId, raw.response as RegistrationResponseJSON);
+      const raw = z.object({ ...browser, challengeId: id, response: registrationResponseSchema }).strict().parse(input);
+      await this.security.addVerify(raw.sessionId, raw.csrf, raw.challengeId, raw.response);
       return jsonResponse({ saved: true });
     }
     if (path === "/security/verify") {
+      const raw = z.object({ ...browser, challengeId: id, response: credentialResponseSchema }).strict().parse(input);
+      this.security.session(raw.sessionId, raw.csrf);
       const previous = this.ctx.storage.sql.exec<{ payload: string }>("SELECT payload FROM oauth_state WHERE state = ? AND kind = 'security_approval_attempt' AND expires_at > ?", raw.challengeId, Date.now()).toArray()[0];
       if (previous) {
         const attempt = JSON.parse(previous.payload) as { sessionId: string; proposalId: string };
@@ -437,18 +539,120 @@ export class SchwabVault extends DurableObject<AppEnv> {
         const claimed = this.ctx.storage.sql.exec<{ id: string }>("UPDATE trade_proposal SET status = 'EXECUTING', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id", Date.now(), proposal.id).toArray()[0];
         if (!claimed) return jsonResponse(this.proposalView(this.proposal(proposal.id) ?? proposal));
         this.audit("passkey_trade_approved", proposal.id, requestId, "EXECUTING", proposal.intent_digest);
-        const response = await this.executeMutation(proposal.action, proposal.account_hash, proposal.order_id, JSON.parse(proposal.order_json) as { [key: string]: JsonValue }, requestId, "passkey_approval");
+        const response = await this.executeMutation(proposal.action, proposal.account_hash, proposal.order_id, JSON.parse(proposal.order_json) as { [key: string]: JsonValue }, requestId, "passkey_approval",
+          { clientId: result.binding.clientId, advancedSecurity: true, securityPolicyVersion: result.binding.policyVersion });
         const finished = await this.finishProposal(proposal, requestId, response);
         const outcome: Record<string, unknown> = await finished.json();
-        // Approval succeeded even if Schwab rejected the write or its outcome is
-        // uncertain. Preserve that execution result instead of reporting a failed
-        // WebAuthn ceremony to the browser.
         return jsonResponse({ ...outcome, proposalId: proposal.id, status: this.proposal(proposal.id)?.status });
       }
       return jsonResponse(result);
     }
-    throw new SecurityError();
+    throw new RequestBodyError("Unknown security operation");
   }
+  private async recordToolAudit(request: Request): Promise<Response> {
+    const raw = toolAuditInputSchema.parse(await readBoundedJson(request));
+    const id = raw.id ?? crypto.randomUUID();
+    const now = Date.now();
+    if (raw.createdAt !== undefined && raw.createdAt > now + 60_000) throw new RequestBodyError("Invalid audit timestamp");
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO tool_invocation_audit (id, client_id, tool_name, request_id, status, parameters_summary, error_code, error_message, duration_ms, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, raw.clientId, raw.toolName, raw.requestId, raw.status,
+        raw.parametersSummary === undefined ? null : truncateUtf8(raw.parametersSummary, 512),
+        raw.errorCode ?? null, raw.errorMessage === undefined ? null : truncateUtf8(raw.errorMessage, 1024),
+        raw.durationMs, raw.createdAt ?? now,
+      );
+      this.pruneToolAudits();
+    });
+    return jsonResponse({ ok: true, id });
+  }
+
+  private pruneToolAudits(): void {
+    this.ctx.storage.sql.exec("DELETE FROM tool_invocation_audit WHERE created_at <= ?", Date.now() - 30 * 24 * 60 * 60 * 1000);
+    this.ctx.storage.sql.exec(`DELETE FROM tool_invocation_audit WHERE id IN (
+      SELECT id FROM tool_invocation_audit ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET 5000
+    )`);
+  }
+
+  private queryToolAudits(params: URLSearchParams): Response {
+    const { clientId, toolName, status, limit, offset } = parseAuditQuery(params);
+    this.pruneToolAudits();
+
+    const conditions: string[] = [];
+    const args: (string | number)[] = [];
+
+    if (clientId) {
+      conditions.push("client_id = ?");
+      args.push(clientId);
+    }
+    if (toolName) {
+      conditions.push("tool_name = ?");
+      args.push(toolName);
+    }
+    if (status) {
+      conditions.push("status = ?");
+      args.push(status);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    interface AuditRow {
+      [key: string]: string | number | null;
+      id: string;
+      client_id: string;
+      tool_name: string;
+      request_id: string;
+      status: string;
+      parameters_summary: string | null;
+      error_code: string | null;
+      error_message: string | null;
+      duration_ms: number;
+      created_at: number;
+    }
+
+    const items = this.ctx.storage.sql.exec<AuditRow>(
+      `SELECT id, client_id, tool_name, request_id, status, parameters_summary, error_code, error_message, duration_ms, created_at
+       FROM tool_invocation_audit
+       ${whereClause}
+       ORDER BY created_at DESC, id DESC
+       LIMIT ? OFFSET ?`,
+      ...args,
+      limit,
+      offset,
+    ).toArray().map(row => ({
+      id: row.id,
+      clientId: row.client_id,
+      toolName: row.tool_name,
+      requestId: row.request_id,
+      status: row.status,
+      parametersSummary: row.parameters_summary,
+      errorCode: row.error_code,
+      errorMessage: row.error_message,
+      durationMs: row.duration_ms,
+      createdAt: row.created_at,
+    }));
+
+    const stats = this.ctx.storage.sql.exec<{ total: number; success_count: number; error_count: number; active24h: number }>(
+      `SELECT count(*) AS total,
+        coalesce(sum(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) AS success_count,
+        coalesce(sum(CASE WHEN status = 'ERROR' THEN 1 ELSE 0 END), 0) AS error_count,
+        coalesce(sum(CASE WHEN created_at > ? THEN 1 ELSE 0 END), 0) AS active24h
+       FROM tool_invocation_audit ${whereClause}`,
+      Date.now() - 24 * 60 * 60 * 1000, ...args,
+    ).one();
+
+    return jsonResponse({
+      items,
+      total: stats.total,
+      successCount: stats.success_count,
+      errorCount: stats.error_count,
+      active24h: stats.active24h,
+      limit,
+      offset,
+    });
+  }
+
 
   private async saveState(request: Request): Promise<Response> {
     const input: unknown = await request.json();
@@ -684,12 +888,14 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
     const parsed = toolSchemas.disableSessionDirectTrading.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
     if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid direct-trading session request", requestId }, 400);
+    const capabilityHash = await sha256(parsed.data.sessionCapability);
+    this.security.assertIdentity(this.identity(field(raw as object, "identity")));
     const now = Date.now();
     this.expireDirectTradingSessions(now);
     const disabled = this.ctx.storage.sql.exec<{ id: string }>(
       "UPDATE direct_trading_session SET status = 'DISABLED', updated_at = ? WHERE capability_hash = ? AND status = 'ACTIVE' RETURNING id",
       now,
-      await sha256(parsed.data.sessionCapability),
+      capabilityHash,
     ).toArray()[0];
     if (!disabled) return publicError({ code: "DIRECT_TRADING_SESSION_INVALID", message: "Direct-trading session is invalid or inactive", requestId }, 403);
     this.audit("direct_trading_session_disabled", disabled.id, requestId, "DISABLED");
@@ -764,7 +970,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
 
     this.audit("direct_trade_execution_started", parsed.data.executionKey, requestId, "EXECUTING", intentDigest, instructionDigest);
-    const response = await this.executeMutation("PLACE", parsed.data.accountHash, undefined, parsed.data.orderPayload, requestId, "place_order_direct");
+    const response = await this.executeMutation("PLACE", parsed.data.accountHash, undefined, parsed.data.orderPayload, requestId, "place_order_direct", this.identity(field(raw as object, "identity")));
     const payload: unknown = await response.json();
     const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
     const status = response.ok ? "EXECUTED" : error !== null && typeof error === "object" && field(error, "code") === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
@@ -906,7 +1112,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     ).toArray()[0];
     if (!claimed) return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal was already consumed", requestId }, 409);
     this.audit("trade_execution_started", current.id, requestId, "EXECUTING", current.intent_digest);
-    const response = await this.executeMutation(current.action, current.account_hash, current.order_id, JSON.parse(current.order_json) as { [key: string]: JsonValue }, requestId, "confirm_trade");
+    const response = await this.executeMutation(current.action, current.account_hash, current.order_id, JSON.parse(current.order_json) as { [key: string]: JsonValue }, requestId, "confirm_trade", identity);
     return this.finishProposal(current, requestId, response);
   }
 
@@ -978,8 +1184,10 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const parsed = toolSchemas.cancelOrder.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
     if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid cancellation request", requestId }, 400);
     const instructionDigest = await sha256(parsed.data.userInstruction);
+    const identity = this.identity(field(raw as object, "identity"));
+    this.security.assertIdentity(identity);
     this.audit("order_cancellation_started", String(parsed.data.orderId), requestId, "EXECUTING", undefined, instructionDigest);
-    const response = await this.executeMutation("CANCEL", parsed.data.accountHash, parsed.data.orderId, undefined, requestId, "cancel_order");
+    const response = await this.executeMutation("CANCEL", parsed.data.accountHash, parsed.data.orderId, undefined, requestId, "cancel_order", identity);
     const payload: unknown = await response.json();
     const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
     const status = response.ok ? "EXECUTED" : error !== null && typeof error === "object" && field(error, "code") === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
@@ -993,6 +1201,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const parsed = toolSchemas.cancelDelayedTrade.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
     if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid delayed-trade cancellation", requestId }, 400);
     const instructionDigest = await sha256(parsed.data.userInstruction);
+    this.security.assertIdentity(this.identity(field(raw as object, "identity")));
     const cancelled = this.ctx.storage.sql.exec<{ id: string }>(
       "UPDATE delayed_trade SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'ACTIVE' RETURNING id",
       Date.now(),
@@ -1014,6 +1223,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
     const parsed = toolSchemas.listDelayedTrades.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
     if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid delayed-trade query", requestId }, 400);
+    this.security.assertIdentity(this.identity(field(raw as object, "identity")));
     const rows = parsed.data.status === undefined
       ? this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade ORDER BY updated_at DESC LIMIT 100").toArray()
       : this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade WHERE status = ? ORDER BY updated_at DESC LIMIT 100", parsed.data.status).toArray();
@@ -1162,11 +1372,12 @@ export class SchwabVault extends DurableObject<AppEnv> {
     orderPayload: { [key: string]: JsonValue } | undefined,
     requestId: string,
     tool: string,
+    identity?: ClientIdentity,
   ): Promise<Response> {
     const accountPath = `/accounts/${encodeURIComponent(accountHash)}/orders`;
-    if (action === "PLACE") return this.requestSchwab({ base: "trader", path: accountPath, requestId, tool }, "POST", orderPayload);
+    if (action === "PLACE") return this.requestSchwab({ base: "trader", path: accountPath, requestId, tool }, "POST", orderPayload, identity);
     const orderPath = `${accountPath}/${String(orderId)}`;
-    return this.requestSchwab({ base: "trader", path: orderPath, requestId, tool }, action === "REPLACE" ? "PUT" : "DELETE", orderPayload);
+    return this.requestSchwab({ base: "trader", path: orderPath, requestId, tool }, action === "REPLACE" ? "PUT" : "DELETE", orderPayload, identity);
   }
 
   private async proxySchwab(request: Request): Promise<Response> {
@@ -1181,6 +1392,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     input: VaultRequest,
     method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
     body?: { [key: string]: JsonValue },
+    identity?: ClientIdentity,
   ): Promise<Response> {
     if (!input.path.startsWith("/") || input.path.startsWith("//") || input.path.includes("..")) {
       return publicError({ code: "INVALID_ARGUMENT", message: "Invalid Schwab API path", requestId: input.requestId }, 400);
@@ -1208,6 +1420,12 @@ export class SchwabVault extends DurableObject<AppEnv> {
           },
           errorCode ? 401 : 502,
         );
+      }
+      // Refresh and upstream retries yield to concurrent dashboard changes.
+      // Recheck immediately before every mutation, without another await.
+      if (identity) {
+        try { this.security.assertIdentity(identity); }
+        catch { return publicError({ code: "SECURITY_POLICY_CHANGED", message: "Client policy changed before execution", requestId: input.requestId }, 403); }
       }
 
       const started = Date.now();

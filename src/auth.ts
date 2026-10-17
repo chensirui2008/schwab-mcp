@@ -1,15 +1,21 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import type { Context } from "hono";
 import { renderSecurityPage } from "./security-ui";
+import { renderDashboardPage } from "./dashboard-ui";
 import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { renderAuthorizePage, renderGitHubContinuePage, renderSchwabConnectedPage } from "./auth-ui";
 import type { ErrorCode, PublicError } from "./types";
 import type { AppEnv } from "./env";
-import { vaultStub } from "./env";
+import { tradingEnabled, vaultStub } from "./env";
 import { AUTHORIZATION_VERSION, isPermissionLevel, READ_SCOPE } from "./oauth-access";
 import type { AuthorizationProps, PermissionLevel } from "./oauth-access";
+import { z } from "zod";
+import {
+  clientIdSchema, dashboardPolicyInputSchema, isJsonContentType, parseAuditQuery, permissionSchema,
+  policySchema, readBoundedJson, RequestBodyError, sessionEnvelopeSchema, timestampSchema, versionSchema,
+} from "./security-validation";
 
 const SECURITY_COOKIE = "__Host-schwab-security";
 const STATE_TTL_MS = 10 * 60 * 1000;
@@ -47,19 +53,34 @@ export function isAllowedGitHubUser(userId: number, allowedUserId: string): bool
   return String(userId) === allowedUserId;
 }
 
-async function revokeClientGrants(provider: OAuthHelpers, userId: string, clientId: string): Promise<void> {
-  const grantIds: string[] = [];
+const grantSchema = z.object({
+  id: z.string().min(1), clientId: clientIdSchema, userId: z.string().min(1),
+  createdAt: z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER / 1000)),
+  expiresAt: z.number().int().nonnegative().optional(), scope: z.array(z.string()),
+  metadata: z.unknown(),
+});
+async function checkedUserGrants(provider: OAuthHelpers, userId: string) {
+  const grants = new Map<string, z.infer<typeof grantSchema>>();
+  const cursors = new Set<string>();
   let cursor: string | undefined;
   do {
-    const page = await provider.listUserGrants(userId, { limit: 50, ...(cursor ? { cursor } : {}) });
+    const raw: unknown = await provider.listUserGrants(userId, { limit: 50, ...(cursor ? { cursor } : {}) });
+    const parsed = z.object({ items: z.array(grantSchema), cursor: z.string().min(1).optional() }).safeParse(raw);
+    if (!parsed.success) throw new Error("Invalid grant page");
+    const page = parsed.data;
     for (const grant of page.items) {
-      if (grant.clientId === clientId) grantIds.push(grant.id);
+      if (grant.userId !== userId) throw new Error("Unexpected grant owner");
+      grants.set(grant.id, grant);
     }
     cursor = page.cursor;
+    if (cursor && cursors.has(cursor)) throw new Error("Repeated grant cursor");
+    if (cursor) cursors.add(cursor);
   } while (cursor);
-  // CompleteAuthorization's automatic revocation ignores failures. Revoke first
-  // and issue the replacement only after every previous grant is revoked.
-  for (const grantId of grantIds) await provider.revokeGrant(grantId, userId);
+  return [...grants.values()];
+}
+async function revokeClientGrants(provider: OAuthHelpers, userId: string, clientId: string): Promise<void> {
+  const grants = await checkedUserGrants(provider, userId);
+  for (const grant of grants) if (grant.clientId === clientId) await provider.revokeGrant(grant.id, userId);
 }
 
 function randomState(): string {
@@ -153,8 +174,10 @@ function browserError(code: ErrorCode, message: string, status: number): Respons
 async function securityCall<T>(env: AppEnv, path: string, input: unknown): Promise<T> {
   const response = await vaultStub(env).fetch(`https://vault/security${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
   if (!response.ok) {
-    const envelope = await response.json<{ error: PublicError }>();
-    throw new SecurityCallError(envelope.error);
+    const raw: unknown = await response.json();
+    const parsed = publicErrorSchema.safeParse(raw);
+    if (!parsed.success) throw new Error("Invalid security error");
+    throw new SecurityCallError(parsed.data.error);
   }
   return response.json<T>();
 }
@@ -168,7 +191,7 @@ async function finishAuthorization(env: AppEnv, pending: PendingAuthorization, t
     console.error(JSON.stringify({ event: "mcp_authorization_revocation_failed", requestId }));
     return Response.json({ error: "temporarily_unavailable", error_description: "Unable to revoke previous client authorizations; restart authorization", requestId }, { status: 503 });
   }
-  const policy = await securityCall<ClientPolicy>(env, "/commit-policy", { clientId: pending.authRequest.clientId, advancedSecurity: pending.advancedSecurity, expected: pending.policyVersion, ticket });
+  const policy = await securityCall<ClientPolicy>(env, "/commit-policy", { clientId: pending.authRequest.clientId, advancedSecurity: pending.advancedSecurity, expected: pending.policyVersion, permissionLevel: pending.permissionLevel, ticket });
   return env.OAUTH_PROVIDER.completeAuthorization({
     request: pending.authRequest, userId: env.ALLOWED_GITHUB_USER_ID, revokeExistingGrants: false,
     metadata: { label: "Personal Schwab MCP", permissionLevel: pending.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, advancedSecurity: pending.advancedSecurity },
@@ -185,7 +208,7 @@ const app = new Hono<{ Bindings: AppEnv }>();
 app.use("*", async (c, next) => {
   await next();
   // Apply to the final response, including early errors built with Response.json().
-  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize")) {
+  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard")) {
     c.header("Cache-Control", "no-store");
     c.header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
     c.header("X-Frame-Options", "DENY");
@@ -196,6 +219,7 @@ app.use("*", async (c, next) => {
 
 async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: boolean, returnTo = "/security") {
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
   const state = await saveState(c.env, "github", { action: recovery ? "security_recover" : "security_login", origin, returnTo } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
@@ -224,23 +248,12 @@ async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
 app.post("/security/api/:action", async c => {
   const action = c.req.param("action");
   if (!["options", "verify", "add-options", "add-verify"].includes(action)) return browserError("INVALID_ARGUMENT", "Unknown operation", 404);
-  if (c.req.header("Origin") !== new URL(c.env.SCHWAB_REDIRECT_URI).origin || !c.req.header("Content-Type")?.startsWith("application/json")) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
+  if (new URL(c.req.url).origin !== new URL(c.env.SCHWAB_REDIRECT_URI).origin || c.req.header("Origin") !== new URL(c.env.SCHWAB_REDIRECT_URI).origin || !isJsonContentType(c.req.header("Content-Type"))) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
   const sessionId = getCookie(c, SECURITY_COOKIE);
   const csrf = c.req.header("X-CSRF-Token");
   if (!sessionId || !csrf) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
-  const reader = c.req.raw.body?.getReader();
-  if (!reader) return browserError("INVALID_ARGUMENT", "Invalid request", 400);
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > 65536) { await reader.cancel(); return browserError("INVALID_ARGUMENT", "Request too large", 413); }
-    chunks.push(value);
-  }
   try {
-    const body: unknown = JSON.parse(new TextDecoder().decode(await new Blob(chunks.map(chunk => new Uint8Array(chunk))).arrayBuffer()));
+    const body = await readBoundedJson(c.req.raw);
     if (!body || typeof body !== "object" || Array.isArray(body)) return browserError("INVALID_ARGUMENT", "Invalid request", 400);
     // Browser-supplied identity, CSRF and session fields can never override trusted values.
     const result = await securityCall<Record<string, unknown>>(c.env, `/${action}`, { ...body, sessionId, csrf });
@@ -253,12 +266,191 @@ app.post("/security/api/:action", async c => {
     }
     return c.json(result);
   } catch (error) {
-    if (error instanceof SecurityCallError) return c.json({ error: error.error }, 403);
+    if (error instanceof RequestBodyError) return browserError("INVALID_ARGUMENT", error.message, error.status);
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "INVALID_ARGUMENT" ? 400 : error.error.code === "UPSTREAM_UNAVAILABLE" ? 503 : 403 });
     const requestId = crypto.randomUUID();
     console.error(JSON.stringify({ event: "browser_security_failed", requestId }));
-    return c.json({ error: { code: "SECURITY_VERIFICATION_FAILED", message: "验证失败或状态已过期，请刷新页面重试。", requestId } }, 403);
+    return c.json({ error: { code: "UPSTREAM_UNAVAILABLE", message: "Unable to complete browser security operation; retry the request", requestId } }, 503);
   }
 });
+const publicErrorSchema = z.object({
+  error: z.object({
+    code: z.enum(["SECURITY_VERIFICATION_FAILED", "SECURITY_POLICY_CHANGED", "BROWSER_AUTH_REQUIRED", "INVALID_ARGUMENT", "UPSTREAM_UNAVAILABLE"]),
+    message: z.string(), requestId: z.string().min(1),
+  }),
+});
+async function dashboardVault<T>(env: AppEnv, path: string, schema: z.ZodType<T>, input?: unknown): Promise<T> {
+  const response = await vaultStub(env).fetch(`https://vault${path}`, input === undefined ? undefined : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
+  const raw: unknown = await response.json();
+  if (!response.ok) {
+    const parsed = publicErrorSchema.safeParse(raw);
+    if (!parsed.success) throw new Error("Invalid vault error");
+    throw new SecurityCallError(parsed.data.error);
+  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw new Error("Invalid vault response");
+  return parsed.data;
+}
+async function getDashboardSession(c: Context<{ Bindings: AppEnv }>, csrf?: string) {
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  if (!sessionId) return null;
+  try {
+    return await dashboardVault(c.env, "/security/dashboard-session", sessionEnvelopeSchema, { sessionId, ...(csrf ? { csrf } : {}) });
+  } catch (error) {
+    if (error instanceof SecurityCallError && error.error.code === "BROWSER_AUTH_REQUIRED") return null;
+    throw error;
+  }
+}
+function validDashboardOrigin(c: Context<{ Bindings: AppEnv }>): boolean {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  const requestOrigin = c.req.header("Origin");
+  return new URL(c.req.url).origin === origin && (requestOrigin === undefined || requestOrigin === origin);
+}
+async function dashboardRequest(c: Context<{ Bindings: AppEnv }>, handler: (state: z.infer<typeof sessionEnvelopeSchema>) => Promise<Response> | Response): Promise<Response> {
+  if (!validDashboardOrigin(c)) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
+  if (c.req.method === "POST" && (c.req.header("Origin") !== new URL(c.env.SCHWAB_REDIRECT_URI).origin || !isJsonContentType(c.req.header("Content-Type")) || !c.req.header("X-CSRF-Token"))) {
+    return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin, content type or CSRF token", 403);
+  }
+  try {
+    const state = await getDashboardSession(c, c.req.method === "POST" ? c.req.header("X-CSRF-Token") : undefined);
+    if (!state) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
+    return await handler(state);
+  } catch (error) {
+    if (error instanceof RequestBodyError) return browserError("INVALID_ARGUMENT", error.message, error.status);
+    if (error instanceof z.ZodError) return browserError("INVALID_ARGUMENT", "Invalid request", 400);
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "UPSTREAM_UNAVAILABLE" ? 503 : error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
+    const requestId = crypto.randomUUID();
+    console.error(JSON.stringify({ event: "dashboard_request_failed", requestId }));
+    return Response.json({ error: { code: "UPSTREAM_UNAVAILABLE", message: "Dashboard data is unavailable; retry the request", requestId } }, { status: 503 });
+  }
+}
+async function dashboardPolicyRows(env: AppEnv) {
+  // Provider timestamps are seconds (completeAuthorization uses Date.now()/1e3).
+  const grants = await checkedUserGrants(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID);
+  const grantMap = new Map<string, z.infer<typeof grantSchema>>();
+  for (const grant of grants) {
+    if (grant.expiresAt !== undefined && grant.expiresAt * 1000 <= Date.now()) continue;
+    const current = grantMap.get(grant.clientId);
+    if (!current || grant.createdAt > current.createdAt || (grant.createdAt === current.createdAt && grant.id > current.id)) grantMap.set(grant.clientId, grant);
+  }
+  const stored = await dashboardVault(env, "/client/policies", z.object({ policies: z.array(policySchema) }));
+  const policies = new Map(stored.policies.map(policy => [policy.clientId, policy]));
+  for (const [clientId, grant] of grantMap) {
+    const parsed = z.object({ permissionLevel: permissionSchema, advancedSecurity: z.boolean().optional(), securityPolicyVersion: versionSchema.optional() }).safeParse(grant.metadata);
+    if (!parsed.success) throw new Error("Invalid grant permission metadata");
+    const metadata = parsed.data;
+    const query = new URLSearchParams({
+      clientId, ensure: "true", permissionLevel: metadata.permissionLevel,
+      advancedSecurity: String(metadata.advancedSecurity ?? false), version: String(metadata.securityPolicyVersion ?? 0),
+    });
+    const policy = await dashboardVault(env, `/client/policy?${query.toString()}`, policySchema);
+    policies.set(clientId, policy);
+  }
+  return { grantMap, policies };
+}
+async function requireDashboardClient(env: AppEnv, clientId: string): Promise<ClientPolicy> {
+  const { grantMap, policies } = await dashboardPolicyRows(env);
+  const policy = policies.get(clientId);
+  if (!policy || !grantMap.has(clientId)) throw new RequestBodyError("Client authorization was not found");
+  if (policy.revoked) throw new SecurityCallError({ code: "SECURITY_POLICY_CHANGED", message: "Client authorization is revoked", requestId: crypto.randomUUID() });
+  return policy;
+}
+
+app.get("/dashboard", async c => {
+  if (!validDashboardOrigin(c)) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
+  try {
+    const state = await getDashboardSession(c);
+    if (!state) return await beginSecurityLogin(c, false, "/dashboard");
+    return await c.html(renderDashboardPage({ session: state.session, appVersion: c.env.APP_VERSION, allowedUserId: c.env.ALLOWED_GITHUB_USER_ID }));
+  } catch {
+    return browserError("UPSTREAM_UNAVAILABLE", "Unable to load dashboard session", 503);
+  }
+});
+app.get("/dashboard/api/session", c => dashboardRequest(c, state => c.json({ credentials: state.credentials })));
+app.get("/dashboard/api/overview", c => dashboardRequest(c, async state => {
+  const schwabStatus = await dashboardVault(c.env, "/status", z.object({
+    connected: z.boolean(), status: z.enum(["connected", "reauthorization_required"]),
+    accessExpiresAt: timestampSchema.nullable(), refreshExpiresAt: timestampSchema.nullable(),
+  }));
+  const { grantMap, policies } = await dashboardPolicyRows(c.env);
+  const audit = await dashboardVault(c.env, "/audit/tools?limit=1", z.object({ total: versionSchema }));
+  return c.json({
+    schwabConnected: schwabStatus.connected, schwabStatus, tradingEnabled: tradingEnabled(c.env),
+    clientCount: [...grantMap.keys()].filter(clientId => !policies.get(clientId)?.revoked).length,
+    toolCallsCount: audit.total, passkeyCount: state.credentials.length,
+  });
+}));
+app.get("/dashboard/api/clients", c => dashboardRequest(c, async () => {
+  const { grantMap, policies } = await dashboardPolicyRows(c.env);
+  const audit = await dashboardVault(c.env, "/audit/clients", z.object({ clients: z.array(z.object({ clientId: clientIdSchema, lastInvocationAt: timestampSchema })) }));
+  const lastInvocations = new Map(audit.clients.map(client => [client.clientId, client.lastInvocationAt]));
+  const clients = [];
+  for (const [clientId, policy] of policies) {
+    const raw: unknown = await c.env.OAUTH_PROVIDER.lookupClient(clientId);
+    const parsed = z.object({ clientId: clientIdSchema, clientName: z.string().optional(), redirectUris: z.array(z.string()) }).nullable().safeParse(raw);
+    if (!parsed.success || (!parsed.data && grantMap.has(clientId))) throw new Error("Invalid registered client");
+    const grant = grantMap.get(clientId);
+    clients.push({
+      clientId, clientName: parsed.data?.clientName ?? clientId, redirectUris: parsed.data?.redirectUris ?? [],
+      createdAt: grant ? grant.createdAt * 1000 : policy.updatedAt, lastInvocationAt: lastInvocations.get(clientId) ?? null,
+      permissionLevel: policy.permissionLevel, advancedSecurity: policy.advancedSecurity, version: policy.version,
+      revoked: policy.revoked || !grant,
+    });
+  }
+  return c.json({ clients });
+}));
+app.post("/dashboard/api/clients/permission", c => dashboardRequest(c, async () => {
+  const body = z.object({ clientId: clientIdSchema, permissionLevel: permissionSchema }).strict().parse(await readBoundedJson(c.req.raw));
+  const current = await requireDashboardClient(c.env, body.clientId);
+  const policy = await dashboardVault(c.env, "/client/policy/update", policySchema, {
+    ...body, expected: current.version, sessionId: getCookie(c, SECURITY_COOKIE), csrf: c.req.header("X-CSRF-Token"),
+  });
+  return c.json({ ok: true, policy });
+}));
+app.post("/dashboard/api/clients/advanced-security", c => dashboardRequest(c, async () => {
+  const input = dashboardPolicyInputSchema.parse(await readBoundedJson(c.req.raw));
+  await requireDashboardClient(c.env, input.clientId);
+  const path = input.challengeId === undefined ? "/security/dashboard-policy-options" : "/security/dashboard-policy-verify";
+  const response = await dashboardVault(c.env, path, z.union([z.object({
+    challengeId: z.string().min(1), options: z.record(z.string(), z.unknown()), registration: z.boolean(),
+  }), z.object({ ok: z.literal(true), policy: policySchema })]), {
+    sessionId: getCookie(c, SECURITY_COOKIE), csrf: c.req.header("X-CSRF-Token"), input,
+  });
+  return c.json(response);
+}));
+app.post("/dashboard/api/clients/revoke", c => dashboardRequest(c, async () => {
+  const body = z.object({ clientId: clientIdSchema }).strict().parse(await readBoundedJson(c.req.raw));
+  const { grantMap, policies } = await dashboardPolicyRows(c.env);
+  const current = policies.get(body.clientId);
+  if (!current || (!grantMap.has(body.clientId) && !current.revoked)) throw new RequestBodyError("Client authorization was not found");
+  // Durable authority is revoked first. Provider failure must never leave tokens usable.
+  await dashboardVault(c.env, "/client/policy/update", policySchema, {
+    clientId: body.clientId, revoked: true, expected: current.version,
+    sessionId: getCookie(c, SECURITY_COOKIE), csrf: c.req.header("X-CSRF-Token"),
+  });
+  await revokeClientGrants(c.env.OAUTH_PROVIDER, c.env.ALLOWED_GITHUB_USER_ID, body.clientId);
+  return c.json({ ok: true });
+}));
+app.get("/dashboard/api/audit", c => dashboardRequest(c, async () => {
+  const query = parseAuditQuery(new URL(c.req.url).searchParams);
+  const params = new URLSearchParams({ limit: String(query.limit), offset: String(query.offset) });
+  if (query.clientId) params.set("clientId", query.clientId);
+  if (query.toolName) params.set("toolName", query.toolName);
+  if (query.status) params.set("status", query.status);
+  const result = await dashboardVault(c.env, `/audit/tools?${params.toString()}`, z.object({
+    items: z.array(z.object({
+      id: z.string(), clientId: clientIdSchema, toolName: z.string(), requestId: z.string(), status: z.enum(["SUCCESS", "ERROR"]),
+      parametersSummary: z.string().nullable(), errorCode: z.string().nullable(), errorMessage: z.string().nullable(),
+      durationMs: versionSchema, createdAt: timestampSchema,
+    })),
+    total: versionSchema, successCount: versionSchema, errorCount: versionSchema, active24h: versionSchema,
+    limit: z.number().int().min(1).max(100), offset: z.number().int().min(0).max(5000),
+  }));
+  return c.json(result);
+}));
+
 
 app.get("/health", (c) => c.json({ status: "ok", version: c.env.APP_VERSION }));
 

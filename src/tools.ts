@@ -1,10 +1,11 @@
-import { McpServer } from "@modelcontextprotocol/server";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { AppEnv } from "./env";
 import { tradingEnabled, vaultStub } from "./env";
 import type { ClientIdentity } from "./security-store";
 import type { PermissionLevel } from "./oauth-access";
 import { accountHashes, redact } from "./redaction";
 import { toolSchemas } from "./schemas";
+import { AuditedMcpServer } from "./tool-audit";
 import type { AuthorizationNotice, PublicError, ToolResult, VaultRequest } from "./types";
 
 const REAUTHORIZATION_NOTICE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -78,8 +79,8 @@ async function execute(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ base, path, query, requestId, tool } satisfies VaultRequest),
     });
-  } catch (error) {
-    console.error(JSON.stringify({ event: "schwab_vault_unavailable", requestId, tool, message: error instanceof Error ? error.message : "Unknown error" }));
+  } catch {
+    console.error(JSON.stringify({ event: "schwab_vault_unavailable", requestId, tool }));
     return toolError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab vault is unavailable", requestId }, env);
   }
   const envelope = parseVaultEnvelope(await response.json());
@@ -92,8 +93,8 @@ async function execute(
   let data: unknown;
   try {
     data = transform(envelope.result);
-  } catch (error) {
-    console.error(JSON.stringify({ event: "schwab_response_invalid", requestId, tool, message: error instanceof Error ? error.message : "Unknown error" }));
+  } catch {
+    console.error(JSON.stringify({ event: "schwab_response_invalid", requestId, tool }));
     return toolError({ code: "UPSTREAM_UNAVAILABLE", message: "Unexpected Schwab response shape", requestId }, env);
   }
   const notice = authorizationNotice(envelope.refreshExpiresAt, env);
@@ -180,8 +181,13 @@ export function tradingDiagnostics(env: AppEnv, permissionLevel: PermissionLevel
   };
 }
 
-export function createServer(env: AppEnv, permissionLevel: PermissionLevel = "read_only", identity: ClientIdentity = { clientId: "local", advancedSecurity: false, securityPolicyVersion: 0 }): McpServer {
-  const server = new McpServer({ name: "schwab-mcp", version: env.APP_VERSION });
+export function createServer(
+  env: AppEnv,
+  permissionLevel: PermissionLevel = "read_only",
+  identity: ClientIdentity = { clientId: "local", advancedSecurity: false, securityPolicyVersion: 0 },
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): McpServer {
+  const server = new AuditedMcpServer({ name: "schwab-mcp", version: env.APP_VERSION }, env, identity, ctx);
 
   server.registerTool(
     "schwab_connection_status",
