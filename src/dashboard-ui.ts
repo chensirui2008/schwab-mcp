@@ -1364,11 +1364,11 @@ ${raw(BACKGROUND_SVG)}
       <span class="label">03 / 浏览器安全会话</span>
       <span id="session-state" class="badge neutral">正在检查会话</span>
       <p>GitHub numeric owner 验证 · 15 分钟有效期</p>
-      <p><a href="/security">独立安全中心</a> · <a href="/dashboard">重新登录 / 续期</a></p>
+      <p><a href="/security">独立安全中心</a> · <a href="/dashboard/login">重新登录 / 续期</a></p>
     </div>
   </section>
   <div id="global-msg" class="message" role="status" aria-live="polite" aria-atomic="true" hidden></div>
-  <p id="session-login" class="session-link" hidden><a class="button primary" href="/dashboard">通过 GitHub owner 重新登录</a></p>
+  <p id="session-login" class="session-link" hidden><a class="button primary" href="/dashboard/login">通过 GitHub owner 重新登录</a></p>
   <p id="webauthn-warning" class="support-warning" style="margin-top:16px" hidden>当前浏览器或连接不支持 WebAuthn。Passkey 与 Advanced Security 操作已禁用。请在支持 Passkey 的安全外部浏览器中打开仪表板；不会使用普通验证代替。</p>
   <main id="dashboard-main" tabindex="-1" aria-busy="false">
     <div class="tabs" role="tablist" aria-label="控制面板模块">

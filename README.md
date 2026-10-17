@@ -192,6 +192,8 @@ Local checks include real-signature software-authenticator tests, OAuth regressi
 
 Open `/dashboard` on the configured Schwab callback origin. GitHub numeric owner login creates a fifteen-minute browser session; MCP Bearer tokens, consent-pending sessions and recovery sessions cannot administer the dashboard.
 
+The dashboard's login/renew link uses `/dashboard/login` to start fresh GitHub owner OAuth, even with a valid session. Successful owner verification issues a new fifteen-minute session; refreshing `/dashboard` alone does not extend its expiry.
+
 The overview reports unexpired grants with a missing or outdated authorization policy version as requiring client reauthorization. These historical grants do not count as authorized clients or initialize client policies, and do not prevent current clients from loading. Malformed current-version permission metadata still fails explicitly; historical grants remain unusable for MCP access.
 
 - **Clients**: inspect names, redirect URIs, grant dates and last calls; change read-only/full-access permissions or revoke all grants. SQLite policy is checked on every MCP request and token exchange; policy outages fail closed rather than restoring stale token privileges. Changes invalidate pending proposals, not already activated delayed tasks.
