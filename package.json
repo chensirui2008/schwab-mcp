@@ -33,6 +33,7 @@
     "validate": "npm run types && npm run typecheck && npm run lint && npm test && npm run test:deploy-config && npm run test:introspect && npm run test:passkey-acceptance"
   },
   "dependencies": {
+    "@block65/webcrypto-web-push": "2.0.0",
     "@cloudflare/workers-oauth-provider": "^0.8.3",
     "@modelcontextprotocol/server": "^2.0.0",
     "@simplewebauthn/server": "14.0.3",

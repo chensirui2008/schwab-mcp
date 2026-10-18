@@ -2,7 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import type { AppEnv } from "./env";
 import { tradingEnabled } from "./env";
 import { SecurityError, SecurityStore } from "./security-store";
-import type { ApprovalBinding, ClientIdentity, PendingAuthorization } from "./security-store";
+import type { ApprovalBinding, ClientAuthorization, ClientIdentity } from "./security-store";
+import { NotificationError, NotificationStore, sendWebPush } from "./notifications";
 import { z } from "zod";
 import { logEvent } from "./log";
 import { toolSchemas, tradeConditionSchema } from "./schemas";
@@ -148,6 +149,7 @@ function publicError(error: PublicError, status: number): Response {
 
 export class SchwabVault extends DurableObject<AppEnv> {
   private security: SecurityStore;
+  public readonly notifications: NotificationStore;
   private refreshPromise: Promise<TokenRecord> | undefined;
 
   constructor(ctx: DurableObjectState, env: AppEnv) {
@@ -259,6 +261,13 @@ export class SchwabVault extends DurableObject<AppEnv> {
       CREATE INDEX IF NOT EXISTS idx_tool_audit_client ON tool_invocation_audit(client_id, created_at DESC);
     `);
     this.security = new SecurityStore(this.ctx.storage, env);
+    this.notifications = new NotificationStore(this.ctx.storage, env, this.security);
+    const tokenColumns = new Set(this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(schwab_token)").toArray().map(r => r.name));
+    if (!tokenColumns.has("authorization_generation")) {
+      this.ctx.storage.sql.exec("ALTER TABLE schwab_token ADD COLUMN authorization_generation TEXT");
+      this.ctx.storage.sql.exec("ALTER TABLE schwab_token ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0");
+      this.ctx.storage.sql.exec("UPDATE schwab_token SET authorization_generation = ? WHERE authorization_generation IS NULL", crypto.randomUUID());
+    }
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -266,6 +275,15 @@ export class SchwabVault extends DurableObject<AppEnv> {
     catch (error) {
       const requestId = crypto.randomUUID();
       if (error instanceof SecurityError) return publicError({ code: error.code, message: "Security policy changed or verification failed", requestId }, 403);
+      if (error instanceof NotificationError) {
+        const status = error.status ?? (
+          error.code === "RATE_LIMITED" ? 429
+          : error.code === "INVALID_ARGUMENT" ? 400
+          : error.code === "UPSTREAM_UNAVAILABLE" ? 503
+          : 403
+        );
+        return publicError({ code: error.code, message: error.message, requestId }, status);
+      }
       if (error instanceof RequestBodyError || error instanceof z.ZodError) return publicError({ code: "INVALID_ARGUMENT", message: error instanceof RequestBodyError ? error.message : "Invalid request", requestId }, error instanceof RequestBodyError ? error.status : 400);
       logEvent("vault_request_failed", { requestId });
       return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Unable to complete the request", requestId }, 503);
@@ -280,9 +298,16 @@ export class SchwabVault extends DurableObject<AppEnv> {
         const requestId = crypto.randomUUID();
         if (!(error instanceof SecurityError)) throw error;
         const code = error.code;
-        logEvent("security_request_rejected", { requestId, code });
-        return publicError({ code, message: "Security verification failed; restart the browser flow", requestId }, 403);
+        logEvent("security_request_rejected", { requestId, code, path: url.pathname });
+        return publicError({ code, message: error.message || "Security verification failed; restart the browser flow", requestId }, 403);
       }
+    }
+    if (url.pathname.startsWith("/notifications/")) {
+      return this.notificationsRequest(request, url.pathname);
+    }
+    if (url.pathname === "/alarm/run" && request.method === "POST") {
+      await this.alarm();
+      return jsonResponse({ alarmRun: true });
     }
     if (request.method === "POST" && url.pathname.startsWith("/trade/")) {
       try {
@@ -455,28 +480,115 @@ export class SchwabVault extends DurableObject<AppEnv> {
       return jsonResponse(this.security.policy(raw.clientId));
     }
     if (path === "/security/commit-policy") {
-      const raw = z.object({ clientId: clientIdSchema, advancedSecurity: z.boolean(), expected: versionSchema, permissionLevel: permissionSchema, ticket: id.optional() }).strict().parse(input);
+      const raw = z.object({
+        clientId: clientIdSchema,
+        advancedSecurity: z.boolean(),
+        expected: versionSchema,
+        permissionLevel: permissionSchema,
+        ticket: id.optional(),
+      }).strict().parse(input);
+      if (!raw.ticket) throw new SecurityError();
       if (raw.advancedSecurity && raw.permissionLevel !== "full_access") throw new SecurityError();
-      if (raw.advancedSecurity || this.security.policy(raw.clientId).advancedSecurity) {
-        if (!raw.ticket) throw new SecurityError();
-        const proof = this.security.read<{ pending: PendingAuthorization; credentialVersion: number }>(raw.ticket, "commit", true);
-        if (proof.credentialVersion !== this.security.version() || proof.pending.authRequest.clientId !== raw.clientId ||
-          proof.pending.advancedSecurity !== raw.advancedSecurity || proof.pending.policyVersion !== raw.expected ||
-          proof.pending.permissionLevel !== raw.permissionLevel) throw new SecurityError();
-      }
-      return jsonResponse(this.security.commitPolicy(raw.clientId, raw.advancedSecurity, raw.expected, raw.permissionLevel));
+      return jsonResponse(this.security.commitClientPolicy(raw.ticket, raw.clientId, raw.permissionLevel, raw.advancedSecurity, raw.expected));
     }
-    if (path === "/security/authorization") {
-      const raw = z.object({ ticket: id }).strict().parse(input);
-      const proof = this.security.read<{ pending: PendingAuthorization; credentialVersion: number }>(raw.ticket, "authorization", true);
-      if (proof.credentialVersion !== this.security.version()) throw new SecurityError();
-      return jsonResponse({ pending: proof.pending, ticket: this.security.save("commit", proof, Date.now() + 120_000) });
+    if (path === "/security/authorization/begin") {
+      const raw = z.object({
+        intent: pendingAuthorizationSchema,
+        clientName: z.string(),
+        currentAdvanced: z.boolean(),
+      }).strict().parse(input);
+      const result = await this.security.beginClientAuthorization(raw.intent, raw.clientName, raw.currentAdvanced);
+      if (result.requiresPasskey) {
+        this.notifications.recordEvent({
+          dedupeKey: `client_authorization:${result.authorizationId}:PENDING`,
+          type: "CLIENT_AUTHORIZATION_PENDING",
+          entityId: result.authorizationId,
+          summary: `客户端 ${raw.clientName} 正在申请访问权限，待 Passkey 批准`,
+          expiresAt: Date.now() + 15 * 60_000,
+        });
+        await this.scheduleNextAlarm();
+      }
+      return jsonResponse(result);
+    }
+    if (path === "/security/authorization/details") {
+      const raw = z.object({ sessionId: id, csrf: id.optional(), authorizationId: id }).strict().parse(input);
+      const session = this.security.session(raw.sessionId, raw.csrf);
+      const auth = this.security.getClientAuthorization(raw.authorizationId);
+      if (!auth) return publicError({ code: "INVALID_ARGUMENT", message: "Client authorization was not found", requestId: crypto.randomUUID() }, 404);
+      this.security.assertCanAccessAuthorization(session, auth);
+      return jsonResponse({
+        authorization: {
+          id: auth.id,
+          clientName: auth.clientName,
+          clientId: auth.intent.authRequest.clientId,
+          permissionLevel: auth.intent.permissionLevel,
+          advancedSecurity: auth.intent.advancedSecurity,
+          redirectUri: auth.intent.authRequest.redirectUri,
+          status: auth.status,
+          createdAt: auth.createdAt,
+          expiresAt: auth.expiresAt,
+          digest: auth.digest,
+        },
+        credentials: this.security.credentials(),
+        isOriginalSession: session.pendingAuthorizationId === auth.id,
+      });
+    }
+    if (path === "/security/authorization/status") {
+      const raw = z.object({ sessionId: id, csrf: id.optional(), authorizationId: id }).strict().parse(input);
+      const session = this.security.session(raw.sessionId, raw.csrf);
+      const auth = this.security.getClientAuthorization(raw.authorizationId);
+      if (!auth) return jsonResponse({ authorizationId: raw.authorizationId, status: "EXPIRED" });
+      this.security.assertCanAccessAuthorization(session, auth);
+      return jsonResponse({ authorizationId: auth.id, status: auth.status, expiresAt: auth.expiresAt });
+    }
+    if (path === "/security/authorization/options") {
+      const raw = z.object({ sessionId: id, csrf: id, authorizationId: id }).strict().parse(input);
+      return jsonResponse(await this.security.clientAuthorizationOptions(raw.sessionId, raw.csrf, raw.authorizationId));
+    }
+    if (path === "/security/authorization/verify") {
+      const raw = z.object({ sessionId: id, csrf: id, challengeId: id, response: credentialResponseSchema }).strict().parse(input);
+      const result = await this.security.clientAuthorizationVerify(raw.sessionId, raw.csrf, raw.challengeId, raw.response);
+      this.notifications.suppressPendingDeliveriesForEntity(result.authorizationId);
+      return jsonResponse(result);
+    }
+    if (path === "/security/authorization/cancel") {
+      const raw = z.object({ sessionId: id, csrf: id, authorizationId: id }).strict().parse(input);
+      const result = this.security.clientAuthorizationCancel(raw.sessionId, raw.csrf, raw.authorizationId);
+      this.notifications.suppressPendingDeliveriesForEntity(raw.authorizationId);
+      return jsonResponse(result);
+    }
+    if (path === "/security/authorization/claim") {
+      const raw = z.object({ authorizationId: id, sessionId: id, csrf: id.optional() }).strict().parse(input);
+      return jsonResponse(this.security.claimClientAuthorization(raw.authorizationId, raw.sessionId, raw.csrf));
+    }
+    if (path === "/security/authorization/finalize") {
+      const raw = z.object({
+        authorizationId: id,
+        finishingId: id,
+        originalSessionId: id,
+        authorizationEventId: id,
+      }).strict().parse(input);
+      const auth = this.security.getClientAuthorization(raw.authorizationId);
+      this.security.finalizeClientAuthorization(raw.authorizationId, raw.finishingId, raw.originalSessionId, raw.authorizationEventId);
+      if (auth) {
+        this.notifications.recordEvent({
+          dedupeKey: `client_authorized:${raw.authorizationEventId}`,
+          type: "CLIENT_AUTHORIZED",
+          entityId: auth.intent.authRequest.clientId,
+          summary: `客户端 ${auth.clientName} 已成功获得授权`,
+        });
+      }
+      return jsonResponse({ finalized: true });
+    }
+    if (path === "/security/authorization/fail") {
+      const raw = z.object({ authorizationId: id }).strict().parse(input);
+      this.security.clientAuthorizationFail(raw.authorizationId);
+      return jsonResponse({ failed: true });
     }
     if (path === "/security/session/create") {
-      const raw = z.object({ recovery: z.boolean().optional(), pending: pendingAuthorizationSchema.optional() }).strict().parse(input);
-      if (raw.recovery && raw.pending) throw new SecurityError();
-      if (raw.pending?.advancedSecurity && raw.pending.permissionLevel !== "full_access") throw new SecurityError();
-      return jsonResponse(this.security.createSession(raw.recovery, raw.pending));
+      const raw = z.object({ recovery: z.boolean().optional(), pendingAuthorizationId: z.string().optional() }).strict().parse(input);
+      if (raw.recovery && raw.pendingAuthorizationId) throw new SecurityError();
+      return jsonResponse(this.security.createSession(raw.recovery, raw.pendingAuthorizationId));
     }
     if (path === "/security/session" || path === "/security/dashboard-session") {
       const raw = z.object({ sessionId: id, csrf: id.optional() }).strict().parse(input);
@@ -499,13 +611,13 @@ export class SchwabVault extends DurableObject<AppEnv> {
     if (path === "/security/proposal") {
       const raw = z.object({ sessionId: id, csrf: id.optional(), proposalId: id }).strict().parse(input);
       const session = this.security.session(raw.sessionId, raw.csrf);
-      if (session.recovery || session.pending) throw new SecurityError();
+      if (session.recovery || session.pendingAuthorizationId) throw new SecurityError();
       const proposal = this.proposal(raw.proposalId);
       if (!proposal || proposal.approval_method !== "passkey") throw new SecurityError();
       return jsonResponse(this.proposalView(proposal));
     }
     if (path === "/security/options") {
-      const raw = z.object({ ...browser, operation: z.enum(["register", "recover", "authorize", "add", "delete", "rename", "approve"]), target: id.optional(), name: z.string().min(1).max(80).optional(), resetConfirmation: z.string().optional(), proposalId: id.optional() }).strict().parse(input);
+      const raw = z.object({ ...browser, operation: z.enum(["register", "recover", "add", "delete", "rename", "approve"]), target: id.optional(), name: z.string().min(1).max(80).optional(), resetConfirmation: z.string().optional(), proposalId: id.optional() }).strict().parse(input);
       const binding = raw.operation === "approve" ? this.approvalBinding(raw.proposalId ?? "") : undefined;
       if (binding) this.checkApproval(binding);
       return jsonResponse(await this.security.options(raw.sessionId, raw.csrf, raw.operation, raw.target, raw.name, binding, raw.resetConfirmation));
@@ -550,6 +662,138 @@ export class SchwabVault extends DurableObject<AppEnv> {
       return jsonResponse(result);
     }
     throw new RequestBodyError("Unknown security operation");
+  }
+  private notificationActionPath(type: string, entityId: string): string | null {
+    if (type === "TRADE_APPROVAL_PENDING") return `/security/approvals/${entityId}`;
+    if (type === "CLIENT_AUTHORIZATION_PENDING") return `/security/authorizations/${entityId}`;
+    if (type === "SCHWAB_REAUTH_DUE_SOON" || type === "SCHWAB_REAUTH_REQUIRED") return "/auth/schwab/connect";
+    return null;
+  }
+
+  private async notificationsRequest(request: Request, path: string): Promise<Response> {
+    if (path === "/notifications/push-config") {
+      return jsonResponse(await this.notifications.ensureVapidIdentity());
+    }
+    if (path === "/notifications/subscriptions") {
+      return jsonResponse({ items: this.notifications.listSubscriptions() });
+    }
+    if (path === "/notifications/subscribe") {
+      const raw = z.object({
+        sessionId: z.string(),
+        csrf: z.string().optional(),
+        input: z.object({
+          subscription: z.unknown(),
+          label: z.unknown(),
+        }).strict(),
+      }).strict().parse(await readBoundedJson(request));
+      this.security.dashboardSession(raw.sessionId, raw.csrf);
+      const sub = this.notifications.subscribe(raw.input);
+      return jsonResponse(sub);
+    }
+    if (path === "/notifications/unsubscribe") {
+      const raw = z.object({
+        sessionId: z.string(),
+        csrf: z.string().optional(),
+        input: z.object({
+          id: z.string(),
+        }).strict(),
+      }).strict().parse(await readBoundedJson(request));
+      this.security.dashboardSession(raw.sessionId, raw.csrf);
+      this.notifications.unsubscribe(raw.input.id);
+      return jsonResponse({ unsubscribed: true });
+    }
+    if (path === "/notifications/test") {
+      const raw = z.object({
+        sessionId: z.string(),
+        csrf: z.string().optional(),
+        input: z.object({
+          id: z.string(),
+        }).strict(),
+      }).strict().parse(await readBoundedJson(request));
+      this.security.dashboardSession(raw.sessionId, raw.csrf);
+      const event = this.notifications.triggerTestPush(raw.input.id);
+      await this.scheduleNextAlarm();
+      return jsonResponse({ id: event.id });
+    }
+    if (path === "/notifications/pending-approvals") {
+      const now = Date.now();
+      const tradeProposals = this.ctx.storage.sql.exec<{
+        id: string;
+        client_id: string;
+        created_at: number;
+        expires_at: number;
+      }>("SELECT id, client_id, created_at, expires_at FROM trade_proposal WHERE approval_method = 'passkey' AND status = 'PENDING' AND expires_at > ?", now).toArray();
+
+      const clientAuthRows = this.ctx.storage.sql.exec<{ payload: string; expires_at: number }>(
+        "SELECT payload, expires_at FROM oauth_state WHERE kind = 'security_client_authorization' AND expires_at > ?", now
+      ).toArray();
+
+      const clientAuths = clientAuthRows.map(r => JSON.parse(r.payload) as ClientAuthorization)
+        .filter(a => a.status === "PENDING" && a.expiresAt > now);
+
+      const items: Array<{
+        kind: "trade" | "client_authorization";
+        id: string;
+        clientId: string;
+        createdAt: number;
+        expiresAt: number;
+        actionPath: string;
+      }> = [
+        ...tradeProposals.map(p => ({
+          kind: "trade" as const,
+          id: p.id,
+          clientId: p.client_id,
+          createdAt: p.created_at,
+          expiresAt: p.expires_at,
+          actionPath: `/security/approvals/${p.id}`,
+        })),
+        ...clientAuths.map(a => ({
+          kind: "client_authorization" as const,
+          id: a.id,
+          clientId: a.intent.authRequest.clientId,
+          createdAt: a.createdAt,
+          expiresAt: a.expiresAt,
+          actionPath: `/security/authorizations/${a.id}`,
+        })),
+      ].sort((a, b) => b.createdAt - a.createdAt);
+
+      return jsonResponse({ items });
+    }
+    if (path === "/notifications/list") {
+      const url = new URL(request.url);
+      const limit = Number(url.searchParams.get("limit") ?? "25");
+      const offset = Number(url.searchParams.get("offset") ?? "0");
+      const list = this.notifications.listEvents(limit, offset);
+      return jsonResponse({
+        ...list,
+        items: list.items.map(item => ({
+          ...item,
+          actionPath: this.notificationActionPath(item.type, item.entityId),
+        })),
+      });
+    }
+    if (path === "/notifications/read") {
+      const raw = z.object({
+        sessionId: z.string(),
+        csrf: z.string().optional(),
+        input: z.object({
+          id: z.string(),
+        }).strict(),
+      }).strict().parse(await readBoundedJson(request));
+      this.security.dashboardSession(raw.sessionId, raw.csrf);
+      this.notifications.markEventRead(raw.input.id);
+      return jsonResponse({ read: true });
+    }
+    if (path.startsWith("/notifications/event/")) {
+      const eventId = path.replace("/notifications/event/", "");
+      const event = this.notifications.getEvent(eventId);
+      if (!event) return publicError({ code: "INVALID_ARGUMENT", message: "Notification not found", requestId: crypto.randomUUID() }, 404);
+      return jsonResponse({
+        ...event,
+        actionPath: this.notificationActionPath(event.type, event.entityId),
+      });
+    }
+    return publicError({ code: "INVALID_ARGUMENT", message: "Unknown notifications endpoint", requestId: crypto.randomUUID() }, 404);
   }
   private async recordToolAudit(request: Request): Promise<Response> {
     const raw = toolAuditInputSchema.parse(await readBoundedJson(request));
@@ -701,6 +945,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const value: unknown = await request.json();
     if (!isTokenResponse(value)) return new Response("Invalid token response", { status: 400 });
     const now = Date.now();
+    const generation = crypto.randomUUID();
     this.writeToken({
       accessToken: value.access_token,
       refreshToken: value.refresh_token,
@@ -708,7 +953,10 @@ export class SchwabVault extends DurableObject<AppEnv> {
       refreshExpiresAt: now + REFRESH_TOKEN_LIFETIME_MS,
       status: "connected",
       updatedAt: now,
+      authorizationGeneration: generation,
+      reminderSent: false,
     });
+    await this.scheduleNextAlarm();
     return new Response(null, { status: 204 });
   }
 
@@ -721,6 +969,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
         refresh_expires_at: number;
         status: TokenRecord["status"];
         updated_at: number;
+        authorization_generation: string | null;
+        reminder_sent: number | null;
       }>("SELECT * FROM schwab_token WHERE id = 1")
       .toArray()[0];
     if (!row) return null;
@@ -731,27 +981,43 @@ export class SchwabVault extends DurableObject<AppEnv> {
       refreshExpiresAt: row.refresh_expires_at,
       status: row.status,
       updatedAt: row.updated_at,
+      authorizationGeneration: row.authorization_generation ?? undefined,
+      reminderSent: row.reminder_sent === 1,
     };
   }
 
   private writeToken(token: TokenRecord): void {
+    const generation = token.authorizationGeneration ?? crypto.randomUUID();
+    const reminderSent = token.reminderSent ? 1 : 0;
     this.ctx.storage.sql.exec(
       `INSERT INTO schwab_token
-       (id, access_token, refresh_token, access_expires_at, refresh_expires_at, status, updated_at)
-       VALUES (1, ?, ?, ?, ?, ?, ?)
+       (id, access_token, refresh_token, access_expires_at, refresh_expires_at, status, updated_at, authorization_generation, reminder_sent)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET access_token=excluded.access_token,
        refresh_token=excluded.refresh_token, access_expires_at=excluded.access_expires_at,
-       refresh_expires_at=excluded.refresh_expires_at, status=excluded.status, updated_at=excluded.updated_at`,
+       refresh_expires_at=excluded.refresh_expires_at, status=excluded.status, updated_at=excluded.updated_at,
+       authorization_generation=excluded.authorization_generation, reminder_sent=excluded.reminder_sent`,
       token.accessToken,
       token.refreshToken,
       token.accessExpiresAt,
       token.refreshExpiresAt,
       token.status,
       token.updatedAt,
+      generation,
+      reminderSent,
     );
   }
 
   private markReauthorizationRequired(token: TokenRecord): void {
+    if (token.status === "connected") {
+      const generation = token.authorizationGeneration ?? "legacy";
+      this.notifications.recordEvent({
+        dedupeKey: `schwab_reauth_required:${generation}`,
+        type: "SCHWAB_REAUTH_REQUIRED",
+        entityId: generation,
+        summary: "Schwab 授权已失效，请重新连接以恢复交易与行情服务",
+      });
+    }
     this.writeToken({ ...token, status: "reauthorization_required", updatedAt: Date.now() });
   }
 
@@ -804,6 +1070,10 @@ export class SchwabVault extends DurableObject<AppEnv> {
       if (reauthorizationRequired) this.markReauthorizationRequired(current);
       throw new Error(reauthorizationRequired ? "REAUTHORIZATION_REQUIRED" : "UPSTREAM_UNAVAILABLE");
     }
+    const currentToken = this.readToken();
+    if (current.authorizationGeneration && currentToken?.authorizationGeneration !== current.authorizationGeneration) {
+      if (currentToken) return currentToken;
+    }
     const now = Date.now();
     const refreshed: TokenRecord = {
       accessToken: body.access_token,
@@ -812,6 +1082,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
       refreshExpiresAt: current.refreshExpiresAt,
       status: "connected",
       updatedAt: now,
+      authorizationGeneration: current.authorizationGeneration,
+      reminderSent: current.reminderSent,
     };
     this.writeToken(refreshed);
     return refreshed;
@@ -985,6 +1257,18 @@ export class SchwabVault extends DurableObject<AppEnv> {
       parsed.data.executionKey,
     );
     this.audit("direct_trade_execution_finished", parsed.data.executionKey, requestId, status, intentDigest);
+    const directSummary = status === "EXECUTED"
+      ? "直接下单请求已被 Schwab 接受"
+      : status === "EXECUTION_UNCERTAIN"
+      ? "直接下单执行不确定，请先查询订单状态，禁止重发"
+      : "直接下单请求失败";
+    this.notifications.recordEvent({
+      dedupeKey: `place_direct:${parsed.data.executionKey}:${status}`,
+      type: "TRADE_RESULT",
+      entityId: parsed.data.executionKey,
+      summary: directSummary,
+    });
+    await this.scheduleNextAlarm();
     return jsonResponse(payload, response.status);
   }
 
@@ -1064,8 +1348,18 @@ export class SchwabVault extends DurableObject<AppEnv> {
         now,
       );
       this.ctx.storage.sql.exec("UPDATE trade_proposal SET approval_method = ?, client_id = ?, policy_version = ? WHERE id = ?", approvalMethod, identity.clientId, identity.securityPolicyVersion, proposalId);
+      if (approvalMethod === "passkey") {
+        this.notifications.recordEvent({
+          dedupeKey: `trade_proposal:${proposalId}:PENDING`,
+          type: "TRADE_APPROVAL_PENDING",
+          entityId: proposalId,
+          summary: "有交易订单或受保护任务修改待 Passkey 批准",
+          expiresAt,
+        });
+      }
     });
     this.audit("trade_proposal_created", proposalId, requestId, "PENDING", intentDigest, instructionDigest);
+    await this.scheduleNextAlarm();
     return jsonResponse({
       result: {
         proposalId,
@@ -1164,8 +1458,16 @@ export class SchwabVault extends DurableObject<AppEnv> {
       return { taskId, version, result };
     });
     if (activation instanceof Response) return activation;
-    const { taskId, result } = activation;
+    const { taskId, version, result } = activation;
     this.audit("delayed_trade_activated", taskId, requestId, "ACTIVE", proposal.intent_digest);
+    this.notifications.suppressPendingDeliveriesForEntity(proposal.id);
+    const activationSummary = "延迟交易任务已激活/已更新";
+    this.notifications.recordEvent({
+      dedupeKey: `delayed_trade:${taskId}:${String(version)}:ACTIVE`,
+      type: "TRADE_RESULT",
+      entityId: taskId,
+      summary: activationSummary,
+    });
     await this.scheduleNextAlarm();
     return jsonResponse({ result });
   }
@@ -1177,9 +1479,21 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const status = response.ok ? "EXECUTED" : errorCode === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
     this.ctx.storage.sql.exec("UPDATE trade_proposal SET status = ?, outcome_json = ?, updated_at = ? WHERE id = ?", status, JSON.stringify(payload), Date.now(), proposal.id);
     this.audit("trade_execution_finished", proposal.id, requestId, status, proposal.intent_digest);
+    this.notifications.suppressPendingDeliveriesForEntity(proposal.id);
+    const finishSummary = status === "EXECUTED"
+      ? "交易请求已被 Schwab 接受"
+      : status === "EXECUTION_UNCERTAIN"
+      ? "交易请求执行不确定，请先查询订单状态，禁止重发"
+      : "交易请求失败";
+    this.notifications.recordEvent({
+      dedupeKey: `trade_proposal:${proposal.id}:${status}`,
+      type: "TRADE_RESULT",
+      entityId: proposal.id,
+      summary: finishSummary,
+    });
+    await this.scheduleNextAlarm();
     return jsonResponse(payload, response.status);
   }
-
   private async cancelOrder(request: Request): Promise<Response> {
     const raw: unknown = await request.json().catch(() => null);
     const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
@@ -1194,6 +1508,18 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
     const status = response.ok ? "EXECUTED" : error !== null && typeof error === "object" && field(error, "code") === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
     this.audit("order_cancellation_finished", String(parsed.data.orderId), requestId, status, undefined, instructionDigest);
+    const cancelSummary = status === "EXECUTED"
+      ? "撤单请求已被 Schwab 接受"
+      : status === "EXECUTION_UNCERTAIN"
+      ? "撤单执行不确定，请先查询订单状态"
+      : "撤单请求失败";
+    this.notifications.recordEvent({
+      dedupeKey: `cancel_order:${requestId}:${status}`,
+      type: "TRADE_RESULT",
+      entityId: String(parsed.data.orderId),
+      summary: cancelSummary,
+    });
+    await this.scheduleNextAlarm();
     return jsonResponse(payload, response.status);
   }
 
@@ -1253,24 +1579,129 @@ export class SchwabVault extends DurableObject<AppEnv> {
 
   override async alarm(): Promise<void> {
     const now = Date.now();
-    this.ctx.storage.sql.exec(
-      "UPDATE delayed_trade SET status = 'EXECUTION_UNCERTAIN', updated_at = ? WHERE status = 'EXECUTING' AND updated_at < ?",
-      now,
-      now - 5 * 60 * 1000,
-    );
-    this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'EXPIRED', updated_at = ? WHERE status = 'ACTIVE' AND valid_until <= ?", now, now);
-    if (!tradingEnabled(this.env)) {
-      const active = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM delayed_trade WHERE status = 'ACTIVE'").one().count;
-      if (active > 0) await this.ctx.storage.setAlarm(now + DISABLED_ALARM_RECHECK_MS);
+    try {
+      this.ctx.storage.sql.exec(
+        "UPDATE delayed_trade SET status = 'EXECUTION_UNCERTAIN', updated_at = ? WHERE status = 'EXECUTING' AND updated_at < ?",
+        now,
+        now - 5 * 60 * 1000,
+      );
+      this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'EXPIRED', updated_at = ? WHERE status = 'ACTIVE' AND valid_until <= ?", now, now);
+
+      this.checkTokenExpirationAlarm(now);
+
+      if (tradingEnabled(this.env)) {
+        const due = this.ctx.storage.sql.exec<DelayedTradeRow>(
+          "SELECT * FROM delayed_trade WHERE status = 'ACTIVE' AND next_check_at <= ? AND valid_until > ? ORDER BY next_check_at LIMIT 10",
+          now,
+          now,
+        ).toArray();
+        for (const task of due) await this.processDelayedTrade(task);
+      }
+
+      await this.drainNotificationDeliveries();
+    } finally {
+      await this.scheduleNextAlarm();
+    }
+  }
+
+  private checkTokenExpirationAlarm(now: number): void {
+    const token = this.readToken();
+    if (!token) return;
+    if (token.status === "connected") {
+      if (now >= token.refreshExpiresAt) {
+        this.markReauthorizationRequired(token);
+      } else if (now >= token.refreshExpiresAt - 86_400_000 && !token.reminderSent) {
+        const generation = token.authorizationGeneration ?? "legacy";
+        this.notifications.recordEvent({
+          dedupeKey: `schwab_reauth_due_soon:${generation}`,
+          type: "SCHWAB_REAUTH_DUE_SOON",
+          entityId: generation,
+          summary: "Schwab 凭据即将在 24 小时内到期，请及时重新授权",
+        });
+        this.writeToken({
+          ...token,
+          reminderSent: true,
+          updatedAt: now,
+        });
+      }
+    }
+  }
+
+  private async drainNotificationDeliveries(): Promise<void> {
+    const claimed = this.notifications.claimDeliveriesForDispatch(20, 30_000);
+    if (claimed.length === 0) return;
+
+    let vapidKeys: { subject: string; publicKey: string; privateKey: string };
+    try {
+      await this.notifications.ensureVapidIdentity();
+      vapidKeys = this.notifications.getVapidKeysInternal();
+    } catch {
       return;
     }
-    const due = this.ctx.storage.sql.exec<DelayedTradeRow>(
-      "SELECT * FROM delayed_trade WHERE status = 'ACTIVE' AND next_check_at <= ? AND valid_until > ? ORDER BY next_check_at LIMIT 10",
-      now,
-      now,
-    ).toArray();
-    for (const task of due) await this.processDelayedTrade(task);
-    await this.scheduleNextAlarm();
+
+    const CONCURRENCY = 4;
+    for (let i = 0; i < claimed.length; i += CONCURRENCY) {
+      const chunk = claimed.slice(i, i + CONCURRENCY);
+      await Promise.allSettled(chunk.map(async item => {
+        const now = Date.now();
+        const ttlSeconds = Math.max(1, Math.floor((item.eventExpiresAt - now) / 1000));
+        const isUrgent = item.eventType === "TRADE_APPROVAL_PENDING" || item.eventType === "CLIENT_AUTHORIZATION_PENDING";
+
+        try {
+          const res = await sendWebPush(
+            item.subscription,
+            { eventId: item.eventId, type: item.eventType, createdAt: item.eventCreatedAt },
+            vapidKeys,
+            ttlSeconds,
+            isUrgent ? "high" : "normal"
+          );
+
+          if (res.ok) {
+            this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
+              status: "SENT",
+              statusCode: res.status,
+            });
+          } else if (res.status === 404 || res.status === 410) {
+            this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
+              status: "FAILED",
+              statusCode: res.status,
+              disableSubscriptionReason: "EXPIRED_AT_SERVICE",
+            });
+          } else if (res.status === 429 || res.status >= 500) {
+            if (item.attemptCount < 2) {
+              const backoff = item.attemptCount === 0 ? 30_000 : 120_000;
+              this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
+                status: "RETRY",
+                statusCode: res.status,
+                nextAttemptAt: now + backoff,
+              });
+            } else {
+              this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
+                status: "FAILED",
+                statusCode: res.status,
+              });
+            }
+          } else {
+            this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
+              status: "FAILED",
+              statusCode: res.status,
+            });
+          }
+        } catch {
+          if (item.attemptCount < 2) {
+            const backoff = item.attemptCount === 0 ? 30_000 : 120_000;
+            this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
+              status: "RETRY",
+              nextAttemptAt: now + backoff,
+            });
+          } else {
+            this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
+              status: "FAILED",
+            });
+          }
+        }
+      }));
+    }
   }
 
   private async processDelayedTrade(task: DelayedTradeRow): Promise<void> {
@@ -1343,6 +1774,18 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const status = response.ok ? "EXECUTED" : errorCode === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
     this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = ?, outcome_json = ?, updated_at = ? WHERE id = ? AND status = 'EXECUTING'", status, JSON.stringify(payload), Date.now(), task.id);
     this.audit("delayed_trade_execution_finished", task.id, requestId, status, task.intent_digest);
+    const delayedSummary = status === "EXECUTED"
+      ? "延迟交易条件已触发并被 Schwab 接受"
+      : status === "EXECUTION_UNCERTAIN"
+      ? "延迟交易条件触发后执行不确定，请先查询状态"
+      : "延迟交易执行失败";
+    this.notifications.recordEvent({
+      dedupeKey: `delayed_trade:${task.id}:${String(task.version)}:${status}`,
+      type: "TRADE_RESULT",
+      entityId: task.id,
+      summary: delayedSummary,
+    });
+    await this.scheduleNextAlarm();
   }
 
   private failDelayedCondition(task: DelayedTradeRow, requestId: string, message: string): void {
@@ -1355,16 +1798,58 @@ export class SchwabVault extends DurableObject<AppEnv> {
       task.id,
     ).toArray()[0];
     logEvent("schwab_response_invalid", { requestId, tool: "delayed_trade_condition" });
-    if (failed) this.audit("delayed_trade_condition_failed", task.id, requestId, "FAILED", task.intent_digest);
+    if (failed) {
+      this.audit("delayed_trade_condition_failed", task.id, requestId, "FAILED", task.intent_digest);
+      this.notifications.recordEvent({
+        dedupeKey: `delayed_trade:${task.id}:${String(task.version)}:FAILED`,
+        type: "TRADE_RESULT",
+        entityId: task.id,
+        summary: "延迟交易条件检查失败: " + message,
+      });
+    }
   }
 
   private async scheduleNextAlarm(): Promise<void> {
-    const next = this.ctx.storage.sql.exec<{ next_check_at: number | null }>("SELECT MIN(next_check_at) AS next_check_at FROM delayed_trade WHERE status = 'ACTIVE'").one().next_check_at;
-    if (next === null) {
+    const now = Date.now();
+    const candidateTimes: number[] = [];
+
+    // 1. Delayed trades
+    if (tradingEnabled(this.env)) {
+      const activeRows = this.ctx.storage.sql.exec<{
+        next_check: number | null;
+        valid_until: number | null;
+      }>("SELECT MIN(next_check_at) as next_check, MIN(valid_until) as valid_until FROM delayed_trade WHERE status = 'ACTIVE'").toArray()[0];
+      if (activeRows?.next_check) candidateTimes.push(activeRows.next_check);
+      if (activeRows?.valid_until) candidateTimes.push(activeRows.valid_until);
+    } else {
+      const activeCount = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM delayed_trade WHERE status = 'ACTIVE'").one().count;
+      if (activeCount > 0) candidateTimes.push(now + DISABLED_ALARM_RECHECK_MS);
+    }
+
+    // 2. Notification deliveries / lease timeouts
+    const nextDelivery = this.notifications.getNextAlarmTime();
+    if (nextDelivery !== null) candidateTimes.push(nextDelivery);
+
+    // 3. Schwab token reminder and expiration
+    const token = this.readToken();
+    if (token && token.status === "connected") {
+      if (!token.reminderSent) {
+        const reminderTime = token.refreshExpiresAt - 86_400_000;
+        if (reminderTime > now) candidateTimes.push(reminderTime);
+        else candidateTimes.push(now);
+      }
+      if (token.refreshExpiresAt > now) candidateTimes.push(token.refreshExpiresAt);
+      else candidateTimes.push(now);
+    }
+
+    const validTimes = candidateTimes.filter(t => typeof t === "number" && !isNaN(t) && t > 0);
+    if (validTimes.length === 0) {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    await this.ctx.storage.setAlarm(tradingEnabled(this.env) ? Math.max(Date.now() + 1000, next) : Date.now() + DISABLED_ALARM_RECHECK_MS);
+
+    const earliest = Math.max(now + 250, Math.min(...validTimes));
+    await this.ctx.storage.setAlarm(earliest);
   }
 
   private executeMutation(

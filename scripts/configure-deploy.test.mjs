@@ -40,6 +40,7 @@ test("injects public settings with trading off by default and preserves bindings
       assert.deepEqual(actual.secrets, original.secrets);
       assert.deepEqual(actual.durable_objects, original.durable_objects);
       assert.deepEqual(actual.migrations, original.migrations);
+      assert.deepEqual(actual.assets, original.assets);
     });
   }
 });

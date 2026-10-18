@@ -50,6 +50,8 @@ export interface TokenRecord {
   refreshExpiresAt: number;
   status: "connected" | "reauthorization_required";
   updatedAt: number;
+  authorizationGeneration?: string | undefined;
+  reminderSent?: boolean | undefined;
 }
 
 export interface VaultRequest {

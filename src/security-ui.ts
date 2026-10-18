@@ -1,6 +1,7 @@
 import { html, raw } from "hono/html";
-import type { BrowserSession } from "./security-store";
-import { BACKGROUND_SVG, BRAND_LOGO_SVG, COMMON_STYLES, FAVICON_LINK } from "./auth-ui";
+import type { BrowserSession, ClientAuthorizationStatus } from "./security-store";
+import type { PermissionLevel } from "./oauth-access";
+import { BACKGROUND_SVG, BRAND_LOGO_SVG, COMMON_STYLES, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
 
 // Native WebAuthn only; no framework, CDN or browser bearer token.
 const SCRIPT = `
@@ -41,7 +42,7 @@ async function act(operation, target) {
   busy = true;
   const enabledButtons = [...document.querySelectorAll('button')].filter(b => !b.disabled);
   document.querySelectorAll('button').forEach(b => b.disabled = true);
-  status.textContent = '请在系统提示中完成 Passkey 验证…';
+  if (status) status.textContent = '请在系统提示中完成 Passkey 验证…';
   try {
     const name = document.querySelector('#credential-name')?.value || 'Passkey';
     const v = await api('options', {operation,target,name,proposalId:data.proposalId,resetConfirmation:document.querySelector('#reset-confirmation')?.value});
@@ -50,10 +51,9 @@ async function act(operation, target) {
     if (result.redirectTo) { location.assign(result.redirectTo); return; }
     if (result.recovered) { location.assign('/security'); return; }
     if (result.registrationTicket) {
-      status.textContent = '已有 Passkey 验证成功。点击“注册新 Passkey”继续。';
+      if (status) status.textContent = '已有 Passkey 验证成功。点击“注册新 Passkey”继续。';
       const button = document.querySelector('#register-add');
-      button.hidden = false;
-      button.dataset.ticket = result.registrationTicket;
+      if (button) { button.hidden = false; button.dataset.ticket = result.registrationTicket; }
       return;
     }
     if (operation === 'approve') {
@@ -61,25 +61,116 @@ async function act(operation, target) {
         location.replace('/security/approvals/' + encodeURIComponent(data.proposalId) + '/complete');
         return;
       }
-      status.textContent = JSON.stringify(result, null, 2);
-      document.querySelector('#approve').hidden = true;
+      if (status) status.textContent = JSON.stringify(result, null, 2);
+      const approveBtn = document.querySelector('#approve');
+      if (approveBtn) approveBtn.hidden = true;
     } else location.reload();
-  } catch(e) { status.textContent = e.name === 'NotAllowedError' ? '操作已取消或超时，订单保持未批准。' : e.message; }
-  finally { busy = false; enabledButtons.forEach(b => b.disabled = false); }
+  } catch(e) {
+    if (status) status.textContent = e.name === 'NotAllowedError' ? '操作已取消或超时，订单保持未批准。' : e.message;
+  } finally {
+    busy = false;
+    enabledButtons.forEach(b => b.disabled = false);
+  }
 }
+
 document.querySelectorAll('[data-operation]').forEach(b => b.addEventListener('click', () => act(b.dataset.operation, b.dataset.target)));
 document.querySelector('#register-add')?.addEventListener('click', async e => {
   if (busy) return;
   busy = true;
   try {
-    const v = await api('add-options', {ticket:e.currentTarget.dataset.ticket,name:document.querySelector('#credential-name').value});
+    const v = await api('add-options', {ticket:e.currentTarget.dataset.ticket,name:document.querySelector('#credential-name')?.value || 'Passkey'});
     const response = await ceremony(v);
     await api('add-verify', {challengeId:v.challengeId,response});
     location.reload();
-  } catch(e) { status.textContent = e.message; } finally {busy = false;}
+  } catch(e) { if (status) status.textContent = e.message; } finally {busy = false;}
 });
+
+if (data && data.authorizationId) {
+  const authId = data.authorizationId;
+  let stagedAuth = null;
+
+  document.querySelector('#stage-auth-btn')?.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    if (status) status.textContent = '正在获取核准选项…';
+    try {
+      const v = await api('authorization-options', { authorizationId: authId });
+      stagedAuth = v;
+      document.querySelector('#stage-auth-btn').style.display = 'none';
+      document.querySelector('#submit-auth-btn').style.display = 'inline-flex';
+      if (status) status.textContent = '选项已准备就绪，请点击“调起系统硬件验证”。';
+    } catch(e) {
+      if (status) status.textContent = e.message;
+    } finally {
+      busy = false;
+    }
+  });
+
+  document.querySelector('#submit-auth-btn')?.addEventListener('click', async () => {
+    if (busy || !stagedAuth) return;
+    busy = true;
+    if (status) status.textContent = '请在系统提示中验证生物识别或硬件密钥…';
+    try {
+      const response = await ceremony(stagedAuth);
+      await api('authorization-verify', { challengeId: stagedAuth.challengeId, response });
+      if (data.isOriginalSession) {
+        if (status) status.textContent = 'Passkey 核准成功，正在完成授权并交付结果…';
+        const finishRes = await api('authorization-resume', { authorizationId: authId });
+        if (finishRes.redirectTo) {
+          location.replace(finishRes.redirectTo);
+          return;
+        }
+      } else {
+        if (status) status.textContent = '已使用 Passkey 成功核准！发起端设备将自动完成授权并继续。';
+        document.querySelector('#action-buttons-container')?.remove();
+      }
+    } catch(e) {
+      if (status) status.textContent = e.name === 'NotAllowedError' ? '操作已取消，保持未批准。' : e.message;
+    } finally {
+      busy = false;
+    }
+  });
+
+  document.querySelector('#cancel-auth-btn')?.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      await api('authorization-cancel', { authorizationId: authId });
+      if (status) status.textContent = '已取消本次申请。';
+      document.querySelector('#action-buttons-container')?.remove();
+    } catch(e) {
+      if (status) status.textContent = e.message;
+    } finally {
+      busy = false;
+    }
+  });
+
+  if (data.isOriginalSession && data.status === 'PENDING') {
+    const poller = setInterval(async () => {
+      try {
+        const r = await fetch('/security/api/authorization-status/' + encodeURIComponent(authId), { credentials: 'same-origin' });
+        if (!r.ok) return;
+        const s = await r.json();
+        if (s.status === 'APPROVED') {
+          clearInterval(poller);
+          if (status) status.textContent = 'Passkey 核准成功，正在完成授权并交付结果…';
+          const finishRes = await api('authorization-resume', { authorizationId: authId });
+          if (finishRes.redirectTo) {
+            location.replace(finishRes.redirectTo);
+          }
+        } else if (['FINISHING', 'COMPLETED', 'CANCELLED', 'INVALIDATED', 'FAILED', 'EXPIRED'].includes(s.status)) {
+          clearInterval(poller);
+          const badge = document.querySelector('#auth-status-badge');
+          if (badge) badge.textContent = s.status;
+          if (status) status.textContent = '授权状态已变更为: ' + s.status;
+        }
+      } catch {}
+    }, 2000);
+  }
+}
+
 if (!window.PublicKeyCredential || !navigator.credentials) {
-  status.textContent = '此浏览器不支持 WebAuthn。请在支持 Passkey 的外部浏览器中打开此链接；订单保持未批准。';
+  if (status) status.textContent = '此浏览器不支持 WebAuthn。请在支持 Passkey 的外部浏览器中打开；操作保持未批准。';
   document.querySelectorAll('button').forEach(b => b.disabled = true);
 }
 `;
@@ -545,18 +636,22 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf" content="${session.csrf}">
   <title>Advanced Security · Schwab MCP</title>
   ${FAVICON_LINK}
+  ${PWA_HEAD_TAGS}
   <style>${raw(SECURITY_STYLES)}</style>
 </head>
 <body>
   ${raw(BACKGROUND_SVG)}
   <main>
-    <div class="brand-header">
-      ${raw(BRAND_LOGO_SVG)}
-      <span class="brand-title">SCHWAB MCP</span>
+    <div class="brand-header" style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        ${raw(BRAND_LOGO_SVG)}
+        <span class="brand-title">SCHWAB MCP</span>
+      </div>
+      <a href="/dashboard" class="action-btn" style="text-decoration:none;padding:8px 14px;font-size:13px;width:auto;">&larr; 返回控制面板</a>
     </div>
     ${proposal ? html`
       <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
@@ -600,6 +695,10 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
                 <button id="approve" class="pill-btn full-width primary-glow" data-operation="approve">
                   ${raw(FINGERPRINT_ICON_SVG)}
                   <span>⚡ 批准并提交 (Approve via Passkey)</span>
+                </button>
+                <button id="ceremony-submit" class="pill-btn full-width primary-glow" hidden style="background:var(--primary);color:#003824;margin-top:8px;">
+                  ${raw(FINGERPRINT_ICON_SVG)}
+                  <span>调起系统硬件验证</span>
                 </button>
               </div>
               <div class="action-hint">验证成功后服务器立即提交即时订单或激活延迟任务。无对话确认降级。</div>
@@ -678,41 +777,6 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
           <span>重置全部 Passkey 并注册替代凭据</span>
         </button>
       </div>
-    ` : session.pending ? html`
-      <div class="terminal-prompt-tag">&gt;_ SECURITY POLICY VERIFICATION</div>
-      <h1 class="page-title">${credentials.length ? "确认客户端安全设置" : "注册首个 Passkey"}</h1>
-      <p class="page-subtitle">此客户端将${session.pending.advancedSecurity ? "开启" : "关闭"} Advanced Security。${credentials.length ? "需要已有 Passkey 验证以确认授权。" : "为您的 Charles Schwab MCP 启用硬件级安全防护。"}</p>
-      <div class="auth-card">
-        <div class="info-row">
-          <span class="info-label">安全模式</span>
-          <span class="info-value">Advanced Security <span class="tag-badge">FIDO2 / WebAuthn</span></span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">客户端设置</span>
-          <span class="info-value">${session.pending.advancedSecurity ? "开启 · 启用 Passkey 批准" : "关闭 · 沿用普通策略"}</span>
-        </div>
-        <div class="card-divider"></div>
-        ${policyListHtml}
-        <div class="card-divider"></div>
-        <div class="form-group">
-          <label class="form-label" for="credential-name">
-            <span>凭据名称</span>
-            <span class="form-label-hint">本机标识名</span>
-          </label>
-          <div class="input-wrapper">
-            <span class="input-icon">${raw(KEY_ICON_SVG)}</span>
-            <input id="credential-name" class="text-input" maxlength="80" value="我的 Passkey" placeholder="例如：MacBook Pro Touch ID">
-          </div>
-        </div>
-        <div class="security-notice">
-          ${raw(INFO_ICON_SVG)}
-          <div>点击继续后将调用系统 WebAuthn 接口，请在系统提示框中验证生物识别或插入安全密钥。</div>
-        </div>
-        <button class="pill-btn full-width" data-operation="${credentials.length ? "authorize" : "register"}">
-          ${raw(FINGERPRINT_ICON_SVG)}
-          <span>${credentials.length ? "使用 Passkey 确认设置并授权" : "注册 Passkey 并完成授权"}</span>
-        </button>
-      </div>
     ` : html`
       <div class="terminal-prompt-tag">&gt;_ CREDENTIAL SECURITY MANAGER</div>
       <h1 class="page-title">Advanced Security</h1>
@@ -728,57 +792,33 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
               <li class="credential-item">
                 <div class="credential-info">
                   <span class="credential-name">${c.name}</span>
-                  <span class="credential-id">${c.id}</span>
+                  <span class="credential-id mono">${c.id.slice(0, 16)}…</span>
                 </div>
                 <div class="credential-actions">
-                  <button class="secondary-btn" data-operation="rename" data-target="${c.id}">重命名</button>
-                  <button class="secondary-btn danger" data-operation="delete" data-target="${c.id}" ${credentials.length <= 1 ? "disabled" : ""}>删除</button>
+                  <button class="action-btn" data-operation="rename" data-target="${c.id}">重命名</button>
+                  ${credentials.length > 1 ? html`<button class="action-btn danger" data-operation="delete" data-target="${c.id}">删除</button>` : ""}
                 </div>
               </li>
             `)}
           </ul>
-          <div class="card-divider"></div>
-          <div class="form-group">
-            <label class="form-label" for="credential-name">
-              <span>新增或修改的凭据名称</span>
-              <span class="form-label-hint">本机标识名</span>
-            </label>
-            <div class="input-wrapper">
-              <span class="input-icon">${raw(KEY_ICON_SVG)}</span>
-              <input id="credential-name" class="text-input" maxlength="80" value="我的 Passkey" placeholder="例如：YubiKey 5C">
-            </div>
-          </div>
-          <button class="pill-btn full-width" data-operation="add">
-            ${raw(FINGERPRINT_ICON_SVG)}
-            <span>验证已有 Passkey 后添加</span>
+          <button class="pill-btn secondary full-width" data-operation="add">
+            ${raw(KEY_ICON_SVG)}
+            <span>添加新 Passkey</span>
           </button>
-          <button id="register-add" class="pill-btn full-width" style="margin-top: 10px;" hidden>
+          <button id="register-add" class="pill-btn primary full-width" hidden style="margin-top:8px;">
             ${raw(FINGERPRINT_ICON_SVG)}
             <span>注册新 Passkey</span>
           </button>
         ` : html`
-          <div class="info-row">
-            <span class="info-label">安全模式</span>
-            <span class="info-value">Advanced Security <span class="tag-badge">FIDO2 / WebAuthn</span></span>
-          </div>
-          <div class="card-divider"></div>
-          ${policyListHtml}
-          <div class="card-divider"></div>
-          <div class="form-group">
-            <label class="form-label" for="credential-name">
-              <span>凭据名称</span>
-              <span class="form-label-hint">本机标识名</span>
-            </label>
-            <div class="input-wrapper">
-              <span class="input-icon">${raw(KEY_ICON_SVG)}</span>
-              <input id="credential-name" class="text-input" maxlength="80" value="我的 Passkey" placeholder="例如：MacBook Pro Touch ID">
-            </div>
-          </div>
           <div class="security-notice">
             ${raw(INFO_ICON_SVG)}
-            <div>点击继续后将调用系统 WebAuthn 接口，请在系统提示框中验证生物识别或插入安全密钥。</div>
+            <div>尚未绑定任何 Passkey。绑定硬件安全密钥或生物识别以保护您的账户。</div>
           </div>
-          <button class="pill-btn full-width" data-operation="register">
+          <div class="form-group">
+            <label class="form-label" for="credential-name"><span>首个 Passkey 名称</span></label>
+            <div class="input-wrapper"><input id="credential-name" class="text-input" value="我的 Passkey" maxlength="80"></div>
+          </div>
+          <button class="pill-btn primary full-width" data-operation="register">
             ${raw(FINGERPRINT_ICON_SVG)}
             <span>注册首个 Passkey</span>
           </button>
@@ -800,6 +840,142 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
     <script id="page-data" type="application/json">${raw(data)}</script>
     <script>${raw(SCRIPT)}</script>
   </main>
+  ${PWA_SERVICE_WORKER_SCRIPT}
+</body>
+</html>`;
+}
+
+export function renderClientAuthorizationPage(
+  session: BrowserSession,
+  clientAuth: {
+    id: string;
+    clientName: string;
+    clientId: string;
+    permissionLevel: PermissionLevel;
+    advancedSecurity: boolean;
+    redirectUri: string;
+    status: ClientAuthorizationStatus;
+    createdAt: number;
+    expiresAt: number;
+    digest: string;
+  },
+  credentials: { id: string; name: string }[],
+  isOriginalSession: boolean
+) {
+  const data = JSON.stringify({
+    authorizationId: clientAuth.id,
+    status: clientAuth.status,
+    isOriginalSession,
+    expiresAt: clientAuth.expiresAt,
+  }).replaceAll("<", "\\u003c");
+
+  return html`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="csrf" content="${session.csrf}">
+  <title>客户端授权核准 · Schwab MCP</title>
+  ${FAVICON_LINK}
+  ${PWA_HEAD_TAGS}
+  <style>${raw(SECURITY_STYLES)}</style>
+</head>
+<body>
+  ${raw(BACKGROUND_SVG)}
+  <main>
+    <div class="brand-header" style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        ${raw(BRAND_LOGO_SVG)}
+        <span class="brand-title">SCHWAB MCP</span>
+      </div>
+      <a href="/dashboard" class="action-btn" style="text-decoration:none;padding:8px 14px;font-size:13px;width:auto;">&larr; 返回控制面板</a>
+    </div>
+
+    <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
+      <div class="telemetry-node">
+        <span class="status-pulse-dot"></span>
+        <span>&gt;_ SCHWAB::MCP//OAUTH_AUTHORIZATION_GATEWAY</span>
+      </div>
+      <div class="telemetry-chips">
+        <span class="tag-badge green">&bull; RFC 7636 S256</span>
+        <span class="tag-badge">${clientAuth.advancedSecurity ? "ADVANCED SECURITY" : "STANDARD MODE"}</span>
+      </div>
+    </div>
+
+    <h1 class="page-title">${isOriginalSession && clientAuth.status === "PENDING" ? "等待 Passkey 硬件核准" : "客户端访问权限申请"}</h1>
+    <p class="page-subtitle">${isOriginalSession && clientAuth.status === "PENDING" ? "请在已绑定的 iPhone PWA 或其他已登录设备上使用 Passkey 批准此请求，或在下方使用本机 Passkey。" : "请仔细核对客户端信息与权限设置，使用绑定的 Passkey 核准本次授权。"}</p>
+
+    <div class="auth-card" style="width:100%;max-width:580px;">
+      <div class="info-row">
+        <span class="info-label">申请客户端</span>
+        <span class="info-value"><strong>${clientAuth.clientName}</strong> <span class="tag-badge mono" style="font-size:10px">${clientAuth.clientId}</span></span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">权限等级</span>
+        <span class="info-value"><span class="tag-badge ${clientAuth.permissionLevel === "full_access" ? "green" : ""}">${clientAuth.permissionLevel === "full_access" ? "完整访问 FULL ACCESS" : "只读权限 READ ONLY"}</span></span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Advanced Security</span>
+        <span class="info-value">${clientAuth.advancedSecurity ? "开启（每笔交易强制 Passkey 批准）" : "关闭"}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">回调地址</span>
+        <span class="info-value mono" style="font-size:11px">${clientAuth.redirectUri}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">状态</span>
+        <span class="info-value"><span id="auth-status-badge" class="tag-badge ${clientAuth.status === "APPROVED" || clientAuth.status === "COMPLETED" ? "green" : ""}">${clientAuth.status}</span></span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">截止时间</span>
+        <span class="info-value timestamp">${new Date(clientAuth.expiresAt).toLocaleTimeString()}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">请求摘要 (Digest)</span>
+        <div class="uri-box mono">${clientAuth.digest}</div>
+      </div>
+
+      <div class="card-divider"></div>
+
+      <div id="status" class="action-hint" role="status" aria-live="polite">${isOriginalSession && clientAuth.status === "PENDING" ? "正在等待 Passkey 硬件核准中…（每 2 秒同步状态）" : ""}</div>
+
+      ${clientAuth.status === "PENDING" ? html`
+        <div id="action-buttons-container" style="display:flex;flex-direction:column;gap:12px;margin-top:14px;">
+          <div class="form-group" style="${credentials.length ? "display:none;" : ""}">
+            <label class="form-label" for="credential-name"><span>新 Passkey 名称</span></label>
+            <div class="input-wrapper"><input id="credential-name" class="text-input" value="我的 Passkey" maxlength="80"></div>
+          </div>
+          <button id="stage-auth-btn" class="pill-btn primary full-width" data-action="stage-client-auth">
+            ${raw(FINGERPRINT_ICON_SVG)}
+            <span>${credentials.length ? "使用 Passkey 批准此请求" : "注册首个 Passkey 并批准"}</span>
+          </button>
+          <button id="submit-auth-btn" class="pill-btn primary full-width" style="display:none;background:var(--primary);color:#003824;">
+            ${raw(FINGERPRINT_ICON_SVG)}
+            <span>调起系统硬件验证</span>
+          </button>
+          <button id="cancel-auth-btn" class="pill-btn danger full-width" data-action="cancel-client-auth">取消本次申请</button>
+        </div>
+      ` : clientAuth.status === "APPROVED" ? html`
+        <div class="security-notice green" style="margin-top:14px;">
+          &bull; 已通过 Passkey 批准核验。发起端设备将自动完成授权流程并签发凭据。
+        </div>
+      ` : html`
+        <div class="security-notice" style="margin-top:14px;">
+          &bull; 授权请求当前状态: ${clientAuth.status}
+        </div>
+      `}
+    </div>
+
+    <div class="auth-footer" style="margin-top:20px;">
+      <a href="/security">凭据管理</a>
+      <span class="footer-dot">·</span>
+      <a href="/dashboard">返回控制面板</a>
+    </div>
+
+    <script id="page-data" type="application/json">${raw(data)}</script>
+    <script>${raw(SCRIPT)}</script>
+  </main>
+  ${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;
 }

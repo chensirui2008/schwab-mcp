@@ -180,7 +180,7 @@ describe("Dashboard owner authentication and browser boundaries", () => {
   it.each(["recovery", "pending"] as const)("does not treat a %s ceremony session as a dashboard login", async kind => {
     const appEnv = setup();
     const created = await postVault(appEnv, "/security/session/create", kind === "recovery" ? { recovery: true } : {
-      pending: { authRequest: { clientId: "restricted", redirectUri, responseType: "code", scope: [READ_SCOPE], state: "test", codeChallenge: "a".repeat(43), codeChallengeMethod: "S256" }, permissionLevel: "full_access", advancedSecurity: true, username: "owner", policyVersion: 0 },
+      pendingAuthorizationId: "restricted-auth-id",
     });
     const state = await created.json<{ sessionId: string; session: BrowserSession }>();
     const ui = browser(appEnv, `__Host-schwab-security=${state.sessionId}`, state.session.csrf);

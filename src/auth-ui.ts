@@ -1,6 +1,28 @@
 import { html, raw } from "hono/html";
 
 export const FAVICON_LINK = raw('<link rel="icon" type="image/svg+xml" href="/favicon.svg">');
+export const PWA_HEAD_TAGS = raw(`
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#070b12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Schwab MCP">
+`);
+
+export const PWA_SERVICE_WORKER_SCRIPT = raw(`
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).catch(function(err) {
+      console.warn('SW registration failed:', err);
+    });
+  });
+}
+</script>
+`);
 
 export interface AuthorizePageProps {
   clientName: string;
