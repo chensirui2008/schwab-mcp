@@ -217,8 +217,6 @@ Dashboard writes require same-origin JSON, the browser cookie and CSRF header, w
 
 Only public static assets are cached for offline use. Notifications, subscriptions and VAPID keys remain in owner SQLite; push payloads contain only event identifiers, types and timestamps. The unified alarm handles delivery, token-expiry reminders and delayed trades, including reminder scheduling for existing token records after upgrade. Retention removes completed deliveries before their parent events, and resolved notifications cannot be resurrected by a late retry.
 
-Run `npm run test:pwa-acceptance` for a native Workers-runtime push transport check with mocked outbound traffic, including redirect rejection. For local browser inspection, run `node scripts/pwa-browser-acceptance.mjs` and open `http://localhost:8799/login`; GitHub is simulated and Schwab is blocked. These checks do not validate actual OS notification delivery or Safari/iPhone hardware Passkeys.
-
 ## Safety & Security Guardrails
 
 1. **Deployment Killswitch (`ENABLE_TRADING`)**:

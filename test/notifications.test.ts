@@ -399,6 +399,48 @@ describe("NotificationStore & Push Endpoints", () => {
     expect(list.items.find(i => i.id === sub.id)?.active).toBe(false);
   });
 
+  it("rejects push service redirects and records the delivery as failed", async () => {
+    const appEnv = setup();
+    const { securityCookie, csrf } = await login(appEnv);
+    const { p256dh, auth } = await generateTestKeys();
+
+    const subRes = await dispatch(new Request(`${origin}/dashboard/api/push/subscribe`, {
+      method: "POST",
+      headers: { Cookie: securityCookie, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({
+        subscription: { endpoint: "https://web.push.apple.com/redirect-sub", expirationTime: null, keys: { p256dh, auth } },
+        label: "Redirect Device",
+      }),
+    }), appEnv);
+    const sub = await subRes.json<{ id: string }>();
+
+    await dispatch(new Request(`${origin}/dashboard/api/push/test`, {
+      method: "POST",
+      headers: { Cookie: securityCookie, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ id: sub.id }),
+    }), appEnv);
+
+    // Mock 302 redirect response from push service
+    const pushFetch = vi.fn().mockResolvedValue(new Response(null, {
+      status: 302,
+      headers: { Location: "https://untrusted.invalid/push" },
+    }));
+    vi.stubGlobal("fetch", pushFetch);
+
+    const vault = vaultStub(appEnv);
+    await runDurableObjectAlarm(vault);
+    vi.unstubAllGlobals();
+
+    expect(pushFetch).toHaveBeenCalledTimes(1);
+    await runInDurableObject(vault, (_instance, state) => {
+      const deliveries = state.storage.sql.exec<{ status: string; last_status_code: number }>(
+        "SELECT status, last_status_code FROM notification_delivery WHERE subscription_id = ?",
+        sub.id
+      ).toArray();
+      expect(deliveries).toEqual([{ status: "FAILED", last_status_code: 302 }]);
+    });
+  });
+
   it("generates SCHWAB_REAUTH_DUE_SOON 24 hours before expiration and SCHWAB_REAUTH_REQUIRED on expiration", async () => {
     const appEnv = setup();
     const vault = vaultStub(appEnv);

@@ -257,8 +257,6 @@ Passkey 批准仅授权冻结提案，不执行余额、名义金额上限或洗
 
 离线缓存仅保存公开静态资源；通知、订阅和 VAPID 密钥只存 owner SQLite，推送载荷仅含事件 ID、类型及时间。统一 alarm 负责投递、授权到期提醒和延迟交易，升级后已有 token 也会初始化提醒调度。保留期清理先删除已完成投递再删除父事件，已处理通知不会因迟到的重试重新进入待投递状态。
 
-执行 `npm run test:pwa-acceptance`，在真实 Workers runtime 中验证推送加密发送和不跟随重定向，全部出站请求均模拟。浏览器检查运行 `node scripts/pwa-browser-acceptance.mjs`，打开 `http://localhost:8799/login`；GitHub 模拟、Schwab 禁止访问。这不代表已验证操作系统通知投递或 Safari/iPhone 硬件 Passkey。
-
 ## 安全边界与交易防护机制
 
 ### 1. 部署总开关 (`ENABLE_TRADING`)

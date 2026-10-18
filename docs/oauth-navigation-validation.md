@@ -10,27 +10,11 @@ Production logs confirmed the sequence at 15:12:51 / 15:12:58 / 15:13:05 Asia/Sh
 
 The POST now completes with a no-store, same-origin 200 document. That document starts a new top-level navigation to the server-generated GitHub URL with `location.replace()`. An escaped anchor provides a fallback if scripting is unavailable. The existing `form-action 'self'`, state/cookie binding, one-time consumption, owner verification, PKCE, grant revocation and per-client policy checks remain in force. No OAuth version bump is needed.
 
-## Isolated browser environment
+## Isolated browser environment (Historical 2026-10-16 validation)
 
-Run from the repository root:
+The regression was originally reproduced and validated using a local Miniflare fixture on `http://localhost:8796`. The fixture bundled the real Worker with non-persistent OAuth KV and SQLite Durable Objects, restricting outbound requests to mock GitHub responses.
 
-```sh
-node scripts/oauth-browser-acceptance.mjs
-```
-
-Open `http://localhost:8796` in Chrome. The fixture bundles the real Worker and uses Miniflare with fresh, non-persistent OAuth KV and SQLite Durable Objects. It does not load `.dev.vars` or production bindings. `ENABLE_TRADING=false`, all credentials and the owner identity are test values, and Worker outbound requests are restricted to mock GitHub responses. Unknown outbound requests return 502. All servers bind to loopback.
-
-The browser's GitHub destination is rewritten only in this fixture to the separate origin `http://127.0.0.1:8797`. It redirects back to the real Worker callback. A separate mock client on `http://localhost:8798` exchanges the authorization code using S256 PKCE and calls the real MCP `tools/list` endpoint. Codes and tokens stay in process memory and are not printed. Miniflare dispatch uses manual redirects, so the fixture rewrites navigation destinations before the browser follows them.
-
-For enhanced mode, the fixture injects a software authenticator into the security page. It creates real WebAuthn signatures using the existing test helper; the production SimpleWebAuthn verification remains active. This is an OAuth/browser integration test, not an additional native-device Passkey acceptance claim. Native-device results are recorded separately in [passkey-validation.md](passkey-validation.md).
-
-To reproduce the old behavior without changing tracked production code, stop the fixture and restart it with:
-
-```sh
-OAUTH_ACCEPTANCE_BASELINE=1 node scripts/oauth-browser-acceptance.mjs
-```
-
-That option changes only the in-memory test bundle back to the previous consent POST redirect. Stop with Ctrl+C after each run; restarting clears fixture state.
+This temporary local fixture was retired after the same-Worker isolated acceptance routes (`/__test/*`) and automated Vitest test suite (`test/cloud-acceptance.test.ts`, `test/auth.test.ts`) were merged into the repository.
 
 ## Observed results
 
@@ -60,7 +44,7 @@ The acceptance vault replaces all brokerage configuration with dummy values, for
 1. Set the optional `ACCEPTANCE_KEY` through Worker Secrets; never put it in configuration, a URL, or a committed file. Keep the existing three required secret names unchanged.
 2. Open `https://schwab-mcp.siruichen461.workers.dev/__test/` and unlock using that key. Choose a fresh ordinary or enhanced flow. Select Full access; select Advanced Security for the enhanced flow. Click the normal consent button, then the software registration button when prompted.
 3. Expect `tokenExchange: 200`, `mcpStatus: 200`, `prepareTrade: true`, `tradingEnabled: false`, and `realSchwabRequests: 0`. Ordinary mode exposes `confirmTrade`; enhanced mode hides it.
-4. For genuinely cross-origin CSP validation, run `node scripts/mock-github-acceptance.mjs` on the browser's Mac, then open `/__test/start?mode=plain&crossOrigin=1` and repeat with `mode=enhanced`. The loopback provider only redirects a valid mock authorization to the fixed cloud callback. PKCE, OAuth persistence, Passkey verification, token exchange and authenticated MCP all run in the deployed Cloudflare Worker. Default test flows use a mock route in the same Worker and do not require this helper.
+4. Cloud acceptance test flows use the built-in mock route in the same Worker (`/__test/mock/github`). PKCE, OAuth persistence, Passkey verification, token exchange and authenticated MCP all run in the deployed Cloudflare Worker without external dependencies.
 5. Delete the optional Worker Secret when testing is no longer needed; routes then return 404. This is a deployment operation and does not clear production grants or credentials.
 
 ### Observed cloud results
