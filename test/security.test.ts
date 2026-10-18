@@ -22,16 +22,18 @@ async function setup() {
   const post = (path: string, data: unknown) => vault.fetch(`https://vault${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
   const ordinaryPolicy = await vault.fetch("https://vault/client/policy?clientId=plain&ensure=true&permissionLevel=full_access&advancedSecurity=false&version=0");
   expect(ordinaryPolicy.status).toBe(200);
-  const sessionResponse = await post("/security/session/create", { pending });
-  const initial = await sessionResponse.json<{ sessionId: string; session: BrowserSession }>();
+  const beginRes = await post("/security/authorization/begin", { intent: pending, clientName: "enhanced", currentAdvanced: false });
+  const begin = await beginRes.json<{ sessionId: string; authorizationId: string }>();
+  const sessionRes = await post("/security/session", { sessionId: begin.sessionId });
+  const { session: initial } = await sessionRes.json<{ session: BrowserSession }>();
   const key = await authenticator();
-  const options = await (await post("/security/options", { sessionId: initial.sessionId, csrf: initial.session.csrf, operation: "register" })).json<Options>();
+  const options = await (await post("/security/authorization/options", { sessionId: begin.sessionId, csrf: initial.csrf, authorizationId: begin.authorizationId })).json<Options>();
   expect(options.options.authenticatorSelection?.userVerification).toBe("required");
-  const registered = await post("/security/verify", { sessionId: initial.sessionId, csrf: initial.session.csrf, challengeId: options.challengeId, response: await key.register(options.options.challenge) });
+  const registered = await post("/security/authorization/verify", { sessionId: begin.sessionId, csrf: initial.csrf, challengeId: options.challengeId, response: await key.register(options.options.challenge) });
   expect(registered.status).toBe(200);
-  const proof = await registered.json<{ authorizationTicket: string }>();
-  const ticket = await (await post("/security/authorization", { ticket: proof.authorizationTicket })).json<{ ticket: string }>();
-  expect((await post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: true, expected: 0, ticket: ticket.ticket })).status).toBe(200);
+  const claim = await (await post("/security/authorization/claim", { authorizationId: begin.authorizationId, sessionId: begin.sessionId, csrf: initial.csrf })).json<{ commitTicket: string; finishingId: string }>();
+  expect((await post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: true, expected: 0, ticket: claim.commitTicket })).status).toBe(200);
+  await post("/security/authorization/finalize", { authorizationId: begin.authorizationId, finishingId: claim.finishingId, originalSessionId: begin.sessionId, authorizationEventId: crypto.randomUUID() });
   const created = await (await post("/security/session/create", {})).json<{ sessionId: string; session: BrowserSession }>();
   const browser = (path: string, data: Record<string, unknown> = {}) => post(`/security${path}`, { ...data, sessionId: created.sessionId, csrf: created.session.csrf });
   const identity: ClientIdentity = { clientId: "enhanced", advancedSecurity: true, securityPolicyVersion: 1 };
@@ -247,11 +249,15 @@ describe("Passkey management and recovery", () => {
     expect((await t.browser("/verify", { challengeId: remove.challengeId, response: await t.key.authenticate(remove.options.challenge) })).status).toBe(200);
     expect((await t.browser("/options", { operation: "delete", target: t.key.id })).status).toBe(403);
     expect((await t.post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: false, expected: 1 })).status).toBe(403);
-    const disabling = await (await t.post("/security/session/create", { pending: { ...pending, advancedSecurity: false, policyVersion: 1 } })).json<{ sessionId: string; session: BrowserSession }>();
-    const options = await (await t.post("/security/options", { sessionId: disabling.sessionId, csrf: disabling.session.csrf, operation: "authorize" })).json<Options>();
-    const verified = await (await t.post("/security/verify", { sessionId: disabling.sessionId, csrf: disabling.session.csrf, challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) })).json<{ authorizationTicket: string }>();
-    const ticket = await (await t.post("/security/authorization", { ticket: verified.authorizationTicket })).json<{ ticket: string }>();
-    expect((await t.post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: false, expected: 1, ticket: ticket.ticket })).status).toBe(200);
+    const beginRes = await t.post("/security/authorization/begin", { intent: { ...pending, advancedSecurity: false, policyVersion: 1 }, clientName: "enhanced", currentAdvanced: true });
+    const begin = await beginRes.json<{ sessionId: string; authorizationId: string }>();
+    const sessionRes = await t.post("/security/session", { sessionId: begin.sessionId });
+    const { session: disabling } = await sessionRes.json<{ session: BrowserSession }>();
+    const options = await (await t.post("/security/authorization/options", { sessionId: begin.sessionId, csrf: disabling.csrf, authorizationId: begin.authorizationId })).json<Options>();
+    const verified = await (await t.post("/security/authorization/verify", { sessionId: begin.sessionId, csrf: disabling.csrf, challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) })).json<{ authorizationId: string; status: string }>();
+    expect(verified.status).toBe("APPROVED");
+    const claim = await (await t.post("/security/authorization/claim", { authorizationId: begin.authorizationId, sessionId: begin.sessionId, csrf: disabling.csrf })).json<{ commitTicket: string }>();
+    expect((await t.post("/security/commit-policy", { clientId: "enhanced", permissionLevel: "full_access", advancedSecurity: false, expected: 1, ticket: claim.commitTicket })).status).toBe(200);
   });
 
   it("atomically replaces keys only after fresh registration, invalidates old sessions and pending proposals but keeps activated tasks", async () => {
@@ -364,5 +370,233 @@ describe("Passkey submission outcomes", () => {
     const replay = await t.browser("/verify", { challengeId: options.challengeId, response });
     expect(await replay.json()).toMatchObject({ status: "EXECUTION_UNCERTAIN", outcome: { error: { code: "EXECUTION_UNCERTAIN" } } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Cross-device client authorization (OAuth Passkey)", () => {
+  it("holds same-client finishing exclusion across new attempts and expired envelope cleanup", async () => {
+    const t = await setup();
+    const intent: PendingAuthorization = {
+      ...pending, advancedSecurity: false, permissionLevel: "read_only",
+      authRequest: { ...pending.authRequest, clientId: "finishing-exclusion" },
+    };
+    const begin = async () => {
+      const response = await t.post("/security/authorization/begin", { intent, clientName: "Finishing client", currentAdvanced: false });
+      expect(response.status).toBe(200);
+      const { sessionId, authorizationId } = await response.json<{ sessionId: string; authorizationId: string }>();
+      return { sessionId, authorizationId };
+    };
+    const first = await begin();
+    expect((await t.post("/security/authorization/claim", first)).status).toBe(200);
+    const second = await begin();
+    expect(await (await t.post("/security/authorization/status", first)).json()).toMatchObject({ status: "FINISHING" });
+    expect((await t.post("/security/authorization/claim", second)).status).toBe(403);
+    await runInDurableObject(t.vault, (_instance, state) => {
+      state.storage.sql.exec("UPDATE oauth_state SET expires_at = 0 WHERE state = ?", first.authorizationId);
+    });
+    // Saving another session removes expired oauth_state rows, not the mutex.
+    await t.post("/security/session/create", {});
+    expect((await t.post("/security/authorization/claim", second)).status).toBe(403);
+    expect((await t.post("/security/authorization/fail", { authorizationId: first.authorizationId })).status).toBe(200);
+    expect((await t.post("/security/authorization/claim", second)).status).toBe(200);
+  });
+
+  it.each([
+    { permissionLevel: "full_access" },
+    { advancedSecurity: true },
+    { expected: 1 },
+  ])("rejects changes to frozen authorization policy bindings: %j", async changes => {
+    const t = await setup();
+    const clientId = "frozen-bindings";
+    const intent: PendingAuthorization = {
+      ...pending, advancedSecurity: false, permissionLevel: "read_only",
+      authRequest: { ...pending.authRequest, clientId },
+    };
+    const { sessionId, authorizationId } = await (await t.post("/security/authorization/begin", { intent, clientName: clientId, currentAdvanced: false })).json<{ sessionId: string; authorizationId: string }>();
+    const claimResponse = await t.post("/security/authorization/claim", { sessionId, authorizationId });
+    expect(claimResponse.status).toBe(200);
+    const claim = await claimResponse.json<{ commitTicket: string }>();
+    const frozen = { clientId, permissionLevel: "read_only", advancedSecurity: false, expected: 0, ticket: claim.commitTicket };
+    expect((await t.post("/security/commit-policy", { ...frozen, ...changes })).status).toBe(403);
+    expect(await (await t.post("/security/policy", { clientId })).json()).toMatchObject({ version: 0 });
+    expect((await t.post("/security/commit-policy", frozen)).status).toBe(200);
+  });
+
+  it("allows phone owner to sign while only computer original session can claim and resume code", async () => {
+    const t = await setup();
+
+    // 1. Computer initiates enhanced authorization
+    const clientPending: PendingAuthorization = {
+      authRequest: {
+        clientId: "cross-device-client",
+        redirectUri: "https://client.example/callback",
+        responseType: "code",
+        scope: ["schwab.read"],
+        state: "test-state",
+        codeChallenge: "b".repeat(43),
+        codeChallengeMethod: "S256",
+      },
+      permissionLevel: "full_access",
+      advancedSecurity: true,
+      username: "owner",
+      policyVersion: 0,
+    };
+
+    const beginRes = await t.post("/security/authorization/begin", {
+      intent: clientPending,
+      clientName: "Cross Device Client",
+      currentAdvanced: false,
+    });
+    expect(beginRes.status).toBe(200);
+    const begin = await beginRes.json<{ sessionId: string; authorizationId: string; requiresPasskey: boolean; status: string }>();
+    expect(begin.requiresPasskey).toBe(true);
+    expect(begin.status).toBe("PENDING");
+
+    const compSession = (await (await t.post("/security/session", { sessionId: begin.sessionId })).json<{ session: BrowserSession }>()).session;
+
+    // 2. Phone logs in as owner (different session)
+    const phoneSessionRes = await t.post("/security/session/create", {});
+    const phoneState = await phoneSessionRes.json<{ sessionId: string; session: BrowserSession }>();
+
+    // 3. Phone inspects authorization details
+    const detailsRes = await t.post("/security/authorization/details", {
+      sessionId: phoneState.sessionId,
+      csrf: phoneState.session.csrf,
+      authorizationId: begin.authorizationId,
+    });
+    expect(detailsRes.status).toBe(200);
+    const details = await detailsRes.json<{
+      authorization: { clientName: string; clientId: string; status: string; digest: string };
+      isOriginalSession: boolean;
+    }>();
+    expect(details.authorization.clientName).toBe("Cross Device Client");
+    expect(details.authorization.status).toBe("PENDING");
+    expect(details.isOriginalSession).toBe(false);
+
+    // 4. Phone cannot resume unapproved authorization
+    const prematureResume = await t.post("/security/authorization/claim", {
+      authorizationId: begin.authorizationId,
+      sessionId: phoneState.sessionId,
+      csrf: phoneState.session.csrf,
+    });
+    expect(prematureResume.status).toBe(403);
+
+    // 5. Phone fetches options and verifies with Passkey
+    const optionsRes = await t.post("/security/authorization/options", {
+      sessionId: phoneState.sessionId,
+      csrf: phoneState.session.csrf,
+      authorizationId: begin.authorizationId,
+    });
+    expect(optionsRes.status).toBe(200);
+    const options = await optionsRes.json<Options>();
+
+    const verifyRes = await t.post("/security/authorization/verify", {
+      sessionId: phoneState.sessionId,
+      csrf: phoneState.session.csrf,
+      challengeId: options.challengeId,
+      response: await t.key.authenticate(options.options.challenge),
+    });
+    expect(verifyRes.status).toBe(200);
+    const verifyResult = await verifyRes.json<{ authorizationId: string; status: string }>();
+    expect(verifyResult.status).toBe("APPROVED");
+    // Verify phone receives NO code or commit ticket
+    expect(Reflect.has(verifyResult, "code")).toBe(false);
+    expect(Reflect.has(verifyResult, "redirectTo")).toBe(false);
+    expect(Reflect.has(verifyResult, "commitTicket")).toBe(false);
+
+    // 6. Phone attempts to claim/resume -> REJECTED (not original session)
+    const phoneClaim = await t.post("/security/authorization/claim", {
+      authorizationId: begin.authorizationId,
+      sessionId: phoneState.sessionId,
+      csrf: phoneState.session.csrf,
+    });
+    expect(phoneClaim.status).toBe(403);
+
+    // 7. Computer (original session) claims and resumes
+    const compClaimRes = await t.post("/security/authorization/claim", {
+      authorizationId: begin.authorizationId,
+      sessionId: begin.sessionId,
+      csrf: compSession.csrf,
+    });
+    expect(compClaimRes.status).toBe(200);
+    const claim = await compClaimRes.json<{ commitTicket: string; finishingId: string }>();
+    expect(claim.commitTicket).toBeTruthy();
+
+    // Commit policy and finalize
+    const commitRes = await t.post("/security/commit-policy", {
+      clientId: "cross-device-client",
+      permissionLevel: "full_access",
+      advancedSecurity: true,
+      expected: 0,
+      ticket: claim.commitTicket,
+    });
+    expect(commitRes.status).toBe(200);
+
+    const finalizeRes = await t.post("/security/authorization/finalize", {
+      authorizationId: begin.authorizationId,
+      finishingId: claim.finishingId,
+      originalSessionId: begin.sessionId,
+      authorizationEventId: crypto.randomUUID(),
+    });
+    expect(finalizeRes.status).toBe(200);
+
+    // 8. Replay claim/resume -> fails because original session deleted and status COMPLETED
+    const replayClaim = await t.post("/security/authorization/claim", {
+      authorizationId: begin.authorizationId,
+      sessionId: begin.sessionId,
+      csrf: compSession.csrf,
+    });
+    expect(replayClaim.status).toBe(403);
+  });
+
+  it("cancels authorization cleanly and prevents approval or resume", async () => {
+    const t = await setup();
+    const clientPending: PendingAuthorization = {
+      authRequest: {
+        clientId: "cancel-test-client",
+        redirectUri: "https://client.example/callback",
+        responseType: "code",
+        scope: ["schwab.read"],
+        state: "test-state",
+        codeChallenge: "c".repeat(43),
+        codeChallengeMethod: "S256",
+      },
+      permissionLevel: "full_access",
+      advancedSecurity: true,
+      username: "owner",
+      policyVersion: 0,
+    };
+
+    const beginRes = await t.post("/security/authorization/begin", {
+      intent: clientPending,
+      clientName: "Cancel Client",
+      currentAdvanced: false,
+    });
+    const begin = await beginRes.json<{ sessionId: string; authorizationId: string }>();
+    const compSession = (await (await t.post("/security/session", { sessionId: begin.sessionId })).json<{ session: BrowserSession }>()).session;
+
+    // Cancel request
+    const cancelRes = await t.post("/security/authorization/cancel", {
+      sessionId: begin.sessionId,
+      csrf: compSession.csrf,
+      authorizationId: begin.authorizationId,
+    });
+    expect(cancelRes.status).toBe(200);
+
+    // Check status is CANCELLED
+    const statusRes = await t.post("/security/authorization/status", {
+      sessionId: begin.sessionId,
+      csrf: compSession.csrf,
+      authorizationId: begin.authorizationId,
+    });
+    expect(await statusRes.json()).toMatchObject({ status: "CANCELLED" });
+
+    // Cannot claim or get options
+    const optionsRes = await t.post("/security/authorization/options", {
+      sessionId: begin.sessionId,
+      csrf: compSession.csrf,
+      authorizationId: begin.authorizationId,
+    });
+    expect(optionsRes.status).toBe(403);
   });
 });

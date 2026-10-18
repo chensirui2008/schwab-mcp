@@ -6,7 +6,8 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON, WebAuthnCred
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { AppEnv } from "./env";
 import type { PermissionLevel } from "./oauth-access";
-import { randomToken } from "./trading";
+import { AUTHORIZATION_VERSION } from "./oauth-access";
+import { canonicalJson, randomToken, sha256 } from "./trading";
 import { authenticationResponseSchema, registrationResponseSchema } from "./security-validation";
 
 export interface ClientIdentity {
@@ -29,12 +30,40 @@ export interface PendingAuthorization {
   username: string;
   policyVersion: number;
 }
+export type ClientAuthorizationStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "FINISHING"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "INVALIDATED"
+  | "FAILED";
+
+export interface ClientAuthorization {
+  id: string;
+  intent: PendingAuthorization;
+  clientName: string;
+  origin: string;
+  digest: string;
+  originalSessionId: string;
+  credentialVersion: number;
+  authorizationVersion: string;
+  requiresPasskey: boolean;
+  createdAt: number;
+  expiresAt: number;
+  status: ClientAuthorizationStatus;
+  approvedAt?: number;
+  finishingId?: string;
+  committedPolicyVersion?: number;
+  authorizationEventId?: string;
+}
+
 export interface BrowserSession {
   csrf: string;
   credentialVersion: number;
   expiresAt: number;
   recovery: boolean;
-  pending?: PendingAuthorization;
+  pendingAuthorizationId?: string | undefined;
 }
 interface CredentialRow { [key: string]: string | number; id: string; name: string; credential: string }
 export interface ApprovalBinding {
@@ -53,7 +82,7 @@ interface DashboardPolicyBinding {
 interface Challenge {
   sessionId: string;
   credentialVersion: number;
-  operation: "register" | "recover" | "authorize" | "add" | "delete" | "rename" | "approve" | "dashboard-policy";
+  operation: "register" | "recover" | "client-authorization" | "add" | "delete" | "rename" | "approve" | "dashboard-policy";
   challenge: string;
   expiresAt: number;
   target: string;
@@ -62,6 +91,8 @@ interface Challenge {
   policyVersion?: number;
   dashboardPolicy?: DashboardPolicyBinding;
   registration?: boolean;
+  authorizationId?: string;
+  authorizationDigest?: string;
 }
 export class SecurityError extends Error {
   constructor(public code: "SECURITY_VERIFICATION_FAILED" | "SECURITY_POLICY_CHANGED" | "BROWSER_AUTH_REQUIRED" = "SECURITY_VERIFICATION_FAILED") {
@@ -100,6 +131,17 @@ export class SecurityStore {
         revoked INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS client_authorization_finishing (
+        client_id TEXT PRIMARY KEY,
+        authorization_id TEXT NOT NULL UNIQUE,
+        finishing_id TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO client_authorization_finishing (client_id, authorization_id, finishing_id)
+        SELECT json_extract(payload, '$.intent.authRequest.clientId'), state, json_extract(payload, '$.finishingId')
+        FROM oauth_state
+        WHERE kind = 'security_client_authorization'
+          AND json_extract(payload, '$.status') = 'FINISHING'
+          AND json_extract(payload, '$.finishingId') IS NOT NULL;
     `);
     const clientColumns = new Set(storage.sql.exec<{ name: string }>("PRAGMA table_info(client_security)").toArray().map(row => row.name));
     for (const [name, definition] of Object.entries({
@@ -254,9 +296,9 @@ export class SecurityStore {
       };
     });
   }
-  save(kind: string, payload: unknown, expiresAt: number): string {
+  save(kind: string, payload: unknown, expiresAt: number, explicitId?: string): string {
     this.storage.sql.exec("DELETE FROM oauth_state WHERE expires_at <= ?", Date.now());
-    const id = randomToken();
+    const id = explicitId ?? randomToken();
     this.storage.sql.exec("INSERT INTO oauth_state VALUES (?, ?, ?, ?)", id, `security_${kind}`, JSON.stringify(payload), expiresAt);
     return id;
   }
@@ -268,18 +310,28 @@ export class SecurityStore {
     if (!row) throw new SecurityError("BROWSER_AUTH_REQUIRED");
     return JSON.parse(row.payload) as T;
   }
-  createSession(recovery = false, pending?: PendingAuthorization): { sessionId: string; session: BrowserSession } {
-    const session: BrowserSession = { csrf: randomToken(), credentialVersion: this.version(), expiresAt: Date.now() + 15 * 60_000, recovery, ...(pending ? { pending } : {}) };
+  createSession(recovery = false, pendingAuthorizationId?: string): { sessionId: string; session: BrowserSession } {
+    const session: BrowserSession = {
+      csrf: randomToken(),
+      credentialVersion: this.version(),
+      expiresAt: Date.now() + 15 * 60_000,
+      recovery,
+      ...(pendingAuthorizationId ? { pendingAuthorizationId } : {}),
+    };
     return { sessionId: this.save("session", session, session.expiresAt), session };
   }
   session(id: string, csrf?: string): BrowserSession {
     const session = this.read<BrowserSession>(id, "session");
+    if (Reflect.has(session, "pending")) {
+      this.storage.sql.exec("DELETE FROM oauth_state WHERE state = ? AND kind = 'security_session'", id);
+      throw new SecurityError("BROWSER_AUTH_REQUIRED");
+    }
     if (session.credentialVersion !== this.version() || (csrf !== undefined && session.csrf !== csrf)) throw new SecurityError("BROWSER_AUTH_REQUIRED");
     return session;
   }
   dashboardSession(id: string, csrf?: string): BrowserSession {
     const session = this.session(id, csrf);
-    if (session.recovery || session.pending) throw new SecurityError("BROWSER_AUTH_REQUIRED");
+    if (session.recovery || session.pendingAuthorizationId) throw new SecurityError("BROWSER_AUTH_REQUIRED");
     return session;
   }
   credentials(): { id: string; name: string }[] {
@@ -298,7 +350,7 @@ export class SecurityStore {
     const session = this.session(sessionId, csrf);
     const count = this.credentials().length;
     if (session.recovery && operation !== "recover") throw new SecurityError();
-    if (session.pending && !["register", "authorize"].includes(operation)) throw new SecurityError();
+    if (session.pendingAuthorizationId) throw new SecurityError();
     if (operation === "dashboard-policy") {
       this.dashboardSession(sessionId, csrf);
       if (!dashboardPolicy) throw new SecurityError();
@@ -306,7 +358,6 @@ export class SecurityStore {
     }
     if (operation === "recover" && (!session.recovery || resetConfirmation !== "重置全部 Passkey")) throw new SecurityError();
     if (operation === "register" && count > 0) throw new SecurityError();
-    if (operation === "authorize" && !session.pending) throw new SecurityError();
     if (operation === "approve" && !binding) throw new SecurityError();
     if ((operation === "delete" || operation === "rename") && !this.credentials().some(c => c.id === target)) throw new SecurityError();
     if (operation === "delete" && count <= 1) throw new SecurityError();
@@ -327,7 +378,7 @@ export class SecurityStore {
     const expiresAt = Math.min(Date.now() + 120_000, session.expiresAt, binding?.expiresAt ?? Infinity);
     const challenge: Challenge = {
       sessionId, credentialVersion: session.credentialVersion, operation, target, name, expiresAt, challenge: options.challenge,
-      ...(binding ? { binding } : {}), ...(session.pending ? { policyVersion: session.pending.policyVersion } : {}),
+      ...(binding ? { binding } : {}),
       ...(dashboardPolicy ? { dashboardPolicy } : {}), registration: register,
     };
     if (expiresAt <= Date.now()) throw new SecurityError();
@@ -375,7 +426,7 @@ export class SecurityStore {
     return this.storage.transactionSync(() => {
       this.session(sessionId, csrf);
       if (challenge.expiresAt <= Date.now() || challenge.credentialVersion !== this.version()) throw new SecurityError();
-      if (session.pending && (this.policy(session.pending.authRequest.clientId).version !== session.pending.policyVersion || challenge.policyVersion !== session.pending.policyVersion)) throw new SecurityError("SECURITY_POLICY_CHANGED");
+      // Normal ceremony session check
       if (challenge.binding) checkApproval(challenge.binding);
       if (challenge.dashboardPolicy) {
         this.dashboardSession(sessionId, csrf);
@@ -389,6 +440,8 @@ export class SecurityStore {
         this.storage.sql.exec("UPDATE owner_security SET version = version + 1 WHERE id = 1");
         this.storage.sql.exec("DELETE FROM oauth_state WHERE kind LIKE 'security_%'");
         this.storage.sql.exec("UPDATE trade_proposal SET status = 'INVALIDATED', updated_at = ? WHERE approval_method = 'passkey' AND status = 'PENDING'", Date.now());
+        this.storage.sql.exec("UPDATE push_subscription SET disabled_at = ?, disabled_reason = 'PASSKEY_RECOVERY' WHERE disabled_at IS NULL", Date.now());
+        this.storage.sql.exec("UPDATE notification_delivery SET status = 'SUPPRESSED' WHERE status IN ('PENDING', 'SENDING')");
         return { recovered: true };
       }
       if (register) {
@@ -408,11 +461,7 @@ export class SecurityStore {
       if (challenge.operation === "add") {
         return { registrationTicket: this.save("add", { sessionId, credentialVersion: this.version() }, Math.min(Date.now() + 120_000, session.expiresAt)) };
       }
-      if ((challenge.operation === "authorize" || challenge.operation === "register") && session.pending) {
-        // Session cannot approve a second authorization after ticket issuance.
-        this.storage.sql.exec("DELETE FROM oauth_state WHERE state = ?", sessionId);
-        return { authorizationTicket: this.save("authorization", { pending: session.pending, credentialVersion: this.version() }, Date.now() + 120_000) };
-      }
+      // Client authorization handled by clientAuthorizationVerify
       return challenge.binding ? { binding: challenge.binding } : {};
     });
   }
@@ -440,6 +489,395 @@ export class SecurityStore {
       this.dashboardSession(sessionId, csrf);
       if (!result.verified || challenge.expiresAt <= Date.now() || challenge.credentialVersion !== this.version()) throw new SecurityError();
       this.insertCredential(result.registrationInfo.credential, challenge.name);
+    });
+  }
+
+  async beginClientAuthorization(
+    intent: PendingAuthorization,
+    clientName: string,
+    currentAdvanced: boolean
+  ): Promise<{ sessionId: string; authorizationId: string; requiresPasskey: boolean; status: ClientAuthorizationStatus }> {
+    const now = Date.now();
+    const expiresAt = now + 15 * 60_000;
+    const requiresPasskey = intent.advancedSecurity || currentAdvanced;
+    const status: ClientAuthorizationStatus = requiresPasskey ? "PENDING" : "APPROVED";
+
+    const previousAuths = this.storage.sql.exec<{ state: string; payload: string }>(
+      "SELECT state, payload FROM oauth_state WHERE kind = 'security_client_authorization'"
+    ).toArray();
+    for (const row of previousAuths) {
+      const item = JSON.parse(row.payload) as ClientAuthorization;
+      if (item.intent.authRequest.clientId === intent.authRequest.clientId && ["PENDING", "APPROVED"].includes(item.status)) {
+        item.status = "INVALIDATED";
+        this.storage.sql.exec(
+          "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
+          JSON.stringify(item),
+          row.state
+        );
+      }
+    }
+
+    const authorizationId = crypto.randomUUID();
+    const { sessionId } = this.createSession(false, authorizationId);
+
+    const origin = new URL(this.env.SCHWAB_REDIRECT_URI).origin;
+    const digest = await sha256(canonicalJson({
+      clientId: intent.authRequest.clientId,
+      permissionLevel: intent.permissionLevel,
+      advancedSecurity: intent.advancedSecurity,
+      policyVersion: intent.policyVersion,
+      redirectUri: intent.authRequest.redirectUri,
+      codeChallenge: intent.authRequest.codeChallenge ?? null,
+      origin,
+      credentialVersion: this.version(),
+      authorizationVersion: AUTHORIZATION_VERSION,
+      originalSessionId: sessionId,
+    }));
+
+    const record: ClientAuthorization = {
+      id: authorizationId,
+      intent,
+      clientName,
+      origin,
+      digest,
+      originalSessionId: sessionId,
+      credentialVersion: this.version(),
+      authorizationVersion: AUTHORIZATION_VERSION,
+      requiresPasskey,
+      createdAt: now,
+      expiresAt,
+      status,
+      ...(requiresPasskey ? {} : { approvedAt: now }),
+    };
+    this.save("client_authorization", record, expiresAt, authorizationId);
+    return { sessionId, authorizationId, requiresPasskey, status };
+  }
+
+  getClientAuthorization(authorizationId: string): ClientAuthorization | null {
+    const row = this.storage.sql.exec<{ payload: string; expires_at: number }>(
+      "SELECT payload, expires_at FROM oauth_state WHERE state = ? AND kind = 'security_client_authorization'",
+      authorizationId
+    ).toArray()[0];
+    if (!row) return null;
+    const record = JSON.parse(row.payload) as ClientAuthorization;
+    if (record.expiresAt <= Date.now() && (record.status === "PENDING" || record.status === "APPROVED")) {
+      record.status = "FAILED";
+    }
+    return record;
+  }
+
+  assertCanAccessAuthorization(session: BrowserSession, authorization: ClientAuthorization): void {
+    if (session.recovery) throw new SecurityError("BROWSER_AUTH_REQUIRED");
+    if (session.pendingAuthorizationId && session.pendingAuthorizationId !== authorization.id) {
+      throw new SecurityError("BROWSER_AUTH_REQUIRED");
+    }
+  }
+
+  async clientAuthorizationOptions(sessionId: string, csrf: string, authorizationId: string) {
+    const session = this.session(sessionId, csrf);
+    const auth = this.getClientAuthorization(authorizationId);
+    if (!auth || auth.status !== "PENDING" || auth.expiresAt <= Date.now()) {
+      throw new SecurityError("SECURITY_VERIFICATION_FAILED");
+    }
+    this.assertCanAccessAuthorization(session, auth);
+
+    const count = this.credentials().length;
+    const register = count === 0;
+    const origin = new URL(this.env.SCHWAB_REDIRECT_URI);
+    const options = register ? await generateRegistrationOptions({
+      rpName: "Schwab MCP", rpID: origin.hostname, userName: this.env.ALLOWED_GITHUB_USER_ID,
+      userID: new TextEncoder().encode(this.env.ALLOWED_GITHUB_USER_ID),
+      attestationType: "none", supportedAlgorithmIDs: [-7, -257],
+      authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
+      excludeCredentials: this.credentials().map(c => ({ id: c.id })),
+    }) : await generateAuthenticationOptions({
+      rpID: origin.hostname, userVerification: "required", allowCredentials: this.credentials().map(c => ({ id: c.id })),
+    });
+
+    this.session(sessionId, csrf);
+
+    const expiresAt = Math.min(Date.now() + 120_000, session.expiresAt, auth.expiresAt);
+    const challengeId = this.save("challenge", {
+      sessionId,
+      credentialVersion: this.version(),
+      operation: "client-authorization",
+      target: "",
+      name: "Passkey",
+      expiresAt,
+      challenge: options.challenge,
+      authorizationId: auth.id,
+      authorizationDigest: auth.digest,
+      policyVersion: auth.intent.policyVersion,
+      registration: register,
+    }, expiresAt);
+
+    return { challengeId, options, registration: register };
+  }
+
+  async clientAuthorizationVerify(
+    sessionId: string,
+    csrf: string,
+    challengeId: string,
+    response: RegistrationResponseJSON | AuthenticationResponseJSON
+  ): Promise<{ authorizationId: string; status: "APPROVED" }> {
+    const session = this.session(sessionId, csrf);
+    const challenge = this.read<Challenge>(challengeId, "challenge", true);
+    if (challenge.sessionId !== sessionId || challenge.credentialVersion !== this.version() || challenge.operation !== "client-authorization" || !challenge.authorizationId) {
+      throw new SecurityError();
+    }
+    const authorizationId = challenge.authorizationId;
+    const auth = this.getClientAuthorization(authorizationId);
+    if (!auth || auth.status !== "PENDING" || auth.expiresAt <= Date.now() || auth.digest !== challenge.authorizationDigest) {
+      throw new SecurityError("SECURITY_VERIFICATION_FAILED");
+    }
+    this.assertCanAccessAuthorization(session, auth);
+
+    const origin = new URL(this.env.SCHWAB_REDIRECT_URI);
+    const register = challenge.registration === true;
+
+    assertSameOriginCeremony(response.response.clientDataJSON);
+
+    let credential: WebAuthnCredential;
+    let previousCounter = 0;
+
+    if (register) {
+      if (this.credentials().length !== 0) throw new SecurityError();
+      const result = await verifyRegistrationResponse({
+        response: registrationResponseSchema.parse(response),
+        expectedChallenge: challenge.challenge,
+        expectedOrigin: origin.origin,
+        expectedRPID: origin.hostname,
+        requireUserVerification: true,
+        supportedAlgorithmIDs: [-7, -257],
+      }).catch(() => { throw new SecurityError(); });
+      if (!result.registrationInfo) throw new SecurityError();
+      credential = {
+        id: result.registrationInfo.credential.id,
+        publicKey: result.registrationInfo.credential.publicKey,
+        counter: result.registrationInfo.credential.counter,
+        ...(result.registrationInfo.credential.transports !== undefined ? { transports: result.registrationInfo.credential.transports } : {}),
+      };
+    } else {
+      credential = this.credential(response.id);
+      previousCounter = credential.counter;
+      const result = await verifyAuthenticationResponse({
+        response: authenticationResponseSchema.parse(response),
+        credential,
+        expectedChallenge: challenge.challenge,
+        expectedOrigin: origin.origin,
+        expectedRPID: origin.hostname,
+        requireUserVerification: true,
+      }).catch(() => { throw new SecurityError(); });
+      credential = { ...credential, counter: result.authenticationInfo.newCounter };
+    }
+
+    return this.storage.transactionSync(() => {
+      this.session(sessionId, csrf);
+      if (challenge.expiresAt <= Date.now() || challenge.credentialVersion !== this.version()) throw new SecurityError();
+      const currentAuth = this.getClientAuthorization(authorizationId);
+      if (!currentAuth || currentAuth.status !== "PENDING" || currentAuth.expiresAt <= Date.now() || currentAuth.digest !== challenge.authorizationDigest) {
+        throw new SecurityError("SECURITY_VERIFICATION_FAILED");
+      }
+
+      if (!register && this.credential(credential.id).counter !== previousCounter) throw new SecurityError();
+
+      if (register) {
+        if (this.credentials().length !== 0) throw new SecurityError();
+        this.insertCredential(credential, challenge.name);
+      } else {
+        this.storage.sql.exec("UPDATE passkey SET credential = ? WHERE id = ?", JSON.stringify({ ...credential, publicKey: encodeBytes(credential.publicKey) }), credential.id);
+      }
+
+      currentAuth.status = "APPROVED";
+      currentAuth.approvedAt = Date.now();
+      this.storage.sql.exec(
+        "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
+        JSON.stringify(currentAuth),
+        currentAuth.id
+      );
+
+      return { authorizationId: currentAuth.id, status: "APPROVED" as const };
+    });
+  }
+
+  clientAuthorizationCancel(sessionId: string, csrf: string, authorizationId: string): { cancelled: boolean } {
+    const session = this.session(sessionId, csrf);
+    const auth = this.getClientAuthorization(authorizationId);
+    if (!auth) throw new SecurityError("SECURITY_VERIFICATION_FAILED");
+    this.assertCanAccessAuthorization(session, auth);
+
+    if (auth.status === "FINISHING") {
+      throw new SecurityError("SECURITY_POLICY_CHANGED");
+    }
+
+    if (auth.status !== "PENDING" && auth.status !== "APPROVED") {
+      return { cancelled: false };
+    }
+
+    auth.status = "CANCELLED";
+    this.storage.sql.exec(
+      "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
+      JSON.stringify(auth),
+      auth.id
+    );
+    return { cancelled: true };
+  }
+  clientAuthorizationFail(authorizationId: string): void {
+    this.storage.transactionSync(() => {
+      const auth = this.getClientAuthorization(authorizationId);
+      if (auth && auth.status === "FINISHING") {
+        auth.status = "FAILED";
+        this.storage.sql.exec(
+          "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
+          JSON.stringify(auth),
+          auth.id
+        );
+      }
+      // Recovery may have removed the authorization envelope, but the provider
+      // lifecycle still owns this exclusion until its cleanup has completed.
+      this.storage.sql.exec("DELETE FROM client_authorization_finishing WHERE authorization_id = ?", authorizationId);
+    });
+  }
+
+
+  claimClientAuthorization(
+    authorizationId: string,
+    sessionId: string,
+    csrf?: string
+  ): {
+    intent: PendingAuthorization;
+    finishingId: string;
+    commitTicket: string;
+    clientName: string;
+  } {
+    const session = this.session(sessionId, csrf);
+    if (session.pendingAuthorizationId !== authorizationId) {
+      throw new SecurityError("BROWSER_AUTH_REQUIRED");
+    }
+
+    return this.storage.transactionSync(() => {
+      const auth = this.getClientAuthorization(authorizationId);
+      if (!auth || auth.originalSessionId !== sessionId || auth.status !== "APPROVED" || auth.expiresAt <= Date.now() || auth.credentialVersion !== this.version()) {
+        throw new SecurityError("SECURITY_VERIFICATION_FAILED");
+      }
+
+      const otherFinishing = this.storage.sql.exec<{ authorization_id: string }>(
+        "SELECT authorization_id FROM client_authorization_finishing WHERE client_id = ?",
+        auth.intent.authRequest.clientId
+      ).toArray().length > 0;
+
+      if (otherFinishing) {
+        throw new SecurityError("SECURITY_POLICY_CHANGED");
+      }
+
+      const finishingId = crypto.randomUUID();
+      this.storage.sql.exec(
+        "INSERT INTO client_authorization_finishing (client_id, authorization_id, finishing_id) VALUES (?, ?, ?)",
+        auth.intent.authRequest.clientId, authorizationId, finishingId
+      );
+      auth.status = "FINISHING";
+      auth.finishingId = finishingId;
+
+      this.storage.sql.exec(
+        "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
+        JSON.stringify(auth),
+        auth.id
+      );
+
+      const commitTicket = this.save("commit", {
+        authorizationId,
+        finishingId,
+        digest: auth.digest,
+        credentialVersion: this.version(),
+      }, Math.min(Date.now() + 120_000, auth.expiresAt));
+
+      return {
+        intent: auth.intent,
+        finishingId,
+        commitTicket,
+        clientName: auth.clientName,
+      };
+    });
+  }
+
+  commitClientPolicy(
+    ticket: string,
+    clientId: string,
+    permissionLevel: PermissionLevel,
+    advancedSecurity: boolean,
+    expectedVersion: number
+  ): ClientPolicy {
+    return this.storage.transactionSync(() => {
+      const proof = this.read<{
+        authorizationId: string;
+        finishingId: string;
+        digest: string;
+        credentialVersion: number;
+      }>(ticket, "commit", true);
+
+      if (proof.credentialVersion !== this.version()) throw new SecurityError();
+
+      const auth = this.getClientAuthorization(proof.authorizationId);
+      if (!auth || auth.finishingId !== proof.finishingId || auth.status !== "FINISHING" || auth.digest !== proof.digest ||
+          auth.credentialVersion !== this.version() || auth.expiresAt <= Date.now() ||
+          auth.intent.authRequest.clientId !== clientId || auth.intent.permissionLevel !== permissionLevel ||
+          auth.intent.advancedSecurity !== advancedSecurity || auth.intent.policyVersion !== expectedVersion) {
+        throw new SecurityError("SECURITY_VERIFICATION_FAILED");
+      }
+
+      const updatedPolicy = this.updatePolicy(clientId, { permissionLevel, advancedSecurity }, expectedVersion);
+      auth.committedPolicyVersion = updatedPolicy.version;
+
+      const otherRows = this.storage.sql.exec<{ state: string; payload: string }>(
+        "SELECT state, payload FROM oauth_state WHERE kind = 'security_client_authorization' AND state != ?",
+        auth.id
+      ).toArray();
+
+      for (const row of otherRows) {
+        const item = JSON.parse(row.payload) as ClientAuthorization;
+        if (item.intent.authRequest.clientId === clientId && (item.status === "PENDING" || item.status === "APPROVED")) {
+          item.status = "INVALIDATED";
+          this.storage.sql.exec("UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'", JSON.stringify(item), row.state);
+        }
+      }
+
+      this.storage.sql.exec("UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'", JSON.stringify(auth), auth.id);
+
+      return updatedPolicy;
+    });
+  }
+
+  finalizeClientAuthorization(
+    authorizationId: string,
+    finishingId: string,
+    originalSessionId: string,
+    authorizationEventId: string
+  ): void {
+    this.storage.transactionSync(() => {
+      const auth = this.getClientAuthorization(authorizationId);
+      if (!auth || auth.finishingId !== finishingId || auth.originalSessionId !== originalSessionId || auth.status !== "FINISHING" || auth.credentialVersion !== this.version()) {
+        throw new SecurityError("SECURITY_VERIFICATION_FAILED");
+      }
+      const policy = this.policy(auth.intent.authRequest.clientId);
+      if (auth.expiresAt <= Date.now() || auth.committedPolicyVersion !== policy.version || policy.revoked ||
+          policy.permissionLevel !== auth.intent.permissionLevel || policy.advancedSecurity !== auth.intent.advancedSecurity) {
+        throw new SecurityError("SECURITY_POLICY_CHANGED");
+      }
+
+      auth.status = "COMPLETED";
+      auth.authorizationEventId = authorizationEventId;
+
+      this.storage.sql.exec(
+        "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
+        JSON.stringify(auth),
+        auth.id
+      );
+
+      this.storage.sql.exec(
+        "DELETE FROM client_authorization_finishing WHERE authorization_id = ? AND finishing_id = ?",
+        authorizationId, finishingId
+      );
+      this.storage.sql.exec("DELETE FROM oauth_state WHERE state = ? AND kind = 'security_session'", originalSessionId);
     });
   }
 }

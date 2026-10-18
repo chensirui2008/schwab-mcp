@@ -180,7 +180,7 @@ describe("Dashboard owner authentication and browser boundaries", () => {
   it.each(["recovery", "pending"] as const)("does not treat a %s ceremony session as a dashboard login", async kind => {
     const appEnv = setup();
     const created = await postVault(appEnv, "/security/session/create", kind === "recovery" ? { recovery: true } : {
-      pending: { authRequest: { clientId: "restricted", redirectUri, responseType: "code", scope: [READ_SCOPE], state: "test", codeChallenge: "a".repeat(43), codeChallengeMethod: "S256" }, permissionLevel: "full_access", advancedSecurity: true, username: "owner", policyVersion: 0 },
+      pendingAuthorizationId: "restricted-auth-id",
     });
     const state = await created.json<{ sessionId: string; session: BrowserSession }>();
     const ui = browser(appEnv, `__Host-schwab-security=${state.sessionId}`, state.session.csrf);
@@ -625,5 +625,48 @@ describe("Dashboard persisted tool invocation audit", () => {
     const saved = await runInDurableObject(vaultStub(appEnv), (_instance, state) => state.storage.sql.exec<{ id: string }>("SELECT id FROM tool_invocation_audit WHERE id IN ('expired', 'seed-5001', 'seed-5000', 'seed-4999')").toArray());
     expect(saved).toEqual([]);
     expect((await audit(ui, "?clientId=retention&limit=1&offset=4999")).items[0]?.id).toBe("seed-4998");
+  });
+});
+
+describe("Dashboard current-browser push association", () => {
+  it("looks up only the submitted endpoint and allows a remotely disabled device to register again", async () => {
+    const appEnv = setup();
+    const ui = await login(appEnv);
+    const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    const keys = {
+      p256dh: encode(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
+      auth: encode(crypto.getRandomValues(new Uint8Array(16))),
+    };
+    const endpoint = "https://fcm.googleapis.com/fcm/send/dashboard-own-device";
+    const otherEndpoint = "https://fcm.googleapis.com/fcm/send/dashboard-other-device";
+    const unauthenticated = await dispatch(new Request(`${origin}/dashboard/api/push/subscription`, {
+      method: "POST",
+      headers: { Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": ui.csrf },
+      body: JSON.stringify({ endpoint }),
+    }), appEnv);
+    expect(unauthenticated.status).toBe(403);
+    expect(await unauthenticated.json()).toMatchObject({ error: { code: "BROWSER_AUTH_REQUIRED" } });
+    for (const [url, label] of [[endpoint, "Own device"], [otherEndpoint, "Other device"]]) {
+      expect((await ui.post("push/subscribe", { subscription: { endpoint: url, expirationTime: null, keys }, label })).status).toBe(200);
+    }
+    const lookup = async (url: string) => {
+      const response = await ui.post("push/subscription", { endpoint: url });
+      expect(response.status).toBe(200);
+      return response.json<{ subscription: { id: string; label: string; active: boolean } | null }>();
+    };
+    const own = (await lookup(endpoint)).subscription;
+    const other = (await lookup(otherEndpoint)).subscription;
+    if (!own || !other) throw new Error("Missing registered push devices");
+    expect(own).toMatchObject({ label: "Own device", active: true });
+    expect(other.id).not.toBe(own.id);
+    expect(await lookup("https://fcm.googleapis.com/fcm/send/unknown-device")).toEqual({ subscription: null });
+    expect((await ui.post("push/unsubscribe", { id: own.id })).status).toBe(200);
+    expect((await lookup(endpoint)).subscription?.active).toBe(false);
+    expect((await lookup(otherEndpoint)).subscription?.active).toBe(true);
+    expect((await ui.post("push/subscribe", { subscription: { endpoint, expirationTime: null, keys }, label: "Own device" })).status).toBe(200);
+    expect((await lookup(endpoint)).subscription).toMatchObject({ active: true, label: "Own device" });
+    const denied = await ui.post("push/subscription", { endpoint }, { "X-CSRF-Token": "wrong" });
+    expect(denied.status).toBe(403);
   });
 });

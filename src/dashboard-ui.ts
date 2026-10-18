@@ -1,11 +1,12 @@
 import { html, raw } from "hono/html";
 import type { BrowserSession } from "./security-store";
-import { BACKGROUND_SVG, BRAND_LOGO_SVG, FAVICON_LINK } from "./auth-ui";
+import { BACKGROUND_SVG, BRAND_LOGO_SVG, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
 
 export interface DashboardPageProps {
   session: BrowserSession;
   appVersion: string;
   allowedUserId: string;
+  highlightNotificationId?: string;
 }
 
 const DASHBOARD_STYLES = `
@@ -49,6 +50,10 @@ const DASHBOARD_STYLES = `
 
 body {
   margin: 0;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
   background-color: var(--bg);
   background-image:
     linear-gradient(to right, rgba(60, 74, 66, 0.1) 1px, transparent 1px),
@@ -153,7 +158,7 @@ small, .muted {
   position: relative;
   z-index: 1;
   max-width: 1440px;
-  padding: 16px 20px 48px;
+  padding: 16px 20px max(48px, calc(16px + env(safe-area-inset-bottom, 0px)));
   margin: auto;
 }
 
@@ -945,11 +950,18 @@ dialog .actions {
   .tabs {
     width: 100%;
     gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    padding-bottom: 2px;
   }
   .tab {
-    flex: 1;
+    flex: 0 0 auto;
+    min-width: 90px;
     font-size: 11px;
-    padding: 8px 4px;
+    padding: 8px 6px;
+    min-height: 44px;
+    min-width: 44px;
     flex-direction: column;
     text-align: center;
     gap: 2px;
@@ -992,10 +1004,28 @@ dialog .actions {
     gap: 8px;
   }
   .button, input, select {
-    min-height: 42px;
+    min-height: 44px;
+    min-width: 44px;
   }
   .button.compact {
-    min-height: 36px;
+    min-height: 44px;
+  }
+}
+@media (max-width: 480px) {
+  .shell {
+    padding: 8px 8px max(72px, calc(32px + env(safe-area-inset-bottom, 0px)));
+  }
+  .telemetry-bar-top {
+    font-size: 10px;
+    padding: 6px 10px;
+  }
+  .topline .brand .brand-title {
+    font-size: 14px;
+  }
+  .card-action-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
   }
 }
 
@@ -1023,6 +1053,8 @@ let auditOffset = 0;
 let auditTotal = 0;
 const auditLimit = 25;
 let auditFilters = {clientId:'',toolName:'',status:''};
+let notificationsOffset = 0;
+let notificationsTotal = 0;
 let pending = null;
 let returnFocus = null;
 const dialog = $('passkey-dialog');
@@ -1253,11 +1285,219 @@ async function loadPasskeys() {
     credentials = null; list.replaceChildren(node('li','Passkey 读取失败：' + error.message,'empty load-error')); $('passkeys-state').textContent = '凭据状态未知'; disabled($('add-passkey-btn'),true); throw error;
   }
 }
+async function loadPendingApprovals() {
+  const container = $('pending-approvals-container');
+  const countTag = $('pending-count-tag');
+  const inboxBadge = $('inbox-badge');
+  try {
+    const data = await api('/dashboard/api/pending-approvals');
+    const items = data.items || [];
+    if (countTag) countTag.textContent = items.length + ' 待办';
+    if (inboxBadge) {
+      inboxBadge.textContent = String(items.length);
+      inboxBadge.hidden = items.length === 0;
+    }
+    container.replaceChildren();
+    if (!items.length) {
+      container.append(node('p', '当前没有待 Passkey 核准的交易或授权请求。', 'muted'));
+      return;
+    }
+    for (const item of items) {
+      const card = node('div', null, 'approval-item-card');
+      card.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--surface-container);border-radius:var(--radius-sm);margin-bottom:8px;gap:12px;flex-wrap:wrap;';
+      const info = node('div');
+      const kindLabel = item.kind === 'trade' ? '[交易提案]' : '[客户端授权]';
+      const title = node('div', null);
+      title.append(node('span', kindLabel + ' ', 'badge ' + (item.kind === 'trade' ? 'warning' : 'good')));
+      title.append(node('strong', item.clientId, 'mono'));
+      const timeInfo = node('div', '申请时间: ' + new Date(item.createdAt).toLocaleTimeString() + ' · 截止: ' + new Date(item.expiresAt).toLocaleTimeString(), 'muted');
+      timeInfo.style.fontSize = '11px';
+      info.append(title, timeInfo);
+      const link = node('a', '前往核准 →', 'button primary compact');
+      link.href = item.actionPath;
+      card.append(info, link);
+      container.append(card);
+    }
+  } catch (err) {
+    container.replaceChildren(node('p', '读取待办失败: ' + err.message, 'empty load-error'));
+  }
+}
+async function loadNotifications(offset = 0) {
+  notificationsOffset = offset;
+  const tbody = $('notifications-table-body');
+  const unreadTag = $('notifications-unread-tag');
+  const infoEl = $('notifications-pagination-info');
+  try {
+    const data = await api('/dashboard/api/notifications?limit=15&offset=' + offset);
+    notificationsTotal = data.total;
+    if (unreadTag) unreadTag.textContent = data.unreadCount + ' 未读';
+    if (infoEl) infoEl.textContent = '显示 ' + (data.total ? offset + 1 : 0) + '–' + Math.min(offset + 15, data.total) + ' / 共 ' + data.total + ' 条';
+    disabled($('notifications-prev-btn'), offset <= 0);
+    disabled($('notifications-next-btn'), offset + 15 >= data.total);
+    tbody.replaceChildren();
+    if (!data.items.length) {
+      tableMessage(tbody, 5, '暂无通知记录。');
+      return;
+    }
+    for (const item of data.items) {
+      const tr = node('tr');
+      if (!item.readAt) tr.style.fontWeight = '600';
+      const timeTd = node('td', new Date(item.createdAt).toLocaleString(), 'mono');
+      timeTd.style.fontSize = '11px';
+      const typeTd = node('td');
+      typeTd.append(node('span', item.type, 'badge'));
+      const summaryTd = node('td', item.summary);
+      const statusTd = node('td', item.readAt ? '已读' : '未读', item.readAt ? 'muted' : 'badge warning');
+      const actionTd = node('td');
+      if (item.actionPath) {
+        const link = node('a', '查看详情 →', 'card-action-link');
+        link.href = item.actionPath;
+        actionTd.append(link);
+      } else if (!item.readAt) {
+        actionTd.append(button('标为已读', async () => {
+          await api('/dashboard/api/notifications/read', 'POST', { id: item.id });
+          loadNotifications(notificationsOffset);
+        }, false, 'compact'));
+      }
+      tr.append(timeTd, typeTd, summaryTd, statusTd, actionTd);
+      tbody.append(tr);
+    }
+  } catch (err) {
+    tableMessage(tbody, 5, '读取通知失败: ' + err.message, true);
+  }
+}
+async function loadHighlightedNotification() {
+  const id = document.querySelector('meta[name="highlight-notification"]').content;
+  if (!id) return;
+  const banner = $('notification-detail-banner');
+  banner.style.display = '';
+  banner.replaceChildren(node('p', '正在读取所选通知…'));
+  try {
+    const item = await api('/dashboard/api/notifications/' + encodeURIComponent(id));
+    banner.replaceChildren(node('strong', item.summary), node('p', item.type + ' · ' + new Date(item.createdAt).toLocaleString(), 'muted'));
+    if (item.actionPath) {
+      const link = node('a', '前往处理 →', 'card-action-link');
+      link.href = item.actionPath;
+      banner.append(link);
+    }
+    if (!item.readAt) {
+      await api('/dashboard/api/notifications/read', 'POST', { id: item.id });
+      await loadNotifications(notificationsOffset);
+    }
+  } catch (err) {
+    banner.replaceChildren(node('p', '所选通知不存在或读取失败：' + err.message, 'load-error'));
+  }
+}
+async function pushRegistration() {
+  if (!('serviceWorker' in navigator)) throw new Error('此浏览器不支持 Service Worker。');
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg?.active || !reg.pushManager) throw new Error('推送服务尚未就绪，请稍后刷新重试。');
+  return reg;
+}
+async function currentPushDevice() {
+  const reg = await pushRegistration();
+  const sub = await reg.pushManager.getSubscription();
+  const data = sub ? await api('/dashboard/api/push/subscription', 'POST', { endpoint: sub.endpoint }) : null;
+  const device = data?.subscription;
+  return { reg, sub, device };
+}
+async function loadPushSettings() {
+  const badge = $('push-status-badge');
+  const subBtn = $('push-subscribe-btn');
+  const testBtn = $('push-test-btn');
+  const unsubBtn = $('push-unsubscribe-btn');
+  const devicesBody = $('push-devices-table-body');
+  disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
+  const supported = ('serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
+  if (!supported) {
+    if (badge) { badge.textContent = '环境不支持'; badge.className = 'badge neutral'; }
+    disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
+    return;
+  }
+  try {
+    const { device } = await currentPushDevice();
+    const permission = Notification.permission;
+    if (permission === 'denied') {
+      if (badge) { badge.textContent = '通知被禁止'; badge.className = 'badge neutral'; }
+      disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
+    } else if (device?.active) {
+      if (badge) { badge.textContent = '本机已开启推送'; badge.className = 'badge good'; }
+      disabled(subBtn, true); disabled(testBtn, false); disabled(unsubBtn, false);
+    } else {
+      if (badge) { badge.textContent = '未开启推送'; badge.className = 'badge warning'; }
+      disabled(subBtn, false); disabled(testBtn, true); disabled(unsubBtn, true);
+    }
+    const devData = await api('/dashboard/api/push/subscriptions');
+    const items = devData.items || [];
+    devicesBody.replaceChildren();
+    if (!items.length) {
+      tableMessage(devicesBody, 5, '暂无已登记的推送设备。');
+      return;
+    }
+    for (const dev of items) {
+      const tr = node('tr');
+      tr.append(
+        node('td', dev.id.slice(0, 8) + '…', 'mono'),
+        node('td', dev.label),
+        node('td', dev.active ? '活跃' : '已停用', 'badge ' + (dev.active ? 'good' : 'neutral')),
+        node('td', new Date(dev.createdAt).toLocaleDateString(), 'mono'),
+        node('td')
+      );
+      if (dev.active) {
+        tr.lastChild.append(button('解绑', async () => {
+          if (!confirm('确定解绑设备 “' + dev.label + '”？该设备将不再接收新提醒。')) return;
+          await api('/dashboard/api/push/unsubscribe', 'POST', { id: dev.id });
+          loadPushSettings();
+        }, false, 'danger compact'));
+      }
+      devicesBody.append(tr);
+    }
+  } catch (err) {
+    if (badge) { badge.textContent = '推送暂不可用：' + err.message; badge.className = 'badge neutral'; }
+    disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
+  } finally {
+    syncControls();
+  }
+}
+function checkPwaDisplayMode() {
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  const badge = $('pwa-install-badge');
+  const statusEl = $('pwa-install-status');
+  const iosGuideEl = $('pwa-ios-guide');
+  const installBtn = $('pwa-install-btn');
+  if (isStandalone) {
+    if (badge) { badge.textContent = 'STANDALONE'; badge.className = 'badge good'; }
+    if (statusEl) statusEl.textContent = '已安装为主屏幕应用 (独立全屏运行模式)';
+    if (iosGuideEl) iosGuideEl.style.display = 'none';
+    if (installBtn) installBtn.hidden = true;
+  } else {
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if (isIos) {
+      if (badge) { badge.textContent = '浏览器运行中'; badge.className = 'badge warning'; }
+      if (statusEl) statusEl.textContent = '当前通过 Safari 打开。建议添加至主屏幕以获得完整 PWA 与锁屏推送能力。';
+      if (iosGuideEl) iosGuideEl.style.display = 'block';
+      if (installBtn) installBtn.hidden = true;
+    } else {
+      if (badge) { badge.textContent = '网页运行中'; badge.className = 'badge neutral'; }
+      if (statusEl) statusEl.textContent = '支持添加到桌面或通过浏览器菜单安装应用。';
+      if (iosGuideEl) iosGuideEl.style.display = 'none';
+    }
+  }
+}
 async function refreshAll() {
-  const results = await Promise.allSettled([loadOverview(),loadClients(),loadAudit(),loadPasskeys()]);
+  const results = await Promise.allSettled([
+    loadOverview(),
+    loadClients(),
+    loadAudit(),
+    loadPasskeys(),
+    loadPendingApprovals(),
+    loadNotifications(notificationsOffset),
+    loadPushSettings(),
+  ]);
   const failures = results.filter(result => result.status === 'rejected');
   $('last-refresh').textContent = (failures.length ? '最近刷新（部分失败）：' : '最近刷新：') + new Date().toLocaleTimeString();
   syncControls();
+  checkPwaDisplayMode();
   if (failures.length) throw new Error('刷新未完整完成：' + failures.map(result => result.reason.message).join('；'));
 }
 const enc = value => {
@@ -1352,6 +1592,76 @@ $('refresh-all-btn').addEventListener('click',() => run(async () => { await refr
 $('clients-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
 $('audit-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
 $('passkeys-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
+$('inbox-refresh-btn')?.addEventListener('click',() => run(async () => { await Promise.all([loadPendingApprovals(), loadNotifications(notificationsOffset)]); message('待办与通知已刷新。'); }));
+$('settings-refresh-btn')?.addEventListener('click',() => run(async () => { await loadPushSettings(); message('设备状态已刷新。'); }));
+$('notifications-prev-btn')?.addEventListener('click',() => run(async () => { notificationsOffset = Math.max(0, notificationsOffset - 15); await loadNotifications(notificationsOffset); }));
+$('notifications-next-btn')?.addEventListener('click',() => run(async () => { if (notificationsOffset + 15 < notificationsTotal) { notificationsOffset += 15; await loadNotifications(notificationsOffset); } }));
+$('push-subscribe-btn')?.addEventListener('click', async () => {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { alert('未授权通知权限，无法开启推送。'); loadPushSettings(); return; }
+    const config = await api('/dashboard/api/push/config');
+    const reg = await pushRegistration();
+    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
+    const subJson = sub.toJSON();
+    const label = window.prompt('为此设备输入标识名称（例如：我的 iPhone、办公 Chrome）：', navigator.userAgent.includes('iPhone') ? 'iPhone' : '桌面 Chrome') || '推送设备';
+    await api('/dashboard/api/push/subscribe', 'POST', {
+      subscription: { endpoint: sub.endpoint, expirationTime: sub.expirationTime, keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth } },
+      label: label.trim(),
+    });
+    alert('通知已成功启用！');
+    loadPushSettings();
+  } catch (err) { alert('开启通知失败: ' + err.message); }
+});
+$('push-test-btn')?.addEventListener('click', async () => {
+  try {
+    const { device } = await currentPushDevice();
+    if (!device?.active) { alert('未找到活跃的本机推送设备，请先开启推送。'); return; }
+    await api('/dashboard/api/push/test', 'POST', { id: device.id });
+    alert('测试通知已发送！请观察设备通知栏。');
+  } catch (err) { alert('发送测试通知失败: ' + err.message); }
+});
+$('push-unsubscribe-btn')?.addEventListener('click', async () => {
+  try {
+    const { sub, device } = await currentPushDevice();
+    if (device?.active) await api('/dashboard/api/push/unsubscribe', 'POST', { id: device.id });
+    if (sub) await sub.unsubscribe();
+    alert('已停用本机推送通知。');
+    loadPushSettings();
+  } catch (err) { alert('停用通知失败: ' + err.message); }
+});
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault(); deferredPrompt = e;
+  const btn = $('pwa-install-btn'); if (btn) btn.hidden = false;
+});
+$('pwa-install-btn')?.addEventListener('click', async () => {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    $('pwa-install-btn').hidden = true;
+    checkPwaDisplayMode();
+  }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !expired) {
+    loadPendingApprovals();
+    loadNotifications(notificationsOffset);
+  }
+});
+setInterval(() => {
+  if (document.visibilityState === 'visible' && !expired && !busy) {
+    loadPendingApprovals();
+    loadNotifications(notificationsOffset);
+  }
+}, 30000);
+navigator.serviceWorker?.addEventListener('message', e => {
+  if (e.data?.type === 'PUSH_RECEIVED') {
+    loadPendingApprovals();
+    loadNotifications(notificationsOffset);
+  }
+});
 $('audit-filter-form').addEventListener('submit',event => {
   event.preventDefault(); run(async () => {
     auditFilters = {clientId:$('audit-filter-client').value.trim(),toolName:$('audit-filter-tool').value.trim(),status:$('audit-filter-status').value};
@@ -1395,21 +1705,23 @@ if (!supportsPasskeys) {
   disabled($('credential-name'),true);
 }
 tick(); setInterval(tick,1000);
-run(refreshAll);
+run(async () => { await refreshAll(); await loadHighlightedNotification(); });
 })();
 `;
 
 export function renderDashboardPage(props: DashboardPageProps) {
-  const { session, appVersion, allowedUserId } = props;
+  const { session, appVersion, allowedUserId, highlightNotificationId } = props;
   return html`<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf" content="${session.csrf}">
   <meta name="session-expires" content="${session.expiresAt}">
+  <meta name="highlight-notification" content="${highlightNotificationId ?? ""}">
   <title>Schwab MCP · 控制面板</title>
   ${FAVICON_LINK}
+  ${PWA_HEAD_TAGS}
   <style>${raw(DASHBOARD_STYLES)}</style>
 </head>
 <body>
@@ -1488,11 +1800,65 @@ ${raw(BACKGROUND_SVG)}
   <p id="webauthn-warning" class="support-warning" style="margin-top:16px" hidden>当前浏览器或连接不支持 WebAuthn。Passkey 与 Advanced Security 操作已禁用。请在支持 Passkey 的安全外部浏览器中打开仪表板；不会使用普通验证代替。</p>
   <main id="dashboard-main" tabindex="-1" aria-busy="false">
     <div class="tabs" role="tablist" aria-label="控制面板模块">
-      <button id="clients-tab" class="tab" role="tab" aria-selected="true" aria-controls="tab-clients" type="button"><span>[01/ACCESS]</span> 授权客户端</button>
-      <button id="audit-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-audit" tabindex="-1" type="button"><span>[02/ACTIVITY]</span> 调用审计</button>
-      <button id="passkeys-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-passkeys" tabindex="-1" type="button"><span>[03/SECURITY]</span> Passkey 管理</button>
+      <button id="inbox-tab" class="tab" role="tab" aria-selected="${Boolean(highlightNotificationId)}" aria-controls="tab-inbox" tabindex="${highlightNotificationId ? "0" : "-1"}" type="button"><span>[01/INBOX]</span> 待办与通知 <span id="inbox-badge" class="badge warning" style="font-size:10px;padding:1px 5px" hidden>0</span></button>
+      <button id="clients-tab" class="tab" role="tab" aria-selected="${highlightNotificationId ? "false" : "true"}" aria-controls="tab-clients" tabindex="${highlightNotificationId ? "-1" : "0"}" type="button"><span>[02/ACCESS]</span> 授权客户端</button>
+      <button id="audit-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-audit" tabindex="-1" type="button"><span>[03/ACTIVITY]</span> 调用审计</button>
+      <button id="passkeys-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-passkeys" tabindex="-1" type="button"><span>[04/SECURITY]</span> Passkey 管理</button>
+      <button id="settings-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1" type="button"><span>[05/DEVICE]</span> 应用与设置</button>
     </div>
-    <section id="tab-clients" class="panel" role="tabpanel" aria-labelledby="clients-tab" tabindex="0">
+    <section id="tab-inbox" class="panel" role="tabpanel" aria-labelledby="inbox-tab" tabindex="0" ${highlightNotificationId ? "" : "hidden"}>
+      <div class="section-head">
+        <div>
+          <h2>待办核准与通知中心</h2>
+          <p>待 Passkey 批准的即时订单、受保护任务修改及客户端授权；系统重要变动与状态提醒。</p>
+        </div>
+        <button id="inbox-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新待办与通知</button>
+      </div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
+        <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <h3 style="font-size:13px;color:var(--text-bright);display:flex;align-items:center;gap:8px;">
+              <span>⚡ 待 Passkey 核准项目</span>
+              <span id="pending-count-tag" class="badge neutral" style="font-size:10px">0 待办</span>
+            </h3>
+          </div>
+          <div id="pending-approvals-container">
+            <p class="muted" style="font-size:12px;">正在检查待办事项…</p>
+          </div>
+        </div>
+        <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <h3 style="font-size:13px;color:var(--text-bright);">历史通知记录</h3>
+            <span id="notifications-unread-tag" class="badge neutral" style="font-size:10px">0 未读</span>
+          </div>
+          <div id="notification-detail-banner" class="security-notice" style="display:none;margin-bottom:12px;"></div>
+          <div class="table-scroll" role="region" aria-label="通知列表，可横向滚动" tabindex="0">
+            <table id="notifications-table">
+              <thead>
+                <tr>
+                  <th scope="col">时间</th>
+                  <th scope="col">类型</th>
+                  <th scope="col">提醒摘要</th>
+                  <th scope="col">状态</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody id="notifications-table-body">
+                <tr><td colspan="5" class="empty">正在加载通知…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pagination" style="margin-top:12px;">
+            <span id="notifications-pagination-info" role="status">正在读取分页</span>
+            <div class="actions">
+              <button id="notifications-prev-btn" class="button" data-action data-disabled="true" type="button" disabled>&larr; 上一页</button>
+              <button id="notifications-next-btn" class="button" data-action data-disabled="true" type="button" disabled>下一页 &rarr;</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section id="tab-clients" class="panel" role="tabpanel" aria-labelledby="clients-tab" tabindex="0" ${highlightNotificationId ? "hidden" : ""}>
       <div class="section-head">
         <div>
           <h2>已授权 MCP 客户端矩阵</h2>
@@ -1593,6 +1959,65 @@ ${raw(BACKGROUND_SVG)}
         </div>
       </div>
     </section>
+    <section id="tab-settings" class="panel" role="tabpanel" aria-labelledby="settings-tab" tabindex="0" hidden>
+      <div class="section-head">
+        <div>
+          <h2>应用运行环境与通知设备设置</h2>
+          <p>管理 Web Push 推送设备订阅、通知权限检测及 PWA 主屏幕安装指引。</p>
+        </div>
+        <button id="settings-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新设备状态</button>
+      </div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
+        <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <h3 style="font-size:13px;color:var(--text-bright);">Web Push 消息推送</h3>
+            <span id="push-status-badge" class="badge neutral">检查推送能力中…</span>
+          </div>
+          <p class="muted" style="font-size:12px;margin-bottom:12px;">在 iPhone PWA（iOS 16.4+ 添加至主屏幕）或桌面 Chrome 上启用推送，即可在后台或锁屏接收待核准、交易结果与授权失效提醒。</p>
+          <div id="push-action-buttons" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+            <button id="push-subscribe-btn" class="button primary" data-action data-disabled="true" type="button" disabled>开启本机通知推送</button>
+            <button id="push-test-btn" class="button" data-action data-disabled="true" type="button" disabled>发送测试提醒</button>
+            <button id="push-unsubscribe-btn" class="button danger" data-action data-disabled="true" type="button" disabled>停用本机推送</button>
+          </div>
+          <h4 style="font-size:12px;color:var(--text);margin-bottom:8px;text-transform:uppercase;">已登记推送设备</h4>
+          <div class="table-scroll" role="region" aria-label="推送设备列表" tabindex="0">
+            <table id="push-devices-table">
+              <thead>
+                <tr>
+                  <th scope="col">设备标识</th>
+                  <th scope="col">名称</th>
+                  <th scope="col">状态</th>
+                  <th scope="col">登记时间</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody id="push-devices-table-body">
+                <tr><td colspan="5" class="empty">正在加载设备…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <h3 style="font-size:13px;color:var(--text-bright);">PWA 渐进式应用安装</h3>
+            <span id="pwa-install-badge" class="badge neutral">检测模式中…</span>
+          </div>
+          <div id="pwa-install-container">
+            <p id="pwa-install-status" class="muted" style="font-size:12px;margin-bottom:12px;">正在检测当前运行环境…</p>
+            <button id="pwa-install-btn" class="button primary" type="button" hidden>+ 安装为桌面应用</button>
+            <div id="pwa-ios-guide" class="security-notice" style="display:none;margin-top:10px;">
+              <div style="font-weight:600;margin-bottom:4px;">iPhone / iPad 添加至主屏幕指引：</div>
+              <ol style="margin-left:20px;line-height:1.6;font-size:12px;">
+                <li>轻点 Safari 底部工具栏的“分享”图标（带有向上箭头的方框）；</li>
+                <li>向下滚动并选择“添加到主屏幕” (Add to Home Screen)；</li>
+                <li>轻点右上角“添加”完成安装；</li>
+                <li>从主屏幕打开 Schwab MCP 图标，即可享受独立运行与 Web Push 锁屏通知。</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
   <footer class="footer">
     <div class="footer-left">
@@ -1610,6 +2035,7 @@ ${raw(BACKGROUND_SVG)}
   <div class="actions"><button id="ceremony-cancel" class="button" data-action type="button">取消</button><button id="ceremony-submit" class="button primary" data-action type="button">验证 Passkey 并确认</button></div>
 </dialog>
 <script>${raw(DASHBOARD_SCRIPT)}</script>
+${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;
 }

@@ -1,0 +1,18 @@
+/sw.js
+  Content-Type: application/javascript; charset=utf-8
+  X-Content-Type-Options: nosniff
+  Cache-Control: no-cache, no-store, must-revalidate
+
+/manifest.webmanifest
+  Content-Type: application/manifest+json; charset=utf-8
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=3600
+
+/offline.html
+  Content-Type: text/html; charset=utf-8
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=3600
+
+/icons/*
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=86400

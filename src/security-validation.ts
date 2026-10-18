@@ -23,9 +23,9 @@ export const pendingAuthorizationSchema = z.object({
 });
 export const sessionSchema = z.object({
   csrf: z.string().min(1), credentialVersion: versionSchema, expiresAt: timestampSchema,
-  recovery: z.boolean(), pending: pendingAuthorizationSchema.optional(),
-}).transform(({ pending, ...session }): BrowserSession => ({
-  ...session, ...(pending === undefined ? {} : { pending }),
+  recovery: z.boolean(), pendingAuthorizationId: z.string().min(1).optional(),
+}).strict().transform(({ pendingAuthorizationId, ...session }): BrowserSession => ({
+  ...session, ...(pendingAuthorizationId === undefined ? {} : { pendingAuthorizationId }),
 }));
 export const sessionEnvelopeSchema = z.object({
   session: sessionSchema, credentials: z.array(z.object({ id: z.string().min(1), name: z.string() })),

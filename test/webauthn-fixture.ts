@@ -1,6 +1,11 @@
 import { isoCBOR } from "@simplewebauthn/server/helpers";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
-import { decodeBytes, encodeBytes } from "../src/security-store";
+function encodeBytes(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+function decodeBytes(value: string): Uint8Array<ArrayBuffer> {
+  return Uint8Array.from(atob(value.replaceAll("-", "+").replaceAll("_", "/")), c => c.charCodeAt(0));
+}
 
 function join(...arrays: Uint8Array[]): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(arrays.reduce((length, a) => length + a.length, 0));

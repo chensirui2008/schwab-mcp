@@ -6,6 +6,11 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "assets": {
+    "directory": "./public",
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
   "workers_dev": true,
   "vars": {
     "GITHUB_CLIENT_ID": "replace-with-your-github-client-id",

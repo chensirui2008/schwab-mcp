@@ -9,6 +9,7 @@ import { vaultStub } from "../src/env";
 import worker from "../src/index";
 import { AUTHORIZATION_VERSION, READ_SCOPE } from "../src/oauth-access";
 import type { AuthorizationProps, PermissionLevel } from "../src/oauth-access";
+import { authenticator } from "./webauthn-fixture";
 
 const origin = "https://example.com";
 const redirectUri = "https://client.example/callback";
@@ -590,6 +591,83 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     return { post, html, page };
   }
   type Challenge = { challengeId: string; options: { challenge: string } };
+  it("withholds invalidated codes and scopes grant cleanup while recovery cannot release an in-flight client mutex", async () => {
+    const { appEnv, helpers } = setup(); await resetSecurity(appEnv);
+    const request = await authRequest(helpers);
+    const vault = vaultStub(appEnv);
+    const post = (path: string, body: unknown) => vault.fetch(`https://vault/security${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const beginAttempt = async (policyVersion: number) => {
+      const result = await post("/authorization/begin", {
+        intent: { authRequest: request, permissionLevel: "read_only", advancedSecurity: false, username: "owner", policyVersion },
+        clientName: "Recovery race", currentAdvanced: false,
+      });
+      expect(result.status).toBe(200);
+      const { sessionId, authorizationId } = await result.json<{ sessionId: string; authorizationId: string }>();
+      return { sessionId, authorizationId };
+    };
+    const first = await beginAttempt(0);
+    const session = await (await post("/session", { sessionId: first.sessionId })).json<{ session: { csrf: string } }>();
+    const realComplete = helpers.completeAuthorization.bind(helpers);
+    let release = () => {};
+    let providerCreated = () => {};
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const created = new Promise<void>(resolve => { providerCreated = resolve; });
+    let withheldRedirect = "";
+    vi.spyOn(helpers, "completeAuthorization").mockImplementationOnce(async options => {
+      const completed = await realComplete(options);
+      withheldRedirect = completed.redirectTo;
+      providerCreated();
+      await blocked;
+      return completed;
+    });
+    const finishing = AuthHandler.request(`${origin}/security/api/authorization-resume`, {
+      method: "POST",
+      headers: { Cookie: `__Host-schwab-security=${first.sessionId}`, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": session.session.csrf },
+      body: JSON.stringify({ authorizationId: first.authorizationId }),
+    }, appEnv);
+    await created;
+    try {
+      const overlapping = await beginAttempt(1);
+      expect((await post("/authorization/claim", overlapping)).status).toBe(403);
+      // Real credential recovery invalidates all security envelopes and sessions,
+      // but cannot permit a new provider completion while the old one is pending.
+      const recovery = await (await post("/session/create", { recovery: true })).json<{ sessionId: string; session: { csrf: string } }>();
+      const recoveryArgs = { sessionId: recovery.sessionId, csrf: recovery.session.csrf };
+      const options = await (await post("/options", { ...recoveryArgs, operation: "recover", resetConfirmation: "重置全部 Passkey" })).json<Challenge>();
+      const key = await authenticator();
+      expect((await post("/verify", { ...recoveryArgs, challengeId: options.challengeId, response: await key.register(options.options.challenge) })).status).toBe(200);
+      const afterRecovery = await beginAttempt(1);
+      expect((await post("/authorization/claim", afterRecovery)).status).toBe(403);
+      // An unrelated grant must not be swept up by failed-attempt cleanup.
+      const independent = await realComplete({
+        request, userId: appEnv.ALLOWED_GITHUB_USER_ID, revokeExistingGrants: false, scope: [READ_SCOPE],
+        metadata: { authorizationEventId: "independent-event" }, props: currentProps(appEnv, "read_only"),
+      });
+      release();
+      const result = await finishing;
+      expect(result.status).toBe(503);
+      expect(result.headers.get("location")).toBeNull();
+      expect(await result.text()).not.toContain("redirectTo");
+      const withheldCode = new URL(withheldRedirect).searchParams.get("code") ?? "";
+      expect((await dispatch(tokenRequest({
+        grant_type: "authorization_code", client_id: request.clientId, code: withheldCode,
+        redirect_uri: redirectUri, code_verifier: verifiers.get(request) ?? "",
+      }), appEnv)).status).toBe(400);
+      const remaining = await helpers.listUserGrants(appEnv.ALLOWED_GITHUB_USER_ID);
+      expect(remaining.items.filter(item => item.clientId === request.clientId)).toMatchObject([
+        { metadata: { authorizationEventId: "independent-event" } },
+      ]);
+      expect(new URL(independent.redirectTo).searchParams.get("code")).toBeTruthy();
+      expect((await post("/authorization/claim", afterRecovery)).status).toBe(200);
+      await post("/authorization/fail", { authorizationId: afterRecovery.authorizationId });
+    } finally {
+      release();
+      await finishing;
+    }
+  });
+
 
   it("registers before granting enhanced access, preserves mode on refresh, and requires Passkey to disable", async () => {
     const { authenticator } = await import("./webauthn-fixture");
@@ -598,16 +676,18 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     const { selected } = await begin(appEnv, request, true);
     const complete = vi.spyOn(helpers, "completeAuthorization");
     const github = await callback(appEnv, selected);
-    expect(github.headers.get("location")).toBe("/security");
+    expect(github.headers.get("location")).toMatch(/^\/security\/authorizations\//);
+    const authId = new URL(github.headers.get("location") ?? "", origin).pathname.split("/").pop() ?? "";
     expect(complete).not.toHaveBeenCalled();
     const ui = await browser(appEnv, cookie(github, "__Host-schwab-security"));
-    expect(ui.html).toContain("注册 Passkey 并完成授权");
     expect(ui.page.headers.get("X-Frame-Options")).toBe("DENY");
     const key = await authenticator();
-    const options = await (await ui.post("options", { operation: "register" })).json<Challenge>();
-    const verified = await ui.post("verify", { challengeId: options.challengeId, response: await key.register(options.options.challenge) });
+    const options = await (await ui.post("authorization-options", { authorizationId: authId })).json<Challenge>();
+    const verified = await ui.post("authorization-verify", { challengeId: options.challengeId, response: await key.register(options.options.challenge) });
     expect(verified.status).toBe(200);
-    const completed = await verified.json<{ redirectTo: string }>();
+    const resume = await ui.post("authorization-resume", { authorizationId: authId });
+    expect(resume.status).toBe(200);
+    const completed = await resume.json<{ redirectTo: string }>();
     const code = new URL(completed.redirectTo).searchParams.get("code") ?? "";
     const tokens = await exchange(appEnv, request, code);
     const props = (await helpers.unwrapToken<AuthorizationProps>(tokens.access_token))?.grant.props;
@@ -626,14 +706,16 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     const { selected: off, page } = await begin(appEnv, again, false);
     expect(await page.text()).toMatch(/name="advancedSecurity"[^>]+checked/);
     const disabling = await callback(appEnv, off);
-    expect(disabling.headers.get("location")).toBe("/security");
+    expect(disabling.headers.get("location")).toMatch(/^\/security\/authorizations\//);
+    const offAuthId = new URL(disabling.headers.get("location") ?? "", origin).pathname.split("/").pop() ?? "";
     const disabledUi = await browser(appEnv, cookie(disabling, "__Host-schwab-security"));
-    expect(disabledUi.html).toContain("关闭");
-    const authOptions = await (await disabledUi.post("options", { operation: "authorize" })).json<Challenge>();
-    const offVerified = await disabledUi.post("verify", { challengeId: authOptions.challengeId, response: await key.authenticate(authOptions.options.challenge) });
+    const authOptions = await (await disabledUi.post("authorization-options", { authorizationId: offAuthId })).json<Challenge>();
+    const offVerified = await disabledUi.post("authorization-verify", { challengeId: authOptions.challengeId, response: await key.authenticate(authOptions.options.challenge) });
     expect(offVerified.status).toBe(200);
+    const offResume = await disabledUi.post("authorization-resume", { authorizationId: offAuthId });
+    expect(offResume.status).toBe(200);
     expect((await dispatch(mcpRequest(newTokens.access_token, "tools/list"), appEnv)).status).toBe(401);
-    const offResult = await offVerified.json<{ redirectTo: string }>();
+    const offResult = await offResume.json<{ redirectTo: string }>();
     const ordinary = await exchange(appEnv, again, new URL(offResult.redirectTo).searchParams.get("code") ?? "");
     expect((await helpers.unwrapToken<AuthorizationProps>(ordinary.access_token))?.grant.props).toMatchObject({ advancedSecurity: false, securityPolicyVersion: 2 });
     expect(await (await dispatch(mcpRequest(ordinary.access_token, "tools/list"), appEnv)).text()).toContain('"name":"confirm_trade"');
@@ -666,11 +748,14 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     const old = await exchange(appEnv, request, await grant(appEnv, request, currentProps(appEnv, "full_access")));
     const { selected } = await begin(appEnv, request, true);
     const github = await callback(appEnv, selected);
+    const authId = new URL(github.headers.get("location") ?? "", origin).pathname.split("/").pop() ?? "";
     const ui = await browser(appEnv, cookie(github, "__Host-schwab-security"));
     const key = await authenticator();
-    const options = await (await ui.post("options", { operation: "register" })).json<Challenge>();
+    const options = await (await ui.post("authorization-options", { authorizationId: authId })).json<Challenge>();
+    const verified = await ui.post("authorization-verify", { challengeId: options.challengeId, response: await key.register(options.options.challenge) });
+    expect(verified.status).toBe(200);
     vi.spyOn(helpers, "revokeGrant").mockRejectedValueOnce(new Error("test-revoke-failure"));
-    const result = await ui.post("verify", { challengeId: options.challengeId, response: await key.register(options.options.challenge) });
+    const result = await ui.post("authorization-resume", { authorizationId: authId });
     expect(result.status).toBe(503);
     expect(await result.json()).toMatchObject({ error: "temporarily_unavailable" });
     const policy = await vaultStub(appEnv).fetch("https://vault/security/policy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId: request.clientId }) });

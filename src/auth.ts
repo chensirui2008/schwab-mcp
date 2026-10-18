@@ -1,6 +1,6 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import type { Context } from "hono";
-import { renderSecurityPage } from "./security-ui";
+import { renderClientAuthorizationPage, renderSecurityPage } from "./security-ui";
 import { renderDashboardPage } from "./dashboard-ui";
 import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
@@ -14,7 +14,7 @@ import type { AuthorizationProps, PermissionLevel } from "./oauth-access";
 import { z } from "zod";
 import {
   clientIdSchema, dashboardPolicyInputSchema, isJsonContentType, parseAuditQuery, permissionSchema,
-  policySchema, readBoundedJson, RequestBodyError, sessionEnvelopeSchema, timestampSchema, versionSchema,
+  credentialResponseSchema, policySchema, readBoundedJson, RequestBodyError, sessionEnvelopeSchema, timestampSchema, versionSchema,
 } from "./security-validation";
 
 const SECURITY_COOKIE = "__Host-schwab-security";
@@ -81,6 +81,15 @@ async function checkedUserGrants(provider: OAuthHelpers, userId: string) {
 async function revokeClientGrants(provider: OAuthHelpers, userId: string, clientId: string): Promise<void> {
   const grants = await checkedUserGrants(provider, userId);
   for (const grant of grants) if (grant.clientId === clientId) await provider.revokeGrant(grant.id, userId);
+}
+async function revokeAuthorizationAttempt(provider: OAuthHelpers, userId: string, clientId: string, authorizationEventId: string): Promise<void> {
+  const grants = await checkedUserGrants(provider, userId);
+  for (const grant of grants) {
+    const metadata = z.object({ authorizationEventId: z.string() }).safeParse(grant.metadata);
+    if (grant.clientId === clientId && metadata.success && metadata.data.authorizationEventId === authorizationEventId) {
+      await provider.revokeGrant(grant.id, userId);
+    }
+  }
 }
 
 function randomState(): string {
@@ -182,25 +191,104 @@ async function securityCall<T>(env: AppEnv, path: string, input: unknown): Promi
   return response.json<T>();
 }
 
-async function finishAuthorization(env: AppEnv, pending: PendingAuthorization, ticket?: string): Promise<{ redirectTo: string } | Response> {
-  if (!hasS256Pkce(pending.authRequest) || (pending.advancedSecurity && pending.permissionLevel !== "full_access")) return invalidPkceResponse();
+async function finishAuthorization(
+  env: AppEnv,
+  context: {
+    authorizationId: string;
+    originalSessionId: string;
+    finishingId: string;
+    commitTicket: string;
+    intent: PendingAuthorization;
+    clientName: string;
+  }
+): Promise<{ redirectTo: string } | Response> {
+  const { authorizationId, originalSessionId, finishingId, commitTicket, intent } = context;
+  if (!hasS256Pkce(intent.authRequest) || (intent.advancedSecurity && intent.permissionLevel !== "full_access")) {
+    await securityCall(env, "/authorization/fail", { authorizationId }).catch(() => {});
+    return invalidPkceResponse();
+  }
   try {
-    await revokeClientGrants(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID, pending.authRequest.clientId);
+    await revokeClientGrants(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID, intent.authRequest.clientId);
   } catch {
+    await securityCall(env, "/authorization/fail", { authorizationId }).catch(() => {});
     const requestId = crypto.randomUUID();
     console.error(JSON.stringify({ event: "mcp_authorization_revocation_failed", requestId }));
     return Response.json({ error: "temporarily_unavailable", error_description: "Unable to revoke previous client authorizations; restart authorization", requestId }, { status: 503 });
   }
-  const policy = await securityCall<ClientPolicy>(env, "/commit-policy", { clientId: pending.authRequest.clientId, advancedSecurity: pending.advancedSecurity, expected: pending.policyVersion, permissionLevel: pending.permissionLevel, ticket });
-  return env.OAUTH_PROVIDER.completeAuthorization({
-    request: pending.authRequest, userId: env.ALLOWED_GITHUB_USER_ID, revokeExistingGrants: false,
-    metadata: { label: "Personal Schwab MCP", permissionLevel: pending.permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, advancedSecurity: pending.advancedSecurity },
-    scope: [READ_SCOPE], props: {
-      userId: env.ALLOWED_GITHUB_USER_ID, username: pending.username, permissionLevel: pending.permissionLevel,
-      authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256", clientId: pending.authRequest.clientId,
-      advancedSecurity: policy.advancedSecurity, securityPolicyVersion: policy.version,
-    } satisfies AuthorizationProps,
-  });
+  let policy: ClientPolicy;
+  try {
+    policy = await securityCall<ClientPolicy>(env, "/commit-policy", {
+      clientId: intent.authRequest.clientId,
+      advancedSecurity: intent.advancedSecurity,
+      expected: intent.policyVersion,
+      permissionLevel: intent.permissionLevel,
+      ticket: commitTicket,
+    });
+  } catch {
+    await securityCall(env, "/authorization/fail", { authorizationId }).catch(() => {});
+    const requestId = crypto.randomUUID();
+    console.error(JSON.stringify({ event: "commit_policy_failed", requestId }));
+    return Response.json({ error: "temporarily_unavailable", error_description: "Unable to commit policy; restart authorization", requestId }, { status: 503 });
+  }
+  const authorizationEventId = crypto.randomUUID();
+  let completeResult: { redirectTo: string };
+  try {
+    completeResult = await env.OAUTH_PROVIDER.completeAuthorization({
+      request: intent.authRequest,
+      userId: env.ALLOWED_GITHUB_USER_ID,
+      revokeExistingGrants: false,
+      metadata: {
+        label: "Personal Schwab MCP",
+        permissionLevel: intent.permissionLevel,
+        authorizationVersion: AUTHORIZATION_VERSION,
+        advancedSecurity: intent.advancedSecurity,
+        authorizationEventId,
+        clientId: intent.authRequest.clientId,
+      },
+      scope: [READ_SCOPE],
+      props: {
+        userId: env.ALLOWED_GITHUB_USER_ID,
+        username: intent.username,
+        permissionLevel: intent.permissionLevel,
+        authorizationVersion: AUTHORIZATION_VERSION,
+        pkceMethod: "S256",
+        clientId: intent.authRequest.clientId,
+        advancedSecurity: policy.advancedSecurity,
+        securityPolicyVersion: policy.version,
+      } satisfies AuthorizationProps,
+    });
+  } catch {
+    const requestId = crypto.randomUUID();
+    // Provider completion can fail after writing a grant. Keep the client mutex
+    // until that attempt's grants are removed; never revoke a newer attempt.
+    try {
+      await revokeAuthorizationAttempt(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID, intent.authRequest.clientId, authorizationEventId);
+      await securityCall(env, "/authorization/fail", { authorizationId });
+    } catch {
+      console.error(JSON.stringify({ event: "authorization_attempt_cleanup_failed", requestId }));
+    }
+    console.error(JSON.stringify({ event: "complete_authorization_failed", requestId }));
+    return Response.json({ error: "temporarily_unavailable", error_description: "Unable to complete authorization", requestId }, { status: 503 });
+  }
+  try {
+    await securityCall(env, "/authorization/finalize", {
+      authorizationId,
+      finishingId,
+      originalSessionId,
+      authorizationEventId,
+    });
+  } catch {
+    const requestId = crypto.randomUUID();
+    try {
+      await revokeAuthorizationAttempt(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID, intent.authRequest.clientId, authorizationEventId);
+      await securityCall(env, "/authorization/fail", { authorizationId });
+    } catch {
+      console.error(JSON.stringify({ event: "authorization_attempt_cleanup_failed", requestId }));
+    }
+    console.error(JSON.stringify({ event: "finalize_authorization_failed", requestId }));
+    return Response.json({ error: "temporarily_unavailable", error_description: "Authorization was invalidated; restart authorization", requestId }, { status: 503 });
+  }
+  return completeResult;
 }
 
 const app = new Hono<{ Bindings: AppEnv }>();
@@ -210,7 +298,7 @@ app.use("*", async (c, next) => {
   // Apply to the final response, including early errors built with Response.json().
   if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard")) {
     c.header("Cache-Control", "no-store");
-    c.header("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
+    c.header("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
     c.header("X-Frame-Options", "DENY");
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
@@ -235,6 +323,126 @@ app.get("/security/recover", c => beginSecurityLogin(c, true));
 app.get("/security", renderSecurity);
 app.get("/security/approvals/:proposalId", renderSecurity);
 app.get("/security/approvals/:proposalId/complete", renderSecurity);
+app.get("/security/authorizations/:id", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin) return c.text("Invalid origin", 400);
+  const authorizationId = c.req.param("id");
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  if (!sessionId) return beginSecurityLogin(c, false, `/security/authorizations/${authorizationId}`);
+  let details: {
+    authorization: Parameters<typeof renderClientAuthorizationPage>[1];
+    credentials: { id: string; name: string }[];
+    isOriginalSession: boolean;
+  };
+  let sessionState: { session: BrowserSession; credentials: { id: string; name: string }[] };
+  try {
+    sessionState = await securityCall(c.env, "/session", { sessionId });
+    details = await securityCall(c.env, "/authorization/details", { sessionId, authorizationId });
+  } catch (error) {
+    if (error instanceof SecurityCallError && error.error.code === "BROWSER_AUTH_REQUIRED") {
+      return beginSecurityLogin(c, false, `/security/authorizations/${authorizationId}`);
+    }
+    return c.text("授权请求不存在或已过期，请在发起端重新发起。", 404);
+  }
+  return c.html(renderClientAuthorizationPage(sessionState.session, details.authorization, details.credentials, details.isOriginalSession));
+});
+app.get("/security/api/authorization-status/:id", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  if (!sessionId) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
+  const authorizationId = c.req.param("id");
+  try {
+    const result = await securityCall(c.env, "/authorization/status", { sessionId, authorizationId });
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
+    return browserError("UPSTREAM_UNAVAILABLE", "Status unavailable", 503);
+  }
+});
+app.post("/security/api/authorization-options", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin || c.req.header("Origin") !== origin || !isJsonContentType(c.req.header("Content-Type"))) {
+    return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
+  }
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  const csrf = c.req.header("X-CSRF-Token");
+  if (!sessionId || !csrf) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
+  const body = z.object({ authorizationId: z.string().min(1) }).strict().parse(await readBoundedJson(c.req.raw));
+  try {
+    const result = await securityCall(c.env, "/authorization/options", { sessionId, csrf, authorizationId: body.authorizationId });
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
+    return browserError("UPSTREAM_UNAVAILABLE", "Options unavailable", 503);
+  }
+});
+app.post("/security/api/authorization-verify", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin || c.req.header("Origin") !== origin || !isJsonContentType(c.req.header("Content-Type"))) {
+    return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
+  }
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  const csrf = c.req.header("X-CSRF-Token");
+  if (!sessionId || !csrf) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
+  const body = z.object({ challengeId: z.string().min(1), response: credentialResponseSchema }).strict().parse(await readBoundedJson(c.req.raw));
+  try {
+    const result = await securityCall(c.env, "/authorization/verify", { sessionId, csrf, challengeId: body.challengeId, response: body.response });
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
+    return browserError("UPSTREAM_UNAVAILABLE", "Verification failed", 503);
+  }
+});
+app.post("/security/api/authorization-cancel", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin || c.req.header("Origin") !== origin || !isJsonContentType(c.req.header("Content-Type"))) {
+    return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
+  }
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  const csrf = c.req.header("X-CSRF-Token");
+  if (!sessionId || !csrf) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
+  const body = z.object({ authorizationId: z.string().min(1) }).strict().parse(await readBoundedJson(c.req.raw));
+  try {
+    const result = await securityCall(c.env, "/authorization/cancel", { sessionId, csrf, authorizationId: body.authorizationId });
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
+    return browserError("UPSTREAM_UNAVAILABLE", "Cancellation failed", 503);
+  }
+});
+app.post("/security/api/authorization-resume", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin || c.req.header("Origin") !== origin || !isJsonContentType(c.req.header("Content-Type"))) {
+    return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
+  }
+  const sessionId = getCookie(c, SECURITY_COOKIE);
+  const csrf = c.req.header("X-CSRF-Token");
+  if (!sessionId || !csrf) return browserError("BROWSER_AUTH_REQUIRED", "Browser authentication required", 403);
+  const body = z.object({ authorizationId: z.string().min(1) }).strict().parse(await readBoundedJson(c.req.raw));
+  try {
+    const claim = await securityCall<{
+      intent: PendingAuthorization;
+      finishingId: string;
+      commitTicket: string;
+      clientName: string;
+    }>(c.env, "/authorization/claim", { authorizationId: body.authorizationId, sessionId, csrf });
+    const finished = await finishAuthorization(c.env, {
+      authorizationId: body.authorizationId,
+      originalSessionId: sessionId,
+      finishingId: claim.finishingId,
+      commitTicket: claim.commitTicket,
+      intent: claim.intent,
+      clientName: claim.clientName,
+    });
+    if (finished instanceof Response) return finished;
+    deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
+    return c.json({ redirectTo: finished.redirectTo });
+  } catch (error) {
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
+    return browserError("UPSTREAM_UNAVAILABLE", "Resume failed", 503);
+  }
+});
 async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
   if (new URL(c.req.url).origin !== new URL(c.env.SCHWAB_REDIRECT_URI).origin) return c.text("Invalid origin", 400);
   const sessionId = getCookie(c, SECURITY_COOKIE);
@@ -268,13 +476,6 @@ app.post("/security/api/:action", async c => {
     if (!body || typeof body !== "object" || Array.isArray(body)) return browserError("INVALID_ARGUMENT", "Invalid request", 400);
     // Browser-supplied identity, CSRF and session fields can never override trusted values.
     const result = await securityCall<Record<string, unknown>>(c.env, `/${action}`, { ...body, sessionId, csrf });
-    if (typeof result.authorizationTicket === "string") {
-      const proof = await securityCall<{ pending: PendingAuthorization; ticket: string }>(c.env, "/authorization", { ticket: result.authorizationTicket });
-      const completed = await finishAuthorization(c.env, proof.pending, proof.ticket);
-      if (completed instanceof Response) return completed;
-      deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
-      return c.json({ redirectTo: completed.redirectTo });
-    }
     return c.json(result);
   } catch (error) {
     if (error instanceof RequestBodyError) return browserError("INVALID_ARGUMENT", error.message, error.status);
@@ -286,7 +487,14 @@ app.post("/security/api/:action", async c => {
 });
 const publicErrorSchema = z.object({
   error: z.object({
-    code: z.enum(["SECURITY_VERIFICATION_FAILED", "SECURITY_POLICY_CHANGED", "BROWSER_AUTH_REQUIRED", "INVALID_ARGUMENT", "UPSTREAM_UNAVAILABLE"]),
+    code: z.enum([
+      "SECURITY_VERIFICATION_FAILED",
+      "SECURITY_POLICY_CHANGED",
+      "BROWSER_AUTH_REQUIRED",
+      "INVALID_ARGUMENT",
+      "UPSTREAM_UNAVAILABLE",
+      "RATE_LIMITED",
+    ]),
     message: z.string(), requestId: z.string().min(1),
   }),
 });
@@ -331,7 +539,7 @@ async function dashboardRequest(c: Context<{ Bindings: AppEnv }>, handler: (stat
   } catch (error) {
     if (error instanceof RequestBodyError) return browserError("INVALID_ARGUMENT", error.message, error.status);
     if (error instanceof z.ZodError) return browserError("INVALID_ARGUMENT", "Invalid request", 400);
-    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "UPSTREAM_UNAVAILABLE" ? 503 : error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
+    if (error instanceof SecurityCallError) return Response.json({ error: error.error }, { status: error.error.code === "RATE_LIMITED" ? 429 : error.error.code === "UPSTREAM_UNAVAILABLE" ? 503 : error.error.code === "INVALID_ARGUMENT" ? 400 : 403 });
     const requestId = crypto.randomUUID();
     console.error(JSON.stringify({ event: "dashboard_request_failed", requestId }));
     return Response.json({ error: { code: "UPSTREAM_UNAVAILABLE", message: "Dashboard data is unavailable; retry the request", requestId } }, { status: 503 });
@@ -392,6 +600,19 @@ app.get("/dashboard", async c => {
     return browserError("UPSTREAM_UNAVAILABLE", "Unable to load dashboard session", 503);
   }
 });
+app.get("/dashboard/notifications/:id", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin) return c.text("Invalid origin", 400);
+  const id = c.req.param("id");
+  const state = await getDashboardSession(c);
+  if (!state) return await beginSecurityLogin(c, false, `/dashboard/notifications/${id}`);
+  return await c.html(renderDashboardPage({
+    session: state.session,
+    appVersion: c.env.APP_VERSION,
+    allowedUserId: c.env.ALLOWED_GITHUB_USER_ID,
+    highlightNotificationId: id,
+  }));
+});
 app.get("/dashboard/api/session", c => dashboardRequest(c, state => c.json({ credentials: state.credentials })));
 app.get("/dashboard/api/overview", c => dashboardRequest(c, async state => {
   const schwabStatus = await dashboardVault(c.env, "/status", z.object({
@@ -444,6 +665,134 @@ app.post("/dashboard/api/clients/advanced-security", c => dashboardRequest(c, as
     sessionId: getCookie(c, SECURITY_COOKIE), csrf: c.req.header("X-CSRF-Token"), input,
   });
   return c.json(response);
+}));
+app.get("/dashboard/api/push/config", c => dashboardRequest(c, async () => {
+  const result = await dashboardVault(c.env, "/notifications/push-config", z.object({ publicKey: z.string() }));
+  return c.json(result);
+}));
+app.get("/dashboard/api/push/subscriptions", c => dashboardRequest(c, async () => {
+  const result = await dashboardVault(c.env, "/notifications/subscriptions", z.object({
+    items: z.array(z.object({
+      id: z.string(),
+      label: z.string(),
+      active: z.boolean(),
+      createdAt: z.number(),
+      disabledAt: z.number().nullable(),
+    })),
+  }));
+  return c.json(result);
+}));
+app.post("/dashboard/api/push/subscription", c => dashboardRequest(c, async () => {
+  const body = z.object({ endpoint: z.string().min(1).max(4096) }).strict().parse(await readBoundedJson(c.req.raw));
+  const result = await dashboardVault(c.env, "/notifications/subscription", z.object({
+    subscription: z.object({ id: z.string(), label: z.string(), active: z.boolean() }).nullable(),
+  }), {
+    sessionId: getCookie(c, SECURITY_COOKIE),
+    csrf: c.req.header("X-CSRF-Token"),
+    input: body,
+  });
+  return c.json(result);
+}));
+app.post("/dashboard/api/push/subscribe", c => dashboardRequest(c, async () => {
+  const body = z.object({
+    subscription: z.unknown(),
+    label: z.string().min(1).max(80),
+  }).strict().parse(await readBoundedJson(c.req.raw));
+  const result = await dashboardVault(c.env, "/notifications/subscribe", z.object({
+    id: z.string(),
+    label: z.string(),
+    createdAt: z.number(),
+  }), {
+    sessionId: getCookie(c, SECURITY_COOKIE),
+    csrf: c.req.header("X-CSRF-Token"),
+    input: body,
+  });
+  return c.json(result);
+}));
+app.post("/dashboard/api/push/unsubscribe", c => dashboardRequest(c, async () => {
+  const body = z.object({
+    id: z.string().min(1),
+  }).strict().parse(await readBoundedJson(c.req.raw));
+  const result = await dashboardVault(c.env, "/notifications/unsubscribe", z.object({ unsubscribed: z.boolean() }), {
+    sessionId: getCookie(c, SECURITY_COOKIE),
+    csrf: c.req.header("X-CSRF-Token"),
+    input: body,
+  });
+  return c.json(result);
+}));
+app.post("/dashboard/api/push/test", c => dashboardRequest(c, async () => {
+  const body = z.object({
+    id: z.string().min(1),
+  }).strict().parse(await readBoundedJson(c.req.raw));
+  const result = await dashboardVault(c.env, "/notifications/test", z.object({ id: z.string() }), {
+    sessionId: getCookie(c, SECURITY_COOKIE),
+    csrf: c.req.header("X-CSRF-Token"),
+    input: body,
+  });
+  return c.json(result);
+}));
+app.get("/dashboard/api/pending-approvals", c => dashboardRequest(c, async () => {
+  const result = await dashboardVault(c.env, "/notifications/pending-approvals", z.object({
+    items: z.array(z.object({
+      kind: z.enum(["trade", "client_authorization"]),
+      id: z.string(),
+      clientId: z.string(),
+      createdAt: z.number(),
+      expiresAt: z.number(),
+      actionPath: z.string(),
+    })),
+  }));
+  return c.json(result);
+}));
+app.get("/dashboard/api/notifications", c => dashboardRequest(c, async () => {
+  const url = new URL(c.req.url);
+  const limit = Number(url.searchParams.get("limit") ?? "25");
+  const offset = Number(url.searchParams.get("offset") ?? "0");
+  if (isNaN(limit) || limit < 1 || limit > 100 || isNaN(offset) || offset < 0 || offset > 1000) {
+    return browserError("INVALID_ARGUMENT", "Invalid pagination query", 400);
+  }
+  const result = await dashboardVault(c.env, `/notifications/list?limit=${String(limit)}&offset=${String(offset)}`, z.object({
+    items: z.array(z.object({
+      id: z.string(),
+      dedupeKey: z.string(),
+      type: z.string(),
+      entityId: z.string(),
+      summary: z.string(),
+      createdAt: z.number(),
+      expiresAt: z.number(),
+      readAt: z.number().nullable(),
+      actionPath: z.string().nullable().optional(),
+    })),
+    total: z.number(),
+    unreadCount: z.number(),
+    limit: z.number(),
+    offset: z.number(),
+  }));
+  return c.json(result);
+}));
+app.get("/dashboard/api/notifications/:id", c => dashboardRequest(c, async () => {
+  const id = c.req.param("id");
+  const result = await dashboardVault(c.env, `/notifications/event/${id}`, z.object({
+    id: z.string(),
+    dedupeKey: z.string(),
+    type: z.string(),
+    entityId: z.string(),
+    summary: z.string(),
+    createdAt: z.number(),
+    expiresAt: z.number(),
+    readAt: z.number().nullable(),
+    actionPath: z.string().nullable().optional(),
+  }));
+  return c.json(result);
+}));
+app.post("/dashboard/api/notifications/read", c => dashboardRequest(c, async () => {
+  const body = z.object({ id: z.string().min(1) }).strict().parse(await readBoundedJson(c.req.raw));
+  const result = await dashboardVault(c.env, "/notifications/read", z.object({ read: z.boolean() }), {
+    sessionId: getCookie(c, SECURITY_COOKIE),
+    csrf: c.req.header("X-CSRF-Token"),
+    input: body,
+  });
+  return c.json(result);
 }));
 app.post("/dashboard/api/clients/revoke", c => dashboardRequest(c, async () => {
   const body = z.object({ clientId: clientIdSchema }).strict().parse(await readBoundedJson(c.req.raw));
@@ -570,19 +919,43 @@ app.get("/auth/github/callback", async (c) => {
     }
     if (!hasS256Pkce(payload.authRequest)) return invalidPkceResponse();
     if (payload.advancedSecurity === true && payload.permissionLevel !== "full_access") return c.text("Invalid security mode", 400);
+    const client = await c.env.OAUTH_PROVIDER.lookupClient(payload.authRequest.clientId);
+    const clientName = client?.clientName ?? payload.authRequest.clientId;
     const policy = await securityCall<ClientPolicy>(c.env, "/policy", { clientId: payload.authRequest.clientId });
-    const pending: PendingAuthorization = { authRequest: payload.authRequest, permissionLevel: payload.permissionLevel, advancedSecurity: payload.advancedSecurity ?? false, username: user.login, policyVersion: policy.version };
-    if (pending.advancedSecurity || policy.advancedSecurity) {
-      const created = await securityCall<{ sessionId: string }>(c.env, "/session/create", { pending });
-      setCookie(c, SECURITY_COOKIE, created.sessionId, { ...FLOW_COOKIE_OPTIONS, maxAge: 900 });
-      deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
-      return c.redirect("/security");
-    }
-    const result = await finishAuthorization(c.env, pending);
-    if (result instanceof Response) return result;
-    const redirectTo = result.redirectTo;
+    const pending: PendingAuthorization = {
+      authRequest: payload.authRequest,
+      permissionLevel: payload.permissionLevel,
+      advancedSecurity: payload.advancedSecurity ?? false,
+      username: user.login,
+      policyVersion: policy.version,
+    };
+    const begin = await securityCall<{
+      sessionId: string;
+      authorizationId: string;
+      requiresPasskey: boolean;
+      status: "PENDING" | "APPROVED";
+    }>(c.env, "/authorization/begin", { intent: pending, clientName, currentAdvanced: policy.advancedSecurity });
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
-    return c.redirect(redirectTo);
+    if (begin.requiresPasskey) {
+      setCookie(c, SECURITY_COOKIE, begin.sessionId, { ...FLOW_COOKIE_OPTIONS, maxAge: 900 });
+      return c.redirect(`/security/authorizations/${begin.authorizationId}`);
+    }
+    const claim = await securityCall<{
+      intent: PendingAuthorization;
+      finishingId: string;
+      commitTicket: string;
+      clientName: string;
+    }>(c.env, "/authorization/claim", { authorizationId: begin.authorizationId, sessionId: begin.sessionId });
+    const finishResult = await finishAuthorization(c.env, {
+      authorizationId: begin.authorizationId,
+      originalSessionId: begin.sessionId,
+      finishingId: claim.finishingId,
+      commitTicket: claim.commitTicket,
+      intent: claim.intent,
+      clientName: claim.clientName,
+    });
+    if (finishResult instanceof Response) return finishResult;
+    return c.redirect(finishResult.redirectTo);
   } catch (error) {
     console.error(JSON.stringify({ event: "github_oauth_failed", errorType: error instanceof Error ? error.name : "UnknownError" }));
     return c.text("GitHub authorization failed", 400);
