@@ -26,7 +26,7 @@ function setup({ permission = 'default', active = false, subscribed = false, per
   const calls = [];
   const timers = new Map();
   const state = { active, subscribed, hangSubscribe: false, hangLookup: false, permissionCalls: 0, failSubscribe: false, failLookup: false, subscribeCalls: 0 };
-  const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/test', expirationTime: null, toJSON: () => ({ keys: { p256dh: 'test', auth: 'test' } }) };
+  const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/test', expirationTime: null, unsubscribe: async () => { state.subscribed = false; return true; }, toJSON: () => ({ keys: { p256dh: 'test', auth: 'test' } }) };
   const notification = { permission, requestPermission: async () => { state.permissionCalls++; notification.permission = 'granted'; return 'granted'; } };
   Object.assign(window, { Notification: notification, PushManager: function () {} });
   const registration = { active: {}, pushManager: { getSubscription: async () => state.hangLookup ? new Promise(() => {}) : state.subscribed ? subscription : null, subscribe: async () => { state.subscribeCalls++; if (state.hangSubscribe) await new Promise(resolve => { state.finishSubscribe = resolve; }); state.subscribed = true; return subscription; } } };
@@ -42,6 +42,7 @@ function setup({ permission = 'default', active = false, subscribed = false, per
       let data;
       if (path.endsWith('/push/config')) data = { publicKey: 'YQ' };
       else if (path.endsWith('/push/subscribe')) { if (state.failSubscribe) throw new Error('offline'); state.active = true; data = {}; }
+      else if (path.endsWith('/push/unsubscribe')) { state.active = false; data = {}; }
       else if (path.endsWith('/push/subscription')) { if (state.failLookup) throw new Error('offline'); data = { subscription: state.active ? { id: 'current', active: true } : null }; }
       else data = { items: [] };
       return { ok: true, status: 200, json: async () => data };
@@ -56,7 +57,7 @@ test('allowed browser permission is distinct from an active push subscription', 
   await ui.context.loadPushSettings();
   assert.equal(ui.get('push-permission-badge').textContent, '通知权限：已允许');
   assert.match(ui.get('push-status-badge').textContent, /权限已允许，尚未开启推送/);
-  assert.equal(ui.get('push-subscribe-btn').disabled, false);
+  assert.equal(ui.get('push-toggle-btn').disabled, false);
   assert.equal(ui.get('push-test-btn').disabled, true);
   assert.equal(ui.state.subscribeCalls, 0);
 });
@@ -73,7 +74,7 @@ test('permission change and returning to the page refresh the displayed state', 
   ui.window.events.focus();
   await setImmediate();
   assert.equal(ui.get('push-permission-badge').textContent, '通知权限：已禁止');
-  assert.equal(ui.get('push-subscribe-btn').disabled, true);
+  assert.equal(ui.get('push-toggle-btn').disabled, true);
   // Visibility also works when the Permissions API is unavailable.
   const fallback = setup({ permissionApi: false });
   await fallback.context.loadPushSettings();
@@ -98,13 +99,13 @@ test('failed registration refreshes permission and permits retry with existing b
   const ui = setup();
   await ui.context.loadPushSettings();
   ui.state.failSubscribe = true;
-  await ui.get('push-subscribe-btn').events.click();
+  await ui.get('push-toggle-btn').events.click();
   assert.equal(ui.get('push-permission-badge').textContent, '通知权限：已允许');
   assert.match(ui.get('push-status-badge').textContent, /尚未开启推送/);
   assert.match(ui.get('global-msg').textContent, /网络请求失败/);
-  assert.equal(ui.get('push-subscribe-btn').disabled, false);
+  assert.equal(ui.get('push-toggle-btn').disabled, false);
   ui.state.failSubscribe = false;
-  await ui.get('push-subscribe-btn').events.click();
+  await ui.get('push-toggle-btn').events.click();
   assert.equal(ui.get('push-status-badge').textContent, '本机已开启推送');
   assert.equal(ui.state.subscribeCalls, 1);
   assert.equal(ui.get('push-test-btn').disabled, false);
@@ -116,7 +117,7 @@ test('lookup failure keeps the browser permission visible without claiming push 
   await ui.context.loadPushSettings();
   assert.equal(ui.get('push-permission-badge').textContent, '通知权限：已允许');
   assert.match(ui.get('push-status-badge').textContent, /推送暂不可用/);
-  assert.equal(ui.get('push-subscribe-btn').disabled, false);
+  assert.equal(ui.get('push-toggle-btn').disabled, false);
   assert.equal(ui.get('push-test-btn').disabled, true);
 });
 
@@ -132,19 +133,19 @@ test('pending browser subscription shows progress, times out, and never register
   const ui = setup({ permission: 'granted' });
   await ui.context.loadPushSettings();
   ui.state.hangSubscribe = true;
-  const click = ui.get('push-subscribe-btn').events.click();
+  const click = ui.get('push-toggle-btn').events.click();
   await setImmediate();
   assert.match(ui.get('push-action-status').textContent, /连接浏览器推送服务/);
-  assert.equal(ui.get('push-subscribe-btn').disabled, true);
+  assert.equal(ui.get('push-toggle-btn').disabled, true);
   assert.equal(ui.state.permissionCalls, 0);
   await expireWait(ui);
   await click;
   assert.match(ui.get('push-action-status').textContent, /连接浏览器推送服务超时/);
-  assert.equal(ui.get('push-subscribe-btn').disabled, false);
+  assert.equal(ui.get('push-toggle-btn').disabled, false);
   assert.equal(ui.get('refresh-all-btn').disabled, false);
   assert.equal(ui.state.active, false);
   // Retry shares the existing browser operation rather than subscribing twice.
-  const retry = ui.get('push-subscribe-btn').events.click();
+  const retry = ui.get('push-toggle-btn').events.click();
   await setImmediate();
   assert.equal(ui.state.subscribeCalls, 1);
   await expireWait(ui);
@@ -152,7 +153,7 @@ test('pending browser subscription shows progress, times out, and never register
   ui.state.finishSubscribe();
   await setImmediate();
   assert.equal(ui.calls.filter(call => call.path.endsWith('/push/subscribe')).length, 0);
-  await ui.get('push-subscribe-btn').events.click();
+  await ui.get('push-toggle-btn').events.click();
   assert.equal(ui.get('push-status-badge').textContent, '本机已开启推送');
   assert.equal(ui.state.subscribeCalls, 1);
   assert.equal(ui.timers.size, 0);
@@ -161,20 +162,20 @@ test('pending browser subscription shows progress, times out, and never register
 test('a stalled subscription lookup cannot keep dashboard actions locked', async () => {
   const ui = setup({ permission: 'granted' });
   ui.state.hangLookup = true;
-  const click = ui.get('push-subscribe-btn').events.click();
+  const click = ui.get('push-toggle-btn').events.click();
   await expireWait(ui);
   // The final state refresh must also have a bounded lookup.
   await expireWait(ui);
   await click;
   assert.match(ui.get('push-action-status').textContent, /读取本机推送订阅超时/);
   assert.equal(ui.get('refresh-all-btn').disabled, false);
-  assert.equal(ui.get('push-subscribe-btn').disabled, false);
+  assert.equal(ui.get('push-toggle-btn').disabled, false);
 });
 
 test('push errors stay in settings and do not display a Passkey error', async () => {
   const ui = setup();
   ui.notification.requestPermission = async () => { const error = new Error('permission dismissed'); error.name = 'NotAllowedError'; throw error; };
-  await ui.get('push-subscribe-btn').events.click();
+  await ui.get('push-toggle-btn').events.click();
   assert.match(ui.get('push-action-status').textContent, /permission dismissed/);
   assert.doesNotMatch(ui.get('global-msg').textContent, /Passkey/);
 });
@@ -183,7 +184,7 @@ test('device name is registered without a blocking browser prompt', async () => 
   const ui = setup({ permission: 'granted' });
   ui.get('push-device-label').value = '  办公设备  ';
   ui.window.prompt = () => { throw new Error('unexpected prompt'); };
-  await ui.get('push-subscribe-btn').events.click();
+  await ui.get('push-toggle-btn').events.click();
   const registration = ui.calls.find(call => call.path.endsWith('/push/subscribe'));
   assert.equal(JSON.parse(registration.options.body).label, '办公设备');
   assert.equal(ui.get('push-status-badge').textContent, '本机已开启推送');
@@ -194,7 +195,7 @@ test('a late config response after timeout cannot start browser subscription', a
   const fetch = ui.context.fetch;
   let finishConfig;
   ui.context.fetch = (path, options) => path.endsWith('/push/config') ? new Promise(resolve => { finishConfig = () => resolve({ ok: true, status: 200, json: async () => ({ publicKey: 'YQ' }) }); }) : fetch(path, options);
-  const click = ui.get('push-subscribe-btn').events.click();
+  const click = ui.get('push-toggle-btn').events.click();
   await expireWait(ui);
   await click;
   assert.match(ui.get('push-action-status').textContent, /推送设备服务请求超时/);
@@ -203,4 +204,44 @@ test('a late config response after timeout cannot start browser subscription', a
   await setImmediate();
   assert.equal(ui.state.subscribeCalls, 0);
   assert.equal(ui.state.active, false);
+});
+
+
+test('one push button switches from enable to disable and back after each operation', async () => {
+  assert.equal((html.match(/id="push-toggle-btn"/g) || []).length, 1);
+  assert.ok(!html.includes('id="push-unsubscribe-btn"'));
+  const ui = setup({ permission: 'granted' });
+  await ui.context.loadPushSettings();
+  const toggle = ui.get('push-toggle-btn');
+  assert.equal(toggle.textContent, '开启本机通知推送');
+  await toggle.events.click();
+  assert.equal(toggle.textContent, '停用本机推送');
+  assert.equal(toggle.className, 'button danger');
+  assert.equal(toggle.disabled, false);
+  await toggle.events.click();
+  assert.equal(ui.state.active, false);
+  assert.equal(ui.state.subscribed, false);
+  assert.equal(toggle.textContent, '开启本机通知推送');
+  assert.equal(toggle.className, 'button primary');
+  assert.equal(toggle.disabled, false);
+  assert.equal(ui.get('push-test-btn').disabled, true);
+  assert.equal(ui.calls.filter(call => call.path.endsWith('/push/subscribe')).length, 1);
+  assert.equal(ui.calls.filter(call => call.path.endsWith('/push/unsubscribe')).length, 1);
+});
+
+
+test('failed disabling keeps the same button available to retry disabling', async () => {
+  const ui = setup({ permission: 'granted', active: true, subscribed: true });
+  await ui.context.loadPushSettings();
+  const fetch = ui.context.fetch;
+  ui.context.fetch = (path, options) => {
+    if (path.endsWith('/push/unsubscribe')) throw new Error('offline');
+    return fetch(path, options);
+  };
+  await ui.get('push-toggle-btn').events.click();
+  assert.match(ui.get('push-action-status').textContent, /停用通知失败/);
+  assert.equal(ui.get('push-toggle-btn').textContent, '停用本机推送');
+  assert.equal(ui.get('push-toggle-btn').disabled, false);
+  assert.equal(ui.state.active, true);
+  assert.equal(ui.state.subscribed, true);
 });
