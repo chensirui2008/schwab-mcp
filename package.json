@@ -27,10 +27,11 @@
     "introspect": "node scripts/mcp-introspect.mjs",
     "test:introspect": "node scripts/mcp-introspect.mjs --test",
     "test:passkey-acceptance": "node --test scripts/passkey-acceptance.test.mjs",
+    "test:dashboard-ui": "node --test scripts/dashboard-push.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "validate": "npm run types && npm run typecheck && npm run lint && npm test && npm run test:deploy-config && npm run test:introspect && npm run test:passkey-acceptance"
+    "validate": "npm run types && npm run typecheck && npm run lint && npm test && npm run test:deploy-config && npm run test:introspect && npm run test:passkey-acceptance && npm run test:dashboard-ui"
   },
   "dependencies": {
     "@block65/webcrypto-web-push": "2.0.0",
