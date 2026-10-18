@@ -1401,6 +1401,13 @@ async function currentPushDevice() {
   const device = data?.subscription;
   return { reg, sub, device };
 }
+function renderNotificationPermission() {
+  const badge = $('push-permission-badge');
+  const permission = 'Notification' in window ? Notification.permission : null;
+  badge.textContent = permission === 'granted' ? '通知权限：已允许' : permission === 'denied' ? '通知权限：已禁止' : permission === 'default' ? '通知权限：未授权' : '通知权限：不支持';
+  badge.className = 'badge ' + (permission === 'granted' ? 'good' : 'neutral');
+  return permission;
+}
 async function loadPushSettings() {
   const badge = $('push-status-badge');
   const subBtn = $('push-subscribe-btn');
@@ -1409,6 +1416,7 @@ async function loadPushSettings() {
   const devicesBody = $('push-devices-table-body');
   disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
   const supported = ('serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
+  renderNotificationPermission();
   if (!supported) {
     if (badge) { badge.textContent = '环境不支持'; badge.className = 'badge neutral'; }
     disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
@@ -1416,15 +1424,15 @@ async function loadPushSettings() {
   }
   try {
     const { device } = await currentPushDevice();
-    const permission = Notification.permission;
+    const permission = renderNotificationPermission();
     if (permission === 'denied') {
       if (badge) { badge.textContent = '通知被禁止'; badge.className = 'badge neutral'; }
       disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
-    } else if (device?.active) {
+    } else if (permission === 'granted' && device?.active) {
       if (badge) { badge.textContent = '本机已开启推送'; badge.className = 'badge good'; }
       disabled(subBtn, true); disabled(testBtn, false); disabled(unsubBtn, false);
     } else {
-      if (badge) { badge.textContent = '未开启推送'; badge.className = 'badge warning'; }
+      if (badge) { badge.textContent = permission === 'granted' ? '权限已允许，尚未开启推送' : '未开启推送'; badge.className = 'badge warning'; }
       disabled(subBtn, false); disabled(testBtn, true); disabled(unsubBtn, true);
     }
     const devData = await api('/dashboard/api/push/subscriptions');
@@ -1453,8 +1461,9 @@ async function loadPushSettings() {
       devicesBody.append(tr);
     }
   } catch (err) {
+    renderNotificationPermission();
     if (badge) { badge.textContent = '推送暂不可用：' + err.message; badge.className = 'badge neutral'; }
-    disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
+    disabled(subBtn, Notification.permission === 'denied'); disabled(testBtn, true); disabled(unsubBtn, true);
   } finally {
     syncControls();
   }
@@ -1596,10 +1605,10 @@ $('inbox-refresh-btn')?.addEventListener('click',() => run(async () => { await P
 $('settings-refresh-btn')?.addEventListener('click',() => run(async () => { await loadPushSettings(); message('设备状态已刷新。'); }));
 $('notifications-prev-btn')?.addEventListener('click',() => run(async () => { notificationsOffset = Math.max(0, notificationsOffset - 15); await loadNotifications(notificationsOffset); }));
 $('notifications-next-btn')?.addEventListener('click',() => run(async () => { if (notificationsOffset + 15 < notificationsTotal) { notificationsOffset += 15; await loadNotifications(notificationsOffset); } }));
-$('push-subscribe-btn')?.addEventListener('click', async () => {
+$('push-subscribe-btn')?.addEventListener('click', () => run(async () => {
   try {
     const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { alert('未授权通知权限，无法开启推送。'); loadPushSettings(); return; }
+    if (perm !== 'granted') throw new Error('未授权通知权限，无法开启推送。');
     const config = await api('/dashboard/api/push/config');
     const reg = await pushRegistration();
     const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
@@ -1609,10 +1618,9 @@ $('push-subscribe-btn')?.addEventListener('click', async () => {
       subscription: { endpoint: sub.endpoint, expirationTime: sub.expirationTime, keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth } },
       label: label.trim(),
     });
-    alert('通知已成功启用！');
-    loadPushSettings();
-  } catch (err) { alert('开启通知失败: ' + err.message); }
-});
+    message('通知已成功启用！');
+  } finally { await loadPushSettings(); }
+}));
 $('push-test-btn')?.addEventListener('click', async () => {
   try {
     const { device } = await currentPushDevice();
@@ -1648,8 +1656,19 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !expired) {
     loadPendingApprovals();
     loadNotifications(notificationsOffset);
+    refreshPushSettings();
   }
 });
+function refreshPushSettings() {
+  if (!expired && !busy) void loadPushSettings();
+}
+window.addEventListener('focus', refreshPushSettings);
+// Permissions API is optional; focus/visibility remain the fallback on unsupported browsers.
+if (navigator.permissions?.query && 'Notification' in window) {
+  navigator.permissions.query({ name: 'notifications' }).then(status => {
+    status.addEventListener('change', refreshPushSettings);
+  }).catch(() => {});
+}
 setInterval(() => {
   if (document.visibilityState === 'visible' && !expired && !busy) {
     loadPendingApprovals();
@@ -1973,6 +1992,8 @@ ${raw(BACKGROUND_SVG)}
             <h3 style="font-size:13px;color:var(--text-bright);">Web Push 消息推送</h3>
             <span id="push-status-badge" class="badge neutral">检查推送能力中…</span>
           </div>
+          <p style="margin-bottom:10px;"><span id="push-permission-badge" class="badge neutral" role="status">检查通知权限中…</span></p>
+          <p class="muted" style="font-size:12px;margin-bottom:12px;">浏览器允许通知后，还需点击“开启本机通知推送”完成本机订阅与设备登记。</p>
           <p class="muted" style="font-size:12px;margin-bottom:12px;">在 iPhone PWA（iOS 16.4+ 添加至主屏幕）或桌面 Chrome 上启用推送，即可在后台或锁屏接收待核准、交易结果与授权失效提醒。</p>
           <div id="push-action-buttons" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
             <button id="push-subscribe-btn" class="button primary" data-action data-disabled="true" type="button" disabled>开启本机通知推送</button>
