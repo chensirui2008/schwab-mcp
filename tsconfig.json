@@ -14,5 +14,5 @@
     "allowImportingTsExtensions": false,
     "resolveJsonModule": true
   },
-  "include": ["src", "test", "worker-configuration.d.ts"]
+  "include": ["src", "test", "env.d.ts"]
 }

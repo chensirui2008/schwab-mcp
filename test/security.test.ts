@@ -374,6 +374,54 @@ describe("Passkey submission outcomes", () => {
 });
 
 describe("Cross-device client authorization (OAuth Passkey)", () => {
+  it("holds same-client finishing exclusion across new attempts and expired envelope cleanup", async () => {
+    const t = await setup();
+    const intent: PendingAuthorization = {
+      ...pending, advancedSecurity: false, permissionLevel: "read_only",
+      authRequest: { ...pending.authRequest, clientId: "finishing-exclusion" },
+    };
+    const begin = async () => {
+      const response = await t.post("/security/authorization/begin", { intent, clientName: "Finishing client", currentAdvanced: false });
+      expect(response.status).toBe(200);
+      const { sessionId, authorizationId } = await response.json<{ sessionId: string; authorizationId: string }>();
+      return { sessionId, authorizationId };
+    };
+    const first = await begin();
+    expect((await t.post("/security/authorization/claim", first)).status).toBe(200);
+    const second = await begin();
+    expect(await (await t.post("/security/authorization/status", first)).json()).toMatchObject({ status: "FINISHING" });
+    expect((await t.post("/security/authorization/claim", second)).status).toBe(403);
+    await runInDurableObject(t.vault, (_instance, state) => {
+      state.storage.sql.exec("UPDATE oauth_state SET expires_at = 0 WHERE state = ?", first.authorizationId);
+    });
+    // Saving another session removes expired oauth_state rows, not the mutex.
+    await t.post("/security/session/create", {});
+    expect((await t.post("/security/authorization/claim", second)).status).toBe(403);
+    expect((await t.post("/security/authorization/fail", { authorizationId: first.authorizationId })).status).toBe(200);
+    expect((await t.post("/security/authorization/claim", second)).status).toBe(200);
+  });
+
+  it.each([
+    { permissionLevel: "full_access" },
+    { advancedSecurity: true },
+    { expected: 1 },
+  ])("rejects changes to frozen authorization policy bindings: %j", async changes => {
+    const t = await setup();
+    const clientId = "frozen-bindings";
+    const intent: PendingAuthorization = {
+      ...pending, advancedSecurity: false, permissionLevel: "read_only",
+      authRequest: { ...pending.authRequest, clientId },
+    };
+    const { sessionId, authorizationId } = await (await t.post("/security/authorization/begin", { intent, clientName: clientId, currentAdvanced: false })).json<{ sessionId: string; authorizationId: string }>();
+    const claimResponse = await t.post("/security/authorization/claim", { sessionId, authorizationId });
+    expect(claimResponse.status).toBe(200);
+    const claim = await claimResponse.json<{ commitTicket: string }>();
+    const frozen = { clientId, permissionLevel: "read_only", advancedSecurity: false, expected: 0, ticket: claim.commitTicket };
+    expect((await t.post("/security/commit-policy", { ...frozen, ...changes })).status).toBe(403);
+    expect(await (await t.post("/security/policy", { clientId })).json()).toMatchObject({ version: 0 });
+    expect((await t.post("/security/commit-policy", frozen)).status).toBe(200);
+  });
+
   it("allows phone owner to sign while only computer original session can claim and resume code", async () => {
     const t = await setup();
 

@@ -9,6 +9,7 @@ import { vaultStub } from "../src/env";
 import worker from "../src/index";
 import { AUTHORIZATION_VERSION, READ_SCOPE } from "../src/oauth-access";
 import type { AuthorizationProps, PermissionLevel } from "../src/oauth-access";
+import { authenticator } from "./webauthn-fixture";
 
 const origin = "https://example.com";
 const redirectUri = "https://client.example/callback";
@@ -590,6 +591,83 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     return { post, html, page };
   }
   type Challenge = { challengeId: string; options: { challenge: string } };
+  it("withholds invalidated codes and scopes grant cleanup while recovery cannot release an in-flight client mutex", async () => {
+    const { appEnv, helpers } = setup(); await resetSecurity(appEnv);
+    const request = await authRequest(helpers);
+    const vault = vaultStub(appEnv);
+    const post = (path: string, body: unknown) => vault.fetch(`https://vault/security${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const beginAttempt = async (policyVersion: number) => {
+      const result = await post("/authorization/begin", {
+        intent: { authRequest: request, permissionLevel: "read_only", advancedSecurity: false, username: "owner", policyVersion },
+        clientName: "Recovery race", currentAdvanced: false,
+      });
+      expect(result.status).toBe(200);
+      const { sessionId, authorizationId } = await result.json<{ sessionId: string; authorizationId: string }>();
+      return { sessionId, authorizationId };
+    };
+    const first = await beginAttempt(0);
+    const session = await (await post("/session", { sessionId: first.sessionId })).json<{ session: { csrf: string } }>();
+    const realComplete = helpers.completeAuthorization.bind(helpers);
+    let release = () => {};
+    let providerCreated = () => {};
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const created = new Promise<void>(resolve => { providerCreated = resolve; });
+    let withheldRedirect = "";
+    vi.spyOn(helpers, "completeAuthorization").mockImplementationOnce(async options => {
+      const completed = await realComplete(options);
+      withheldRedirect = completed.redirectTo;
+      providerCreated();
+      await blocked;
+      return completed;
+    });
+    const finishing = AuthHandler.request(`${origin}/security/api/authorization-resume`, {
+      method: "POST",
+      headers: { Cookie: `__Host-schwab-security=${first.sessionId}`, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": session.session.csrf },
+      body: JSON.stringify({ authorizationId: first.authorizationId }),
+    }, appEnv);
+    await created;
+    try {
+      const overlapping = await beginAttempt(1);
+      expect((await post("/authorization/claim", overlapping)).status).toBe(403);
+      // Real credential recovery invalidates all security envelopes and sessions,
+      // but cannot permit a new provider completion while the old one is pending.
+      const recovery = await (await post("/session/create", { recovery: true })).json<{ sessionId: string; session: { csrf: string } }>();
+      const recoveryArgs = { sessionId: recovery.sessionId, csrf: recovery.session.csrf };
+      const options = await (await post("/options", { ...recoveryArgs, operation: "recover", resetConfirmation: "重置全部 Passkey" })).json<Challenge>();
+      const key = await authenticator();
+      expect((await post("/verify", { ...recoveryArgs, challengeId: options.challengeId, response: await key.register(options.options.challenge) })).status).toBe(200);
+      const afterRecovery = await beginAttempt(1);
+      expect((await post("/authorization/claim", afterRecovery)).status).toBe(403);
+      // An unrelated grant must not be swept up by failed-attempt cleanup.
+      const independent = await realComplete({
+        request, userId: appEnv.ALLOWED_GITHUB_USER_ID, revokeExistingGrants: false, scope: [READ_SCOPE],
+        metadata: { authorizationEventId: "independent-event" }, props: currentProps(appEnv, "read_only"),
+      });
+      release();
+      const result = await finishing;
+      expect(result.status).toBe(503);
+      expect(result.headers.get("location")).toBeNull();
+      expect(await result.text()).not.toContain("redirectTo");
+      const withheldCode = new URL(withheldRedirect).searchParams.get("code") ?? "";
+      expect((await dispatch(tokenRequest({
+        grant_type: "authorization_code", client_id: request.clientId, code: withheldCode,
+        redirect_uri: redirectUri, code_verifier: verifiers.get(request) ?? "",
+      }), appEnv)).status).toBe(400);
+      const remaining = await helpers.listUserGrants(appEnv.ALLOWED_GITHUB_USER_ID);
+      expect(remaining.items.filter(item => item.clientId === request.clientId)).toMatchObject([
+        { metadata: { authorizationEventId: "independent-event" } },
+      ]);
+      expect(new URL(independent.redirectTo).searchParams.get("code")).toBeTruthy();
+      expect((await post("/authorization/claim", afterRecovery)).status).toBe(200);
+      await post("/authorization/fail", { authorizationId: afterRecovery.authorizationId });
+    } finally {
+      release();
+      await finishing;
+    }
+  });
+
 
   it("registers before granting enhanced access, preserves mode on refresh, and requires Passkey to disable", async () => {
     const { authenticator } = await import("./webauthn-fixture");

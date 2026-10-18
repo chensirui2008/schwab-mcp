@@ -151,6 +151,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
   private security: SecurityStore;
   public readonly notifications: NotificationStore;
   private refreshPromise: Promise<TokenRecord> | undefined;
+  private readonly ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: AppEnv) {
     super(ctx, env);
@@ -268,10 +269,14 @@ export class SchwabVault extends DurableObject<AppEnv> {
       this.ctx.storage.sql.exec("ALTER TABLE schwab_token ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0");
       this.ctx.storage.sql.exec("UPDATE schwab_token SET authorization_generation = ? WHERE authorization_generation IS NULL", crypto.randomUUID());
     }
+    this.ready = this.ctx.blockConcurrencyWhile(() => this.scheduleNextAlarm(true));
   }
 
   override async fetch(request: Request): Promise<Response> {
-    try { return await this.dispatch(request); }
+    try {
+      await this.ready;
+      return await this.dispatch(request);
+    }
     catch (error) {
       const requestId = crypto.randomUUID();
       if (error instanceof SecurityError) return publicError({ code: error.code, message: "Security policy changed or verification failed", requestId }, 403);
@@ -341,7 +346,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
     if (request.method === "GET" && url.pathname === "/status") {
       const token = this.readToken();
-      if (token && token.refreshExpiresAt <= Date.now()) this.markReauthorizationRequired(token);
+      if (token && token.refreshExpiresAt <= Date.now()) await this.markReauthorizationRequired(token);
       const connected = token?.status === "connected" && token.refreshExpiresAt > Date.now();
       return jsonResponse({
         connected,
@@ -577,6 +582,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
           entityId: auth.intent.authRequest.clientId,
           summary: `客户端 ${auth.clientName} 已成功获得授权`,
         });
+        await this.scheduleNextAlarm();
       }
       return jsonResponse({ finalized: true });
     }
@@ -676,6 +682,16 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
     if (path === "/notifications/subscriptions") {
       return jsonResponse({ items: this.notifications.listSubscriptions() });
+    }
+    if (path === "/notifications/subscription") {
+      if (request.method !== "POST" || !isJsonContentType(request.headers.get("Content-Type"))) throw new RequestBodyError("JSON POST required");
+      const raw = z.object({
+        sessionId: z.string(),
+        csrf: z.string(),
+        input: z.object({ endpoint: z.string().min(1).max(4096) }).strict(),
+      }).strict().parse(await readBoundedJson(request));
+      this.security.dashboardSession(raw.sessionId, raw.csrf);
+      return jsonResponse({ subscription: this.notifications.subscriptionForEndpoint(raw.input.endpoint) });
     }
     if (path === "/notifications/subscribe") {
       const raw = z.object({
@@ -1008,7 +1024,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     );
   }
 
-  private markReauthorizationRequired(token: TokenRecord): void {
+  private async markReauthorizationRequired(token: TokenRecord): Promise<void> {
     if (token.status === "connected") {
       const generation = token.authorizationGeneration ?? "legacy";
       this.notifications.recordEvent({
@@ -1019,13 +1035,14 @@ export class SchwabVault extends DurableObject<AppEnv> {
       });
     }
     this.writeToken({ ...token, status: "reauthorization_required", updatedAt: Date.now() });
+    await this.scheduleNextAlarm();
   }
 
   private async refreshToken(force: boolean, requestId: string, failedAccessToken?: string): Promise<TokenRecord> {
     const current = this.readToken();
     if (!current) throw new Error("AUTH_REQUIRED");
     if (current.status !== "connected" || current.refreshExpiresAt <= Date.now()) {
-      this.markReauthorizationRequired(current);
+      await this.markReauthorizationRequired(current);
       throw new Error("REAUTHORIZATION_REQUIRED");
     }
     if (force && failedAccessToken !== undefined && current.accessToken !== failedAccessToken) return current;
@@ -1067,7 +1084,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     });
     if (!response.ok || !isTokenResponse(body)) {
       const reauthorizationRequired = isReauthorizationError(body);
-      if (reauthorizationRequired) this.markReauthorizationRequired(current);
+      if (reauthorizationRequired) await this.markReauthorizationRequired(current);
       throw new Error(reauthorizationRequired ? "REAUTHORIZATION_REQUIRED" : "UPSTREAM_UNAVAILABLE");
     }
     const currentToken = this.readToken();
@@ -1578,6 +1595,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
   }
 
   override async alarm(): Promise<void> {
+    await this.ready;
     const now = Date.now();
     try {
       this.ctx.storage.sql.exec(
@@ -1587,7 +1605,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       );
       this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'EXPIRED', updated_at = ? WHERE status = 'ACTIVE' AND valid_until <= ?", now, now);
 
-      this.checkTokenExpirationAlarm(now);
+      await this.checkTokenExpirationAlarm(now);
 
       if (tradingEnabled(this.env)) {
         const due = this.ctx.storage.sql.exec<DelayedTradeRow>(
@@ -1604,12 +1622,12 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
   }
 
-  private checkTokenExpirationAlarm(now: number): void {
+  private async checkTokenExpirationAlarm(now: number): Promise<void> {
     const token = this.readToken();
     if (!token) return;
     if (token.status === "connected") {
       if (now >= token.refreshExpiresAt) {
-        this.markReauthorizationRequired(token);
+        await this.markReauthorizationRequired(token);
       } else if (now >= token.refreshExpiresAt - 86_400_000 && !token.reminderSent) {
         const generation = token.authorizationGeneration ?? "legacy";
         this.notifications.recordEvent({
@@ -1659,31 +1677,37 @@ export class SchwabVault extends DurableObject<AppEnv> {
           if (res.ok) {
             this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
               status: "SENT",
+              leaseUntil: item.leaseUntil,
               statusCode: res.status,
             });
           } else if (res.status === 404 || res.status === 410) {
             this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
               status: "FAILED",
+              leaseUntil: item.leaseUntil,
               statusCode: res.status,
               disableSubscriptionReason: "EXPIRED_AT_SERVICE",
+              subscription: item.subscription,
             });
           } else if (res.status === 429 || res.status >= 500) {
             if (item.attemptCount < 2) {
               const backoff = item.attemptCount === 0 ? 30_000 : 120_000;
               this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
                 status: "RETRY",
+                leaseUntil: item.leaseUntil,
                 statusCode: res.status,
                 nextAttemptAt: now + backoff,
               });
             } else {
               this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
                 status: "FAILED",
+                leaseUntil: item.leaseUntil,
                 statusCode: res.status,
               });
             }
           } else {
             this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
               status: "FAILED",
+              leaseUntil: item.leaseUntil,
               statusCode: res.status,
             });
           }
@@ -1692,11 +1716,13 @@ export class SchwabVault extends DurableObject<AppEnv> {
             const backoff = item.attemptCount === 0 ? 30_000 : 120_000;
             this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
               status: "RETRY",
+              leaseUntil: item.leaseUntil,
               nextAttemptAt: now + backoff,
             });
           } else {
             this.notifications.recordDeliveryOutcome(item.deliveryId, item.subscription.id, {
               status: "FAILED",
+              leaseUntil: item.leaseUntil,
             });
           }
         }
@@ -1809,7 +1835,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
   }
 
-  private async scheduleNextAlarm(): Promise<void> {
+  private async scheduleNextAlarm(preserveExisting = false): Promise<void> {
+    const existingAlarm = preserveExisting ? await this.ctx.storage.getAlarm() : null;
     const now = Date.now();
     const candidateTimes: number[] = [];
 
@@ -1844,11 +1871,13 @@ export class SchwabVault extends DurableObject<AppEnv> {
 
     const validTimes = candidateTimes.filter(t => typeof t === "number" && !isNaN(t) && t > 0);
     if (validTimes.length === 0) {
+      if (existingAlarm !== null) return;
       await this.ctx.storage.deleteAlarm();
       return;
     }
 
     const earliest = Math.max(now + 250, Math.min(...validTimes));
+    if (existingAlarm !== null && existingAlarm <= earliest) return;
     await this.ctx.storage.setAlarm(earliest);
   }
 

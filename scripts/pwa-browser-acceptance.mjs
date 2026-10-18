@@ -4,6 +4,8 @@ import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import { createServer } from 'node:http';
 import { Buffer } from 'node:buffer';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { randomUUID, createHash } from 'node:crypto';
 import { URL, URLSearchParams } from 'node:url';
 import console from 'node:console';
@@ -321,18 +323,20 @@ const app = createServer(async (req, res) => {
       out.set('location', location.replace('https://github.com/login/oauth/authorize', github + '/authorize'));
     }
 
-    let text = await response.text();
+    let html;
     if (out.get('Content-Type')?.includes('text/html')) {
-      text = text.replaceAll('https://github.com/login/oauth/authorize', github + '/authorize');
+      html = (await response.text()).replaceAll('https://github.com/login/oauth/authorize', github + '/authorize');
       if (url.pathname.startsWith('/security')) {
-        text = text.replace('<script id="page-data"', shim + '<script id="page-data"');
+        html = html.replace('<script id="page-data"', shim + '<script id="page-data"');
       }
     }
 
     out.delete('content-length');
     if (cookies.length) res.setHeader('Set-Cookie', cookies);
     res.writeHead(response.status, Object.fromEntries(out));
-    res.end(text);
+    if (html !== undefined) res.end(html);
+    else if (response.body) await pipeline(Readable.fromWeb(response.body), res);
+    else res.end();
   } catch (error) {
     console.error({ event: 'pwa_acceptance_failed', errorType: error.name, message: error.message, stack: error.stack });
     send(res, 500, 'Isolated fixture failed; no external traffic allowed: ' + error.message);

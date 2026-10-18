@@ -1055,7 +1055,6 @@ const auditLimit = 25;
 let auditFilters = {clientId:'',toolName:'',status:''};
 let notificationsOffset = 0;
 let notificationsTotal = 0;
-let currentSubscriptionId = null;
 let pending = null;
 let returnFocus = null;
 const dialog = $('passkey-dialog');
@@ -1337,7 +1336,7 @@ async function loadNotifications(offset = 0) {
     disabled($('notifications-next-btn'), offset + 15 >= data.total);
     tbody.replaceChildren();
     if (!data.items.length) {
-      tbody.append(row(5, '暂无通知记录。'));
+      tableMessage(tbody, 5, '暂无通知记录。');
       return;
     }
     for (const item of data.items) {
@@ -1364,8 +1363,43 @@ async function loadNotifications(offset = 0) {
       tbody.append(tr);
     }
   } catch (err) {
-    tbody.replaceChildren(row(5, '读取通知失败: ' + err.message, 'empty load-error'));
+    tableMessage(tbody, 5, '读取通知失败: ' + err.message, true);
   }
+}
+async function loadHighlightedNotification() {
+  const id = document.querySelector('meta[name="highlight-notification"]').content;
+  if (!id) return;
+  const banner = $('notification-detail-banner');
+  banner.style.display = '';
+  banner.replaceChildren(node('p', '正在读取所选通知…'));
+  try {
+    const item = await api('/dashboard/api/notifications/' + encodeURIComponent(id));
+    banner.replaceChildren(node('strong', item.summary), node('p', item.type + ' · ' + new Date(item.createdAt).toLocaleString(), 'muted'));
+    if (item.actionPath) {
+      const link = node('a', '前往处理 →', 'card-action-link');
+      link.href = item.actionPath;
+      banner.append(link);
+    }
+    if (!item.readAt) {
+      await api('/dashboard/api/notifications/read', 'POST', { id: item.id });
+      await loadNotifications(notificationsOffset);
+    }
+  } catch (err) {
+    banner.replaceChildren(node('p', '所选通知不存在或读取失败：' + err.message, 'load-error'));
+  }
+}
+async function pushRegistration() {
+  if (!('serviceWorker' in navigator)) throw new Error('此浏览器不支持 Service Worker。');
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg?.active || !reg.pushManager) throw new Error('推送服务尚未就绪，请稍后刷新重试。');
+  return reg;
+}
+async function currentPushDevice() {
+  const reg = await pushRegistration();
+  const sub = await reg.pushManager.getSubscription();
+  const data = sub ? await api('/dashboard/api/push/subscription', 'POST', { endpoint: sub.endpoint }) : null;
+  const device = data?.subscription;
+  return { reg, sub, device };
 }
 async function loadPushSettings() {
   const badge = $('push-status-badge');
@@ -1373,6 +1407,7 @@ async function loadPushSettings() {
   const testBtn = $('push-test-btn');
   const unsubBtn = $('push-unsubscribe-btn');
   const devicesBody = $('push-devices-table-body');
+  disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
   const supported = ('serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
   if (!supported) {
     if (badge) { badge.textContent = '环境不支持'; badge.className = 'badge neutral'; }
@@ -1380,13 +1415,12 @@ async function loadPushSettings() {
     return;
   }
   try {
-    const reg = await navigator.serviceWorker.ready;
-    const existingSub = await reg.pushManager.getSubscription();
+    const { device } = await currentPushDevice();
     const permission = Notification.permission;
     if (permission === 'denied') {
       if (badge) { badge.textContent = '通知被禁止'; badge.className = 'badge neutral'; }
       disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
-    } else if (existingSub) {
+    } else if (device?.active) {
       if (badge) { badge.textContent = '本机已开启推送'; badge.className = 'badge good'; }
       disabled(subBtn, true); disabled(testBtn, false); disabled(unsubBtn, false);
     } else {
@@ -1397,13 +1431,10 @@ async function loadPushSettings() {
     const items = devData.items || [];
     devicesBody.replaceChildren();
     if (!items.length) {
-      devicesBody.append(row(5, '暂无已登记的推送设备。'));
+      tableMessage(devicesBody, 5, '暂无已登记的推送设备。');
       return;
     }
     for (const dev of items) {
-      if (existingSub && existingSub.endpoint && dev.active) {
-        currentSubscriptionId = dev.id;
-      }
       const tr = node('tr');
       tr.append(
         node('td', dev.id.slice(0, 8) + '…', 'mono'),
@@ -1422,7 +1453,10 @@ async function loadPushSettings() {
       devicesBody.append(tr);
     }
   } catch (err) {
-    if (badge) badge.textContent = '设备读取失败';
+    if (badge) { badge.textContent = '推送暂不可用：' + err.message; badge.className = 'badge neutral'; }
+    disabled(subBtn, true); disabled(testBtn, true); disabled(unsubBtn, true);
+  } finally {
+    syncControls();
   }
 }
 function checkPwaDisplayMode() {
@@ -1553,6 +1587,7 @@ $('add-passkey-form').addEventListener('submit',event => {
       },'');
     }
   });
+});
 $('refresh-all-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
 $('clients-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
 $('audit-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
@@ -1566,8 +1601,8 @@ $('push-subscribe-btn')?.addEventListener('click', async () => {
     const perm = await Notification.requestPermission();
     if (perm !== 'granted') { alert('未授权通知权限，无法开启推送。'); loadPushSettings(); return; }
     const config = await api('/dashboard/api/push/config');
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
+    const reg = await pushRegistration();
+    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
     const subJson = sub.toJSON();
     const label = window.prompt('为此设备输入标识名称（例如：我的 iPhone、办公 Chrome）：', navigator.userAgent.includes('iPhone') ? 'iPhone' : '桌面 Chrome') || '推送设备';
     await api('/dashboard/api/push/subscribe', 'POST', {
@@ -1580,22 +1615,17 @@ $('push-subscribe-btn')?.addEventListener('click', async () => {
 });
 $('push-test-btn')?.addEventListener('click', async () => {
   try {
-    if (!currentSubscriptionId) {
-      const devData = await api('/dashboard/api/push/subscriptions');
-      const active = (devData.items || []).find(d => d.active);
-      if (active) currentSubscriptionId = active.id;
-    }
-    if (!currentSubscriptionId) { alert('未找到活跃的推送设备，请先开启推送。'); return; }
-    await api('/dashboard/api/push/test', 'POST', { id: currentSubscriptionId });
+    const { device } = await currentPushDevice();
+    if (!device?.active) { alert('未找到活跃的本机推送设备，请先开启推送。'); return; }
+    await api('/dashboard/api/push/test', 'POST', { id: device.id });
     alert('测试通知已发送！请观察设备通知栏。');
   } catch (err) { alert('发送测试通知失败: ' + err.message); }
 });
 $('push-unsubscribe-btn')?.addEventListener('click', async () => {
   try {
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.getSubscription();
+    const { sub, device } = await currentPushDevice();
+    if (device?.active) await api('/dashboard/api/push/unsubscribe', 'POST', { id: device.id });
     if (sub) await sub.unsubscribe();
-    if (currentSubscriptionId) await api('/dashboard/api/push/unsubscribe', 'POST', { id: currentSubscriptionId });
     alert('已停用本机推送通知。');
     loadPushSettings();
   } catch (err) { alert('停用通知失败: ' + err.message); }
@@ -1626,7 +1656,7 @@ setInterval(() => {
     loadNotifications(notificationsOffset);
   }
 }, 30000);
-window.addEventListener('message', e => {
+navigator.serviceWorker?.addEventListener('message', e => {
   if (e.data?.type === 'PUSH_RECEIVED') {
     loadPendingApprovals();
     loadNotifications(notificationsOffset);
@@ -1675,7 +1705,7 @@ if (!supportsPasskeys) {
   disabled($('credential-name'),true);
 }
 tick(); setInterval(tick,1000);
-run(refreshAll);
+run(async () => { await refreshAll(); await loadHighlightedNotification(); });
 })();
 `;
 
@@ -1945,9 +1975,9 @@ ${raw(BACKGROUND_SVG)}
           </div>
           <p class="muted" style="font-size:12px;margin-bottom:12px;">在 iPhone PWA（iOS 16.4+ 添加至主屏幕）或桌面 Chrome 上启用推送，即可在后台或锁屏接收待核准、交易结果与授权失效提醒。</p>
           <div id="push-action-buttons" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
-            <button id="push-subscribe-btn" class="button primary" type="button" disabled>开启本机通知推送</button>
-            <button id="push-test-btn" class="button" type="button" disabled>发送测试提醒</button>
-            <button id="push-unsubscribe-btn" class="button danger" type="button" disabled>停用本机推送</button>
+            <button id="push-subscribe-btn" class="button primary" data-action data-disabled="true" type="button" disabled>开启本机通知推送</button>
+            <button id="push-test-btn" class="button" data-action data-disabled="true" type="button" disabled>发送测试提醒</button>
+            <button id="push-unsubscribe-btn" class="button danger" data-action data-disabled="true" type="button" disabled>停用本机推送</button>
           </div>
           <h4 style="font-size:12px;color:var(--text);margin-bottom:8px;text-transform:uppercase;">已登记推送设备</h4>
           <div class="table-scroll" role="region" aria-label="推送设备列表" tabindex="0">

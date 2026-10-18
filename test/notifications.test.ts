@@ -181,6 +181,23 @@ describe("NotificationStore & Push Endpoints", () => {
     expect(Reflect.has(found ?? {}, "p256dh")).toBe(false);
     expect(Reflect.has(found ?? {}, "auth")).toBe(false);
 
+    const lookupRes = await dispatch(new Request(`${origin}/dashboard/api/push/subscription`, {
+      method: "POST",
+      headers: { Cookie: securityCookie, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ endpoint: "https://web.push.apple.com/sub-001" }),
+    }), appEnv);
+    expect(lookupRes.status).toBe(200);
+    expect(await lookupRes.json()).toEqual({
+      subscription: { id: sub.id, label: "iPhone 16", active: true },
+    });
+    const missingLookup = await dispatch(new Request(`${origin}/dashboard/api/push/subscription`, {
+      method: "POST",
+      headers: { Cookie: securityCookie, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ endpoint: "https://web.push.apple.com/not-saved" }),
+    }), appEnv);
+    expect(missingLookup.status).toBe(200);
+    expect(await missingLookup.json()).toEqual({ subscription: null });
+
     // 4. Test notification with rate limiting
     const testRes1 = await dispatch(new Request(`${origin}/dashboard/api/push/test`, {
       method: "POST",
@@ -231,6 +248,15 @@ describe("NotificationStore & Push Endpoints", () => {
     }), appEnv);
     const listAfter = await listResAfter.json<{ items: Array<{ id: string; active: boolean }> }>();
     expect(listAfter.items.find(i => i.id === sub.id)?.active).toBe(false);
+    const disabledLookup = await dispatch(new Request(`${origin}/dashboard/api/push/subscription`, {
+      method: "POST",
+      headers: { Cookie: securityCookie, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ endpoint: "https://web.push.apple.com/sub-001" }),
+    }), appEnv);
+    expect(disabledLookup.status).toBe(200);
+    expect(await disabledLookup.json()).toEqual({
+      subscription: { id: sub.id, label: "iPhone 16", active: false },
+    });
   });
 
   it("enforces authentication and boundaries on push APIs", async () => {
@@ -248,6 +274,12 @@ describe("NotificationStore & Push Endpoints", () => {
       body: JSON.stringify({ subscription: { endpoint: "https://web.push.apple.com/sub", keys: { p256dh, auth } }, label: "Test" }),
     }), appEnv);
     expect(unauthPost.status).toBe(403);
+    const unauthLookup = await dispatch(new Request(`${origin}/dashboard/api/push/subscription`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({ endpoint: "https://web.push.apple.com/sub" }),
+    }), appEnv);
+    expect(unauthLookup.status).toBe(403);
 
     // Wrong origin POST
     const { securityCookie, csrf } = await login(appEnv);
@@ -257,6 +289,18 @@ describe("NotificationStore & Push Endpoints", () => {
       body: JSON.stringify({ subscription: { endpoint: "https://web.push.apple.com/sub", keys: { p256dh, auth } }, label: "Test" }),
     }), appEnv);
     expect(wrongOrigin.status).toBe(403);
+    const missingCsrfLookup = await dispatch(new Request(`${origin}/dashboard/api/push/subscription`, {
+      method: "POST",
+      headers: { Cookie: securityCookie, Origin: origin, "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: "https://web.push.apple.com/sub" }),
+    }), appEnv);
+    expect(missingCsrfLookup.status).toBe(403);
+    const wrongOriginLookup = await dispatch(new Request(`${origin}/dashboard/api/push/subscription`, {
+      method: "POST",
+      headers: { Cookie: securityCookie, Origin: "https://evil.example.com", "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ endpoint: "https://web.push.apple.com/sub" }),
+    }), appEnv);
+    expect(wrongOriginLookup.status).toBe(403);
 
     // Invalid body size (>64KiB)
     const largeBody = await dispatch(new Request(`${origin}/dashboard/api/push/subscribe`, {
@@ -430,6 +474,251 @@ describe("NotificationStore & Push Endpoints", () => {
     });
     expect(newToken.authorization_generation).not.toBe(initialToken.authorization_generation);
     expect(newToken.reminder_sent).toBe(0);
+  });
+
+  it("prunes deliveries before events only beyond the 30-day boundary", async () => {
+    const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
+    const keys = await generateTestKeys();
+    await runInDurableObject(vault, (instance, state) => {
+      const now = 2_000_000_000_000;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      try {
+        const sub = instance.notifications.subscribe({
+          subscription: { endpoint: "https://web.push.apple.com/retention-age", keys },
+          label: "Retention",
+        });
+        const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+        const seed = (id: string, createdAt: number, status: string) => {
+          state.storage.sql.exec(
+            "INSERT INTO notification_event VALUES (?, ?, 'TEST', ?, 'Retention event', ?, ?, NULL)",
+            id, id, id, createdAt, now + 60_000
+          );
+          state.storage.sql.exec(
+            "INSERT INTO notification_delivery VALUES (?, ?, ?, ?, 0, ?, ?, NULL)",
+            `${id}-delivery`, id, sub.id, status, now, status === "SENDING" ? now + 30_000 : 0
+          );
+        };
+        for (const status of ["SENT", "FAILED", "SUPPRESSED"]) seed(status, cutoff - 1, status);
+        seed("boundary", cutoff, "SENT");
+        seed("pending", cutoff - 1, "PENDING");
+        seed("sending", cutoff - 1, "SENDING");
+        const fresh = instance.notifications.recordEvent({
+          dedupeKey: "age-fresh", type: "TEST", entityId: "fresh", summary: "Fresh",
+        });
+        if (!fresh) throw new Error("Missing fresh notification");
+        for (const id of ["SENT", "FAILED", "SUPPRESSED"]) {
+          expect(instance.notifications.getEvent(id)).toBeNull();
+          expect(state.storage.sql.exec("SELECT id FROM notification_delivery WHERE event_id = ?", id).toArray()).toEqual([]);
+        }
+        for (const id of ["boundary", "pending", "sending", fresh.id]) {
+          expect(instance.notifications.getEvent(id)?.id).toBe(id);
+        }
+        expect(state.storage.sql.exec("PRAGMA foreign_key_check").toArray()).toEqual([]);
+
+        clock.mockReturnValue(now + 1);
+        const next = instance.notifications.recordEvent({
+          dedupeKey: "age-next", type: "TEST", entityId: "next", summary: "Next",
+        });
+        expect(next).not.toBeNull();
+        expect(instance.notifications.getEvent("boundary")).toBeNull();
+        expect(instance.notifications.getEvent("pending")?.id).toBe("pending");
+        expect(instance.notifications.getEvent("sending")?.id).toBe("sending");
+        expect(state.storage.sql.exec("PRAGMA foreign_key_check").toArray()).toEqual([]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
+  it("accepts new events at the 1,000-event cap while protecting outstanding deliveries", async () => {
+    const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
+    const keys = await generateTestKeys();
+    await runInDurableObject(vault, (instance, state) => {
+      const now = 2_000_000_000_000;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      try {
+        const sub = instance.notifications.subscribe({
+          subscription: { endpoint: "https://web.push.apple.com/retention-cap", keys },
+          label: "Retention",
+        });
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec(`
+            WITH RECURSIVE sequence(n) AS (
+              SELECT 0 UNION ALL SELECT n + 1 FROM sequence WHERE n < 998
+            )
+            INSERT INTO notification_event
+            SELECT 'cap-' || n, 'cap-' || n, 'TEST', 'cap-' || n, 'History', ? + n, ?, NULL
+            FROM sequence
+          `, now - 1000, now + 60_000);
+          state.storage.sql.exec(`
+            INSERT INTO notification_delivery
+            SELECT id || '-delivery', id, ?,
+              CASE id WHEN 'cap-0' THEN 'PENDING' WHEN 'cap-1' THEN 'SENDING' ELSE 'SENT' END,
+              0, ?, CASE id WHEN 'cap-1' THEN ? ELSE 0 END, NULL
+            FROM notification_event
+          `, sub.id, now, now + 30_000);
+        });
+        const atCap = instance.notifications.recordEvent({
+          dedupeKey: "at-cap", type: "TEST", entityId: "at-cap", summary: "At cap",
+        });
+        expect(state.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM notification_event"
+        ).one().count).toBe(1000);
+        expect(instance.notifications.getEvent("cap-2")?.id).toBe("cap-2");
+
+        clock.mockReturnValue(now + 1);
+        const beyondCap = instance.notifications.recordEvent({
+          dedupeKey: "beyond-cap", type: "TEST", entityId: "beyond-cap", summary: "Beyond cap",
+        });
+        if (!atCap || !beyondCap) throw new Error("Missing retention boundary notifications");
+        expect(state.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM notification_event"
+        ).one().count).toBe(1000);
+        expect(instance.notifications.getEvent("cap-2")).toBeNull();
+        expect(state.storage.sql.exec(
+          "SELECT id FROM notification_delivery WHERE event_id = 'cap-2'"
+        ).toArray()).toEqual([]);
+        for (const id of ["cap-0", "cap-1", "cap-3", atCap.id, beyondCap.id]) {
+          expect(instance.notifications.getEvent(id)?.id).toBe(id);
+        }
+        expect(state.storage.sql.exec("PRAGMA foreign_key_check").toArray()).toEqual([]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
+  it.each(["TRADE_APPROVAL_PENDING", "CLIENT_AUTHORIZATION_PENDING"] as const)(
+    "does not retry a resolved %s notification after an in-flight send",
+    async type => {
+      const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
+      const keys = await generateTestKeys();
+      await runInDurableObject(vault, instance => {
+        const now = 2_000_000_000_000;
+        const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+        try {
+          instance.notifications.subscribe({
+            subscription: { endpoint: "https://web.push.apple.com/resolved", keys }, label: "Resolved",
+          });
+          instance.notifications.recordEvent({
+            dedupeKey: "approval", type, entityId: "approval-entity", summary: "Approval",
+          });
+          const [claimed] = instance.notifications.claimDeliveriesForDispatch();
+          if (!claimed) throw new Error("Missing pending approval delivery");
+          instance.notifications.suppressPendingDeliveriesForEntity("approval-entity");
+          instance.notifications.recordDeliveryOutcome(claimed.deliveryId, claimed.subscription.id, {
+            leaseUntil: claimed.leaseUntil, status: "RETRY", statusCode: 503, nextAttemptAt: now + 30_000,
+          });
+          clock.mockReturnValue(now + 60_000);
+          expect(instance.notifications.claimDeliveriesForDispatch()).toEqual([]);
+          expect(instance.notifications.getNextAlarmTime()).toBeNull();
+        } finally {
+          clock.mockRestore();
+        }
+      });
+    }
+  );
+
+  it.each(["SENT", "FAILED"] as const)("does not overwrite a terminal %s delivery with a retry", async status => {
+    const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
+    const keys = await generateTestKeys();
+    await runInDurableObject(vault, (instance, state) => {
+      instance.notifications.subscribe({
+        subscription: { endpoint: "https://web.push.apple.com/terminal", keys }, label: "Terminal",
+      });
+      instance.notifications.recordEvent({
+        dedupeKey: "terminal", type: "TEST", entityId: "terminal", summary: "Terminal",
+      });
+      const [claimed] = instance.notifications.claimDeliveriesForDispatch();
+      if (!claimed) throw new Error("Missing terminal delivery claim");
+      instance.notifications.recordDeliveryOutcome(claimed.deliveryId, claimed.subscription.id, {
+        leaseUntil: claimed.leaseUntil, status,
+      });
+      instance.notifications.recordDeliveryOutcome(claimed.deliveryId, claimed.subscription.id, {
+        leaseUntil: claimed.leaseUntil, status: "RETRY",
+      });
+      expect(state.storage.sql.exec<{ status: string }>(
+        "SELECT status FROM notification_delivery WHERE id = ?", claimed.deliveryId
+      ).one().status).toBe(status);
+      expect(instance.notifications.claimDeliveriesForDispatch()).toEqual([]);
+    });
+  });
+
+  it("ignores outcomes for an expired lease after the delivery is reclaimed", async () => {
+    const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
+    const keys = await generateTestKeys();
+    await runInDurableObject(vault, (instance, state) => {
+      const now = 2_000_000_000_000;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      try {
+        instance.notifications.subscribe({
+          subscription: { endpoint: "https://web.push.apple.com/stale-lease", keys }, label: "Lease",
+        });
+        instance.notifications.recordEvent({
+          dedupeKey: "lease", type: "TEST", entityId: "lease", summary: "Lease",
+        });
+        const [oldClaim] = instance.notifications.claimDeliveriesForDispatch();
+        if (!oldClaim) throw new Error("Missing original delivery lease");
+        clock.mockReturnValue(now + 30_001);
+        const [currentClaim] = instance.notifications.claimDeliveriesForDispatch();
+        if (!currentClaim) throw new Error("Missing reclaimed delivery lease");
+        expect(currentClaim.deliveryId).toBe(oldClaim.deliveryId);
+        expect(currentClaim.leaseUntil).not.toBe(oldClaim.leaseUntil);
+        instance.notifications.recordDeliveryOutcome(oldClaim.deliveryId, oldClaim.subscription.id, {
+          leaseUntil: oldClaim.leaseUntil, status: "RETRY",
+        });
+        expect(state.storage.sql.exec<{ status: string; lease_until: number }>(
+          "SELECT status, lease_until FROM notification_delivery WHERE id = ?", currentClaim.deliveryId
+        ).one()).toMatchObject({ status: "SENDING", lease_until: currentClaim.leaseUntil });
+        instance.notifications.recordDeliveryOutcome(currentClaim.deliveryId, currentClaim.subscription.id, {
+          leaseUntil: currentClaim.leaseUntil, status: "SENT",
+        });
+        expect(instance.notifications.getNextAlarmTime()).toBeNull();
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
+  it("does not disable renewed subscription keys from an old 410 response", async () => {
+    const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
+    const keys = await generateTestKeys();
+    const replacementKeys = await generateTestKeys();
+    await runInDurableObject(vault, instance => {
+      const endpoint = "https://web.push.apple.com/renewed";
+      const sub = instance.notifications.subscribe({ subscription: { endpoint, keys }, label: "Original" });
+      instance.notifications.recordEvent({
+        dedupeKey: "old", type: "TEST", entityId: "old", summary: "Old",
+      });
+      const [claimed] = instance.notifications.claimDeliveriesForDispatch();
+      if (!claimed) throw new Error("Missing original subscription delivery");
+      instance.notifications.subscribe({ subscription: { endpoint, keys: replacementKeys }, label: "Renewed" });
+      instance.notifications.recordDeliveryOutcome(claimed.deliveryId, claimed.subscription.id, {
+        leaseUntil: claimed.leaseUntil, status: "FAILED", statusCode: 410,
+        disableSubscriptionReason: "EXPIRED_AT_SERVICE", subscription: claimed.subscription,
+      });
+      expect(instance.notifications.subscriptionForEndpoint(endpoint)).toEqual({ id: sub.id, label: "Renewed", active: true });
+      instance.notifications.recordEvent({
+        dedupeKey: "new", type: "TEST", entityId: "new", summary: "New",
+      });
+      const [next] = instance.notifications.claimDeliveriesForDispatch();
+      expect(next?.subscription.p256dh).toBe(replacementKeys.p256dh);
+      expect(next?.subscription.auth).toBe(replacementKeys.auth);
+    });
+  });
+
+  it("looks up only the exact saved endpoint without returning its endpoint or keys", async () => {
+    const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
+    const keys = await generateTestKeys();
+    await runInDurableObject(vault, instance => {
+      const endpoint = "https://web.push.apple.com/lookup";
+      const sub = instance.notifications.subscribe({ subscription: { endpoint, keys }, label: "Lookup" });
+      expect(instance.notifications.subscriptionForEndpoint(endpoint)).toEqual({ id: sub.id, label: "Lookup", active: true });
+      expect(instance.notifications.subscriptionForEndpoint(`${endpoint}/other`)).toBeNull();
+      expect(instance.notifications.subscriptionForEndpoint("https://web.push.apple.com/LOOKUP")).toBeNull();
+      instance.notifications.unsubscribe(sub.id);
+      expect(instance.notifications.subscriptionForEndpoint(endpoint)).toEqual({ id: sub.id, label: "Lookup", active: false });
+    });
   });
 
   it("supports dashboard notifications API, pagination, read marking, and pending approvals", async () => {

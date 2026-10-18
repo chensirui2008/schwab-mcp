@@ -180,6 +180,8 @@ Choose **Full access** and check **Advanced Security** on the OAuth consent page
 
 After GitHub numeric owner verification, enabling requires registration of the first Passkey, or verification with an existing owner Passkey. Disabling also requires an existing Passkey. All old grants must be successfully revoked before the new client policy and grant are issued. Policy versions prevent stale tokens from writing under an old policy.
 
+Client OAuth approval can be completed from another owner-authenticated device at `/security/authorizations/:id`. The approving device only approves the frozen request; the original browser alone receives the OAuth callback. Reloading an already approved request on that browser resumes completion. Same-client completion is serialized, and invalidated requests receive no code. Failed completion cleans up only its own grants; if cleanup cannot be verified, that client remains blocked rather than permitting an overlapping authorization.
+
 For enhanced clients, `prepare_trade` keeps the same input and returns `proposalId`, `approvalMethod: "passkey"`, `approvalUrl`, the frozen preview, digest and expiry. It returns no executable confirmation token or phrase. Open the URL in an external desktop or phone browser, authenticate with GitHub if needed, review every leg and the complete JSON, then click **批准并提交** to invoke WebAuthn. Successful verification immediately submits the frozen immediate order, or activates the frozen delayed task. Query `get_trade_proposal({ proposalId })` for status and execution outcome. Approving or replaying a proposal never submits it twice. An `EXECUTION_UNCERTAIN` result still requires manual order inspection.
 
 Passkey approval authorizes the frozen proposal; it does not perform balance, notional-limit or wash-sale checks. Review the complete order independently before approving.
@@ -206,10 +208,16 @@ The overview reports unexpired grants with a missing or outdated authorization p
 - **Advanced Security**: enabling and disabling require native Passkey verification bound to the client, desired mode and current policy version. First activation can register the first credential. Read-only downgrade preserves the hardware policy for a later upgrade. This never changes the deployment-controlled `ENABLE_TRADING` switch.
 - **Audit**: filter tool calls by client, tool and status, with pagination, success/error totals and 24-hour activity. Records stay in owner SQLite, limited to thirty days and the newest 5,000 rows. Parameter summaries contain only allowlisted counts, booleans and enums (at most 512 UTF-8 bytes), not raw arguments, orders, credentials or upstream error text. Background persistence failures do not change tool results, so this is operational history, not a guaranteed compliance ledger.
 - **Passkeys**: register, add, rename and delete using the existing `/security/api/*` ceremonies; deletion cannot remove the final credential. `/security/recover` remains the independent GitHub recovery entry.
+- **Inbox**: review pending client authorizations and trade proposals, and open notification details even when the event is outside the current page. Opening a notification marks that event read.
+- **App and push settings**: install the Dashboard as a PWA and manage optional Apple/FCM Web Push devices. Local test/disable controls resolve the current browser's exact subscription; endpoints and keys are not returned in device lists. A server-disabled subscription can be registered again from its original browser.
 
-The dashboard loads operational state and audit history on page load or explicit refresh. It does not provide a live JSON-RPC protocol stream or continuously verified hardware-readiness telemetry.
+The dashboard loads operational state and audit history on page load or explicit refresh. The Inbox also refreshes while visible and when a push message arrives. It does not provide a live JSON-RPC protocol stream or continuously verified hardware-readiness telemetry. An unavailable Service Worker disables push controls without blocking the rest of the dashboard.
 
 Dashboard writes require same-origin JSON, the browser cookie and CSRF header, with an actual 64 KiB body limit. Pages and APIs are no-store and deny framing. No new secrets, bindings, CDN or frontend dependencies are needed. Automated signatures and local runtime smoke do not replace final-origin Safari/mobile hardware acceptance.
+
+Only public static assets are cached for offline use. Notifications, subscriptions and VAPID keys remain in owner SQLite; push payloads contain only event identifiers, types and timestamps. The unified alarm handles delivery, token-expiry reminders and delayed trades, including reminder scheduling for existing token records after upgrade. Retention removes completed deliveries before their parent events, and resolved notifications cannot be resurrected by a late retry.
+
+Run `npm run test:pwa-acceptance` for a native Workers-runtime push transport check with mocked outbound traffic, including redirect rejection. For local browser inspection, run `node scripts/pwa-browser-acceptance.mjs` and open `http://localhost:8799/login`; GitHub is simulated and Schwab is blocked. These checks do not validate actual OS notification delivery or Safari/iPhone hardware Passkeys.
 
 ## Safety & Security Guardrails
 

@@ -88,6 +88,21 @@ document.querySelector('#register-add')?.addEventListener('click', async e => {
 if (data && data.authorizationId) {
   const authId = data.authorizationId;
   let stagedAuth = null;
+  let resumePromise = null;
+  let poller = null;
+  let polling = false;
+  function resumeAuthorization() {
+    if (resumePromise) return resumePromise;
+    clearInterval(poller);
+    document.querySelector('#action-buttons-container')?.remove();
+    if (status) status.textContent = 'Passkey 核准成功，正在完成授权并交付结果…';
+    resumePromise = api('authorization-resume', { authorizationId: authId }).then(result => {
+      if (result.redirectTo) location.replace(result.redirectTo);
+    }).catch(e => {
+      if (status) status.textContent = e.message;
+    });
+    return resumePromise;
+  }
 
   document.querySelector('#stage-auth-btn')?.addEventListener('click', async () => {
     if (busy) return;
@@ -107,19 +122,14 @@ if (data && data.authorizationId) {
   });
 
   document.querySelector('#submit-auth-btn')?.addEventListener('click', async () => {
-    if (busy || !stagedAuth) return;
+    if (busy || resumePromise || !stagedAuth) return;
     busy = true;
     if (status) status.textContent = '请在系统提示中验证生物识别或硬件密钥…';
     try {
       const response = await ceremony(stagedAuth);
       await api('authorization-verify', { challengeId: stagedAuth.challengeId, response });
       if (data.isOriginalSession) {
-        if (status) status.textContent = 'Passkey 核准成功，正在完成授权并交付结果…';
-        const finishRes = await api('authorization-resume', { authorizationId: authId });
-        if (finishRes.redirectTo) {
-          location.replace(finishRes.redirectTo);
-          return;
-        }
+        await resumeAuthorization();
       } else {
         if (status) status.textContent = '已使用 Passkey 成功核准！发起端设备将自动完成授权并继续。';
         document.querySelector('#action-buttons-container')?.remove();
@@ -145,26 +155,27 @@ if (data && data.authorizationId) {
     }
   });
 
-  if (data.isOriginalSession && data.status === 'PENDING') {
-    const poller = setInterval(async () => {
+  if (data.isOriginalSession && data.status === 'APPROVED') {
+    void resumeAuthorization();
+  } else if (data.isOriginalSession && data.status === 'PENDING') {
+    poller = setInterval(async () => {
+      if (busy || polling || resumePromise) return;
+      polling = true;
       try {
         const r = await fetch('/security/api/authorization-status/' + encodeURIComponent(authId), { credentials: 'same-origin' });
         if (!r.ok) return;
         const s = await r.json();
+        // Local verification may have completed while this request was pending.
+        if (busy || resumePromise) return;
         if (s.status === 'APPROVED') {
-          clearInterval(poller);
-          if (status) status.textContent = 'Passkey 核准成功，正在完成授权并交付结果…';
-          const finishRes = await api('authorization-resume', { authorizationId: authId });
-          if (finishRes.redirectTo) {
-            location.replace(finishRes.redirectTo);
-          }
+          await resumeAuthorization();
         } else if (['FINISHING', 'COMPLETED', 'CANCELLED', 'INVALIDATED', 'FAILED', 'EXPIRED'].includes(s.status)) {
           clearInterval(poller);
           const badge = document.querySelector('#auth-status-badge');
           if (badge) badge.textContent = s.status;
           if (status) status.textContent = '授权状态已变更为: ' + s.status;
         }
-      } catch {}
+      } catch {} finally { polling = false; }
     }, 2000);
   }
 }
@@ -801,6 +812,10 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
               </li>
             `)}
           </ul>
+          <div class="form-group">
+            <label class="form-label" for="credential-name"><span>重命名或新 Passkey 名称</span></label>
+            <div class="input-wrapper"><input id="credential-name" class="text-input" value="我的 Passkey" maxlength="80"></div>
+          </div>
           <button class="pill-btn secondary full-width" data-operation="add">
             ${raw(KEY_ICON_SVG)}
             <span>添加新 Passkey</span>

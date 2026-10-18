@@ -82,6 +82,15 @@ async function revokeClientGrants(provider: OAuthHelpers, userId: string, client
   const grants = await checkedUserGrants(provider, userId);
   for (const grant of grants) if (grant.clientId === clientId) await provider.revokeGrant(grant.id, userId);
 }
+async function revokeAuthorizationAttempt(provider: OAuthHelpers, userId: string, clientId: string, authorizationEventId: string): Promise<void> {
+  const grants = await checkedUserGrants(provider, userId);
+  for (const grant of grants) {
+    const metadata = z.object({ authorizationEventId: z.string() }).safeParse(grant.metadata);
+    if (grant.clientId === clientId && metadata.success && metadata.data.authorizationEventId === authorizationEventId) {
+      await provider.revokeGrant(grant.id, userId);
+    }
+  }
+}
 
 function randomState(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -195,6 +204,7 @@ async function finishAuthorization(
 ): Promise<{ redirectTo: string } | Response> {
   const { authorizationId, originalSessionId, finishingId, commitTicket, intent } = context;
   if (!hasS256Pkce(intent.authRequest) || (intent.advancedSecurity && intent.permissionLevel !== "full_access")) {
+    await securityCall(env, "/authorization/fail", { authorizationId }).catch(() => {});
     return invalidPkceResponse();
   }
   try {
@@ -215,6 +225,7 @@ async function finishAuthorization(
       ticket: commitTicket,
     });
   } catch {
+    await securityCall(env, "/authorization/fail", { authorizationId }).catch(() => {});
     const requestId = crypto.randomUUID();
     console.error(JSON.stringify({ event: "commit_policy_failed", requestId }));
     return Response.json({ error: "temporarily_unavailable", error_description: "Unable to commit policy; restart authorization", requestId }, { status: 503 });
@@ -248,15 +259,35 @@ async function finishAuthorization(
     });
   } catch {
     const requestId = crypto.randomUUID();
+    // Provider completion can fail after writing a grant. Keep the client mutex
+    // until that attempt's grants are removed; never revoke a newer attempt.
+    try {
+      await revokeAuthorizationAttempt(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID, intent.authRequest.clientId, authorizationEventId);
+      await securityCall(env, "/authorization/fail", { authorizationId });
+    } catch {
+      console.error(JSON.stringify({ event: "authorization_attempt_cleanup_failed", requestId }));
+    }
     console.error(JSON.stringify({ event: "complete_authorization_failed", requestId }));
     return Response.json({ error: "temporarily_unavailable", error_description: "Unable to complete authorization", requestId }, { status: 503 });
   }
-  await securityCall(env, "/authorization/finalize", {
-    authorizationId,
-    finishingId,
-    originalSessionId,
-    authorizationEventId,
-  }).catch(() => {});
+  try {
+    await securityCall(env, "/authorization/finalize", {
+      authorizationId,
+      finishingId,
+      originalSessionId,
+      authorizationEventId,
+    });
+  } catch {
+    const requestId = crypto.randomUUID();
+    try {
+      await revokeAuthorizationAttempt(env.OAUTH_PROVIDER, env.ALLOWED_GITHUB_USER_ID, intent.authRequest.clientId, authorizationEventId);
+      await securityCall(env, "/authorization/fail", { authorizationId });
+    } catch {
+      console.error(JSON.stringify({ event: "authorization_attempt_cleanup_failed", requestId }));
+    }
+    console.error(JSON.stringify({ event: "finalize_authorization_failed", requestId }));
+    return Response.json({ error: "temporarily_unavailable", error_description: "Authorization was invalidated; restart authorization", requestId }, { status: 503 });
+  }
   return completeResult;
 }
 
@@ -649,6 +680,17 @@ app.get("/dashboard/api/push/subscriptions", c => dashboardRequest(c, async () =
       disabledAt: z.number().nullable(),
     })),
   }));
+  return c.json(result);
+}));
+app.post("/dashboard/api/push/subscription", c => dashboardRequest(c, async () => {
+  const body = z.object({ endpoint: z.string().min(1).max(4096) }).strict().parse(await readBoundedJson(c.req.raw));
+  const result = await dashboardVault(c.env, "/notifications/subscription", z.object({
+    subscription: z.object({ id: z.string(), label: z.string(), active: z.boolean() }).nullable(),
+  }), {
+    sessionId: getCookie(c, SECURITY_COOKIE),
+    csrf: c.req.header("X-CSRF-Token"),
+    input: body,
+  });
   return c.json(result);
 }));
 app.post("/dashboard/api/push/subscribe", c => dashboardRequest(c, async () => {

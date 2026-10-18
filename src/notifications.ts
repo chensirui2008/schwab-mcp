@@ -414,6 +414,14 @@ export class NotificationStore {
     }));
   }
 
+  subscriptionForEndpoint(endpoint: string): { id: string; label: string; active: boolean } | null {
+    const row = this.storage.sql.exec<{ id: string; label: string; disabled_at: number | null }>(
+      "SELECT id, label, disabled_at FROM push_subscription WHERE endpoint = ?",
+      endpoint
+    ).toArray()[0];
+    return row ? { id: row.id, label: row.label, active: row.disabled_at === null } : null;
+  }
+
   recordEvent(event: {
     dedupeKey: string;
     type: NotificationType;
@@ -660,15 +668,23 @@ export class NotificationStore {
 
   private pruneOldEvents(): void {
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    // Do not delete events with pending or unexpired sending deliveries
-    this.storage.sql.exec(`
-      DELETE FROM notification_event 
-      WHERE created_at < ? 
+    // Delete child deliveries before their events; outstanding work is retained.
+    const expiredEvents = `
+      SELECT id FROM notification_event
+      WHERE created_at < ?
         AND id NOT IN (
-          SELECT event_id FROM notification_delivery 
+          SELECT event_id FROM notification_delivery
           WHERE status IN ('PENDING', 'SENDING')
         )
-    `, thirtyDaysAgo);
+    `;
+    this.storage.sql.exec(
+      `DELETE FROM notification_delivery WHERE event_id IN (${expiredEvents})`,
+      thirtyDaysAgo
+    );
+    this.storage.sql.exec(
+      `DELETE FROM notification_event WHERE id IN (${expiredEvents})`,
+      thirtyDaysAgo
+    );
 
     // Keep max 1,000 events
     const count = this.storage.sql.exec<{ count: number }>(
@@ -677,25 +693,24 @@ export class NotificationStore {
 
     if (count > 1000) {
       const excess = count - 1000;
-      this.storage.sql.exec(`
-        DELETE FROM notification_event 
-        WHERE id IN (
-          SELECT id FROM notification_event 
-          WHERE id NOT IN (
-            SELECT event_id FROM notification_delivery 
-            WHERE status IN ('PENDING', 'SENDING')
-          )
-          ORDER BY created_at ASC 
-          LIMIT ?
+      const excessEvents = `
+        SELECT id FROM notification_event
+        WHERE id NOT IN (
+          SELECT event_id FROM notification_delivery
+          WHERE status IN ('PENDING', 'SENDING')
         )
-      `, excess);
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+      `;
+      this.storage.sql.exec(
+        `DELETE FROM notification_delivery WHERE event_id IN (${excessEvents})`,
+        excess
+      );
+      this.storage.sql.exec(
+        `DELETE FROM notification_event WHERE id IN (${excessEvents})`,
+        excess
+      );
     }
-
-    // Clean orphaned deliveries
-    this.storage.sql.exec(`
-      DELETE FROM notification_delivery 
-      WHERE event_id NOT IN (SELECT id FROM notification_event)
-    `);
   }
 
   // Delivery drain logic (used by alarm in Phase 3)
@@ -706,6 +721,7 @@ export class NotificationStore {
     eventCreatedAt: number;
     eventExpiresAt: number;
     attemptCount: number;
+    leaseUntil: number;
     subscription: {
       id: string;
       endpoint: string;
@@ -764,6 +780,7 @@ export class NotificationStore {
         eventCreatedAt: number;
         eventExpiresAt: number;
         attemptCount: number;
+        leaseUntil: number;
         subscription: {
           id: string;
           endpoint: string;
@@ -797,6 +814,7 @@ export class NotificationStore {
           eventCreatedAt: row.event_created_at,
           eventExpiresAt: row.expires_at,
           attemptCount: row.attempt_count,
+          leaseUntil: now + leaseDurationMs,
           subscription: {
             id: row.sub_id,
             endpoint: row.endpoint,
@@ -812,20 +830,49 @@ export class NotificationStore {
   }
 
   recordDeliveryOutcome(deliveryId: string, subscriptionId: string, result: {
+    leaseUntil: number;
     status: "SENT" | "FAILED" | "RETRY";
     statusCode?: number;
     nextAttemptAt?: number;
-    disableSubscriptionReason?: string;
-  }): void {
+  } & ({
+    disableSubscriptionReason: string;
+    subscription: { p256dh: string; auth: string; ownerCredentialVersion: number };
+  } | {
+    disableSubscriptionReason?: never;
+    subscription?: never;
+  })): void {
     const now = Date.now();
     this.storage.transactionSync(() => {
+      const current = this.storage.sql.exec<{ id: string }>(
+        `SELECT id FROM notification_delivery
+         WHERE id = ? AND subscription_id = ? AND status = 'SENDING' AND lease_until = ?`,
+        deliveryId,
+        subscriptionId,
+        result.leaseUntil
+      ).toArray()[0];
+      if (!current) return;
+
       if (result.disableSubscriptionReason) {
-        this.storage.sql.exec(
-          "UPDATE push_subscription SET disabled_at = ?, disabled_reason = ? WHERE id = ?",
+        const disabled = this.storage.sql.exec<{ id: string }>(
+          `UPDATE push_subscription SET disabled_at = ?, disabled_reason = ?
+           WHERE id = ? AND disabled_at IS NULL AND p256dh = ? AND auth = ?
+             AND owner_credential_version = ?
+           RETURNING id`,
           now,
           result.disableSubscriptionReason,
-          subscriptionId
-        );
+          subscriptionId,
+          result.subscription.p256dh,
+          result.subscription.auth,
+          result.subscription.ownerCredentialVersion
+        ).toArray()[0];
+        if (!disabled) {
+          this.storage.sql.exec(
+            "UPDATE notification_delivery SET status = 'FAILED', last_status_code = ?, lease_until = 0 WHERE id = ?",
+            result.statusCode ?? null,
+            deliveryId
+          );
+          return;
+        }
         this.storage.sql.exec(
           "UPDATE notification_delivery SET status = 'SUPPRESSED' WHERE subscription_id = ? AND status IN ('PENDING', 'SENDING')",
           subscriptionId
@@ -915,7 +962,7 @@ export async function sendWebPush(
     method: "POST",
     headers: pushPayload.headers,
     body: pushPayload.body,
-    redirect: "error",
+    redirect: "manual",
     signal: AbortSignal.timeout(5000),
   });
 

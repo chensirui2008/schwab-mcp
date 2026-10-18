@@ -222,6 +222,8 @@ flowchart TD
 
 通过 GitHub numeric owner 校验后，首次开启须注册首个 Passkey；已有凭据时须验证已有 Passkey。关闭也须已有 Passkey 验证。只有成功撤销此客户端全部旧 grant 后，才提交新客户端策略并签发授权；DO 同时核对可信客户端身份和策略版本，阻止旧 token 按旧模式写入。
 
+客户端 OAuth 可在另一台已通过 owner 登录的设备打开 `/security/authorizations/:id`，核对冻结权限并完成 Passkey 批准；批准设备不会收到 authorization code，只有原始浏览器可领取回调。原始浏览器刷新已批准请求后会继续完成授权。同一客户端的完成阶段串行执行；失效请求不交付 code，失败清理只撤销本次尝试的 grant。无法确认清理成功时保持客户端阻塞，不放行重叠授权。
+
 增强模式保留 `prepare_trade` 输入，返回 `proposalId`、`approvalMethod: "passkey"`、`approvalUrl`、冻结预览、摘要及到期时间，**不返回可执行的确认令牌或短语**。用电脑或手机外部浏览器打开链接，必要时先通过 GitHub owner 登录。核对账户 hash、每条订单腿、方向、数量、价格类型、有效期及完整 JSON，延迟任务还须核对条件和截止时间。点击“批准并提交”后才调用 WebAuthn；验证成功即提交即时订单或激活冻结的延迟任务。Agent 通过 `get_trade_proposal({ proposalId })` 获取当前客户端提案状态与执行结果。重复批准不会重复提交，`EXECUTION_UNCERTAIN` 仍须人工查询订单。
 
 Passkey 批准仅授权冻结提案，不执行余额、名义金额上限或洗售检查。批准前请自行核对完整订单。
@@ -246,10 +248,16 @@ Passkey 批准仅授权冻结提案，不执行余额、名义金额上限或洗
 - **Advanced Security**：开启、关闭均须绑定客户端、目标模式和当前策略版本的原生 Passkey 验证；首次开启可注册首个凭据。降为只读保留硬件策略，再升级不会静默关闭保护。不能通过仪表板修改部署总开关 `ENABLE_TRADING`。
 - **审计**：按客户端、工具和状态过滤、分页，显示成功/错误总数及近二十四小时活动。仅存 owner SQLite，保留三十天且最多最新 5,000 条；参数摘要只保留白名单计数、布尔及枚举，最多 512 UTF-8 字节，不保存原始参数、订单、凭据或上游错误原文。后台写入失败不改变工具结果，因此它是运维历史，不是保证无遗漏的合规账本。
 - **Passkey**：复用 `/security/api/*` 注册、添加、重命名和删除，禁止删除最后一个；独立 GitHub 恢复入口仍为 `/security/recover`。
+- **待办与通知**：查看待批准的客户端授权和交易提案；通知链接独立读取指定事件，即使该事件不在当前分页中也显示详情，并将其标为已读。
+- **应用与推送设置**：安装 Dashboard PWA，管理可选的 Apple/FCM Web Push 设备。本机测试和停用操作精确匹配当前浏览器订阅，不从设备列表猜测；列表不返回 endpoint 或密钥。服务器停用的订阅可由原浏览器重新登记。
 
-仪表板在页面加载或手动刷新时读取运行状态和审计历史，不提供实时 JSON-RPC 协议流，也不持续验证硬件认证器就绪状态。
+仪表板在页面加载或手动刷新时读取运行状态和审计历史；待办与通知还会在页面可见期间及收到推送消息时刷新。不提供实时 JSON-RPC 协议流，也不持续验证硬件认证器就绪状态。Service Worker 不可用时仅禁用推送功能，不阻塞其他模块。
 
 写请求要求同源 JSON、浏览器 cookie 和 CSRF header，实际请求体限制 64 KiB；页面/API 禁止缓存和嵌入。无需新增 Secret、binding、CDN 或前端依赖。自动签名测试和本地 runtime smoke 不能替代最终域名 Safari/手机硬件验收。
+
+离线缓存仅保存公开静态资源；通知、订阅和 VAPID 密钥只存 owner SQLite，推送载荷仅含事件 ID、类型及时间。统一 alarm 负责投递、授权到期提醒和延迟交易，升级后已有 token 也会初始化提醒调度。保留期清理先删除已完成投递再删除父事件，已处理通知不会因迟到的重试重新进入待投递状态。
+
+执行 `npm run test:pwa-acceptance`，在真实 Workers runtime 中验证推送加密发送和不跟随重定向，全部出站请求均模拟。浏览器检查运行 `node scripts/pwa-browser-acceptance.mjs`，打开 `http://localhost:8799/login`；GitHub 模拟、Schwab 禁止访问。这不代表已验证操作系统通知投递或 Safari/iPhone 硬件 Passkey。
 
 ## 安全边界与交易防护机制
 

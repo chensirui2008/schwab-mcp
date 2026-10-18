@@ -131,6 +131,17 @@ export class SecurityStore {
         revoked INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS client_authorization_finishing (
+        client_id TEXT PRIMARY KEY,
+        authorization_id TEXT NOT NULL UNIQUE,
+        finishing_id TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO client_authorization_finishing (client_id, authorization_id, finishing_id)
+        SELECT json_extract(payload, '$.intent.authRequest.clientId'), state, json_extract(payload, '$.finishingId')
+        FROM oauth_state
+        WHERE kind = 'security_client_authorization'
+          AND json_extract(payload, '$.status') = 'FINISHING'
+          AND json_extract(payload, '$.finishingId') IS NOT NULL;
     `);
     const clientColumns = new Set(storage.sql.exec<{ name: string }>("PRAGMA table_info(client_security)").toArray().map(row => row.name));
     for (const [name, definition] of Object.entries({
@@ -496,7 +507,7 @@ export class SecurityStore {
     ).toArray();
     for (const row of previousAuths) {
       const item = JSON.parse(row.payload) as ClientAuthorization;
-      if (item.intent.authRequest.clientId === intent.authRequest.clientId && ["PENDING", "APPROVED", "FINISHING"].includes(item.status)) {
+      if (item.intent.authRequest.clientId === intent.authRequest.clientId && ["PENDING", "APPROVED"].includes(item.status)) {
         item.status = "INVALIDATED";
         this.storage.sql.exec(
           "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
@@ -712,15 +723,20 @@ export class SecurityStore {
     return { cancelled: true };
   }
   clientAuthorizationFail(authorizationId: string): void {
-    const auth = this.getClientAuthorization(authorizationId);
-    if (auth && auth.status === "FINISHING") {
-      auth.status = "FAILED";
-      this.storage.sql.exec(
-        "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
-        JSON.stringify(auth),
-        auth.id
-      );
-    }
+    this.storage.transactionSync(() => {
+      const auth = this.getClientAuthorization(authorizationId);
+      if (auth && auth.status === "FINISHING") {
+        auth.status = "FAILED";
+        this.storage.sql.exec(
+          "UPDATE oauth_state SET payload = ? WHERE state = ? AND kind = 'security_client_authorization'",
+          JSON.stringify(auth),
+          auth.id
+        );
+      }
+      // Recovery may have removed the authorization envelope, but the provider
+      // lifecycle still owns this exclusion until its cleanup has completed.
+      this.storage.sql.exec("DELETE FROM client_authorization_finishing WHERE authorization_id = ?", authorizationId);
+    });
   }
 
 
@@ -745,19 +761,20 @@ export class SecurityStore {
         throw new SecurityError("SECURITY_VERIFICATION_FAILED");
       }
 
-      const otherFinishing = this.storage.sql.exec<{ state: string; payload: string }>(
-        "SELECT state, payload FROM oauth_state WHERE kind = 'security_client_authorization' AND state != ?",
-        authorizationId
-      ).toArray().some(r => {
-        const item = JSON.parse(r.payload) as ClientAuthorization;
-        return item.intent.authRequest.clientId === auth.intent.authRequest.clientId && item.status === "FINISHING" && item.expiresAt > Date.now();
-      });
+      const otherFinishing = this.storage.sql.exec<{ authorization_id: string }>(
+        "SELECT authorization_id FROM client_authorization_finishing WHERE client_id = ?",
+        auth.intent.authRequest.clientId
+      ).toArray().length > 0;
 
       if (otherFinishing) {
         throw new SecurityError("SECURITY_POLICY_CHANGED");
       }
 
       const finishingId = crypto.randomUUID();
+      this.storage.sql.exec(
+        "INSERT INTO client_authorization_finishing (client_id, authorization_id, finishing_id) VALUES (?, ?, ?)",
+        auth.intent.authRequest.clientId, authorizationId, finishingId
+      );
       auth.status = "FINISHING";
       auth.finishingId = finishingId;
 
@@ -801,7 +818,10 @@ export class SecurityStore {
       if (proof.credentialVersion !== this.version()) throw new SecurityError();
 
       const auth = this.getClientAuthorization(proof.authorizationId);
-      if (!auth || auth.finishingId !== proof.finishingId || auth.status !== "FINISHING" || auth.digest !== proof.digest || auth.intent.authRequest.clientId !== clientId) {
+      if (!auth || auth.finishingId !== proof.finishingId || auth.status !== "FINISHING" || auth.digest !== proof.digest ||
+          auth.credentialVersion !== this.version() || auth.expiresAt <= Date.now() ||
+          auth.intent.authRequest.clientId !== clientId || auth.intent.permissionLevel !== permissionLevel ||
+          auth.intent.advancedSecurity !== advancedSecurity || auth.intent.policyVersion !== expectedVersion) {
         throw new SecurityError("SECURITY_VERIFICATION_FAILED");
       }
 
@@ -838,6 +858,11 @@ export class SecurityStore {
       if (!auth || auth.finishingId !== finishingId || auth.originalSessionId !== originalSessionId || auth.status !== "FINISHING" || auth.credentialVersion !== this.version()) {
         throw new SecurityError("SECURITY_VERIFICATION_FAILED");
       }
+      const policy = this.policy(auth.intent.authRequest.clientId);
+      if (auth.expiresAt <= Date.now() || auth.committedPolicyVersion !== policy.version || policy.revoked ||
+          policy.permissionLevel !== auth.intent.permissionLevel || policy.advancedSecurity !== auth.intent.advancedSecurity) {
+        throw new SecurityError("SECURITY_POLICY_CHANGED");
+      }
 
       auth.status = "COMPLETED";
       auth.authorizationEventId = authorizationEventId;
@@ -848,6 +873,10 @@ export class SecurityStore {
         auth.id
       );
 
+      this.storage.sql.exec(
+        "DELETE FROM client_authorization_finishing WHERE authorization_id = ? AND finishing_id = ?",
+        authorizationId, finishingId
+      );
       this.storage.sql.exec("DELETE FROM oauth_state WHERE state = ? AND kind = 'security_session'", originalSessionId);
     });
   }
