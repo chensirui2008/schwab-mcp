@@ -1388,16 +1388,35 @@ async function loadHighlightedNotification() {
     banner.replaceChildren(node('p', '所选通知不存在或读取失败：' + err.message, 'load-error'));
   }
 }
+// Browser push promises can remain pending while the push service is unreachable.
+// Bound each wait; a late subscription must never continue into server registration.
+let pendingPushSubscription = null;
+async function pushWait(promise, step, timeoutMs = 20000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(step + '超时。请检查网络后重试；Chrome 还需能连接 Google 推送服务。')), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+function pushProgress(text, error = false) {
+  const status = $('push-action-status');
+  status.textContent = text;
+  status.className = error ? 'load-error' : 'muted';
+}
+async function pushApi(path, method = 'GET', body) {
+  return pushWait(api(path, method, body), '推送设备服务请求');
+}
 async function pushRegistration() {
   if (!('serviceWorker' in navigator)) throw new Error('此浏览器不支持 Service Worker。');
-  const reg = await navigator.serviceWorker.getRegistration();
+  const reg = await pushWait(navigator.serviceWorker.getRegistration(), '读取 Service Worker');
   if (!reg?.active || !reg.pushManager) throw new Error('推送服务尚未就绪，请稍后刷新重试。');
   return reg;
 }
 async function currentPushDevice() {
   const reg = await pushRegistration();
-  const sub = await reg.pushManager.getSubscription();
-  const data = sub ? await api('/dashboard/api/push/subscription', 'POST', { endpoint: sub.endpoint }) : null;
+  const sub = await pushWait(reg.pushManager.getSubscription(), '读取本机推送订阅');
+  const data = sub ? await pushApi('/dashboard/api/push/subscription', 'POST', { endpoint: sub.endpoint }) : null;
   const device = data?.subscription;
   return { reg, sub, device };
 }
@@ -1435,7 +1454,7 @@ async function loadPushSettings() {
       if (badge) { badge.textContent = permission === 'granted' ? '权限已允许，尚未开启推送' : '未开启推送'; badge.className = 'badge warning'; }
       disabled(subBtn, false); disabled(testBtn, true); disabled(unsubBtn, true);
     }
-    const devData = await api('/dashboard/api/push/subscriptions');
+    const devData = await pushApi('/dashboard/api/push/subscriptions');
     const items = devData.items || [];
     devicesBody.replaceChildren();
     if (!items.length) {
@@ -1607,18 +1626,35 @@ $('notifications-prev-btn')?.addEventListener('click',() => run(async () => { no
 $('notifications-next-btn')?.addEventListener('click',() => run(async () => { if (notificationsOffset + 15 < notificationsTotal) { notificationsOffset += 15; await loadNotifications(notificationsOffset); } }));
 $('push-subscribe-btn')?.addEventListener('click', () => run(async () => {
   try {
-    const perm = await Notification.requestPermission();
+    pushProgress('正在检查通知权限…');
+    const perm = Notification.permission === 'granted' ? 'granted' : await pushWait(Notification.requestPermission(), '等待通知权限', 60000);
     if (perm !== 'granted') throw new Error('未授权通知权限，无法开启推送。');
-    const config = await api('/dashboard/api/push/config');
+    renderNotificationPermission();
+    pushProgress('正在读取推送配置…');
+    const config = await pushApi('/dashboard/api/push/config');
     const reg = await pushRegistration();
-    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
+    let sub = await pushWait(reg.pushManager.getSubscription(), '读取本机推送订阅');
+    if (!sub) {
+      pushProgress('正在连接浏览器推送服务（最长等待 20 秒）…');
+      // Reuse an in-flight browser operation when retrying after a timeout.
+      if (!pendingPushSubscription) {
+        pendingPushSubscription = reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
+        pendingPushSubscription.then(() => { pendingPushSubscription = null; }, () => { pendingPushSubscription = null; });
+      }
+      sub = await pushWait(pendingPushSubscription, '连接浏览器推送服务');
+    }
     const subJson = sub.toJSON();
-    const label = window.prompt('为此设备输入标识名称（例如：我的 iPhone、办公 Chrome）：', navigator.userAgent.includes('iPhone') ? 'iPhone' : '桌面 Chrome') || '推送设备';
-    await api('/dashboard/api/push/subscribe', 'POST', {
+    pushProgress('正在登记本机推送设备…');
+    await pushApi('/dashboard/api/push/subscribe', 'POST', {
       subscription: { endpoint: sub.endpoint, expirationTime: sub.expirationTime, keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth } },
-      label: label.trim(),
+      label: $('push-device-label').value.trim() || (navigator.userAgent.includes('iPhone') ? 'iPhone' : '桌面 Chrome'),
     });
+    pushProgress('通知已成功启用！');
     message('通知已成功启用！');
+  } catch (error) {
+    const detail = '开启推送失败：' + (error.message || '请刷新后重试。');
+    pushProgress(detail, true);
+    message(detail, true);
   } finally { await loadPushSettings(); }
 }));
 $('push-test-btn')?.addEventListener('click', async () => {
@@ -1995,11 +2031,13 @@ ${raw(BACKGROUND_SVG)}
           <p style="margin-bottom:10px;"><span id="push-permission-badge" class="badge neutral" role="status">检查通知权限中…</span></p>
           <p class="muted" style="font-size:12px;margin-bottom:12px;">浏览器允许通知后，还需点击“开启本机通知推送”完成本机订阅与设备登记。</p>
           <p class="muted" style="font-size:12px;margin-bottom:12px;">在 iPhone PWA（iOS 16.4+ 添加至主屏幕）或桌面 Chrome 上启用推送，即可在后台或锁屏接收待核准、交易结果与授权失效提醒。</p>
+          <p><label for="push-device-label">设备名称（可选）</label> <input id="push-device-label" type="text" maxlength="80" placeholder="例如：我的 iPhone、办公 Chrome"></p>
           <div id="push-action-buttons" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
             <button id="push-subscribe-btn" class="button primary" data-action data-disabled="true" type="button" disabled>开启本机通知推送</button>
             <button id="push-test-btn" class="button" data-action data-disabled="true" type="button" disabled>发送测试提醒</button>
             <button id="push-unsubscribe-btn" class="button danger" data-action data-disabled="true" type="button" disabled>停用本机推送</button>
           </div>
+          <p id="push-action-status" class="muted" role="status" aria-live="polite"></p>
           <h4 style="font-size:12px;color:var(--text);margin-bottom:8px;text-transform:uppercase;">已登记推送设备</h4>
           <div class="table-scroll" role="region" aria-label="推送设备列表" tabindex="0">
             <table id="push-devices-table">
