@@ -1,4 +1,5 @@
 import { html, raw } from "hono/html";
+import { getDictionary, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
 
 export const FAVICON_LINK = raw('<link rel="icon" type="image/svg+xml" href="/favicon.svg">');
 export const PWA_HEAD_TAGS = raw(`
@@ -29,12 +30,16 @@ export interface AuthorizePageProps {
   redirectUri: string;
   state: string;
   advancedSecurity?: boolean;
+  lang?: SupportedLang;
 }
 
 // Finish the same-origin form navigation before starting GitHub OAuth. A 302
 // directly from the form POST remains subject to the form-action 'self' CSP.
-export function renderGitHubContinuePage(url: string) {
-  return html`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FAVICON_LINK}<title>继续 GitHub 身份验证 · Schwab MCP</title><style>body{margin:0;min-height:100vh;background:#090d16;color:#f8fafc;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}a{color:#38bdf8;text-underline-offset:4px}p{font-size:14px;color:#94a3b8;margin:8px 0}</style></head><body><p>&gt;_ 正在跳转至 GitHub 身份验证…</p><p><a id="github-continue" href="${url}">若未自动跳转，点击继续验证</a></p><script>location.replace(document.getElementById('github-continue').href);</script></body></html>`;
+export function renderGitHubContinuePage(url: string, langCandidate?: SupportedLang) {
+  const lang = resolveLang(langCandidate);
+  const dict = getDictionary(lang);
+  const t = dict.auth;
+  return html`<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FAVICON_LINK}<title>${t.gitHubContinueTitle}</title><style>body{margin:0;min-height:100vh;background:#090d16;color:#f8fafc;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}a{color:#38bdf8;text-underline-offset:4px}p{font-size:14px;color:#94a3b8;margin:8px 0}</style></head><body><p>${t.gitHubContinueNotice}</p><p><a id="github-continue" href="${url}">${t.gitHubContinueLink}</a></p><script>location.replace(document.getElementById('github-continue').href);</script></body></html>`;
 }
 
 export const BACKGROUND_SVG = `<svg class="bg-telemetry" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -547,6 +552,102 @@ export const COMMON_STYLES = `
     opacity: 0.4;
   }
 
+  /* Language Dropdown Menu */
+  .lang-dropdown {
+    position: relative;
+    display: inline-block;
+    user-select: none;
+  }
+
+  .lang-dropdown summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(20, 26, 36, 0.85);
+    color: var(--text-sub);
+    border: 1px solid var(--card-border);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+    transition: all 0.15s ease;
+    min-height: 24px;
+  }
+
+  .lang-dropdown summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .lang-dropdown summary:hover,
+  .lang-dropdown[open] summary {
+    color: var(--text-main);
+    border-color: var(--card-border-focus);
+    background: rgba(34, 44, 61, 0.95);
+  }
+
+  .lang-dropdown .lang-icon {
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .lang-dropdown .lang-caret {
+    font-size: 9px;
+    opacity: 0.7;
+    transition: transform 0.15s ease;
+  }
+
+  .lang-dropdown[open] .lang-caret {
+    transform: rotate(180deg);
+  }
+
+  .lang-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 5px);
+    right: 0;
+    min-width: 130px;
+    background: #0f131c;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    padding: 4px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .lang-dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px;
+    border-radius: 4px;
+    color: var(--text-sub);
+    text-decoration: none;
+    font-size: 11px;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+
+  .lang-dropdown-item:hover {
+    background: #1a2230;
+    color: var(--text-main);
+    text-decoration: none;
+  }
+
+  .lang-dropdown-item.active {
+    color: #4edea3;
+    font-weight: 600;
+    background: rgba(78, 222, 163, 0.08);
+  }
+
+  .lang-dropdown-item .lang-check {
+    font-size: 11px;
+    color: #4edea3;
+  }
+
   /* Mobile-first touch adaptations */
   @media (max-width: 640px) {
     body {
@@ -567,38 +668,48 @@ export const COMMON_STYLES = `
 `;
 
 export function renderAuthorizePage(props: AuthorizePageProps) {
+  const lang = resolveLang(props.lang);
+  const dict = getDictionary(lang);
+  const t = dict.auth;
+  const c = dict.common;
+
   return html`<!doctype html>
-<html lang="zh-CN">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>客户端授权 · Schwab MCP</title>
+  <title>${t.authorizeTitle}</title>
   ${FAVICON_LINK}
   <style>${COMMON_STYLES}</style>
+</head>
+<body>
+  ${raw(BACKGROUND_SVG)}
+
   <div class="main-wrapper">
     <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
       <div class="telemetry-node">
         <span class="status-pulse-dot"></span>
-        <span>&gt;_ SCHWAB_MCP // OAUTH_CONSENT_GATEWAY</span>
+        <span>${t.gatewayTag}</span>
       </div>
       <div class="telemetry-chips">
+        ${raw(renderLangDropdown(lang))}
         <span class="tag-badge green">&bull; RFC 7636 S256</span>
         <span class="tag-badge">ENCLAVE_ISOLATED</span>
       </div>
     </div>
     <div class="brand-header">
       ${raw(BRAND_LOGO_SVG)}
-      <span class="brand-title">SCHWAB MCP</span>
+      <span class="brand-title">${c.brandTitle}</span>
     </div>
 
-    <div class="terminal-prompt-tag">&gt;_ OAUTH 2.1 INCOMING CLIENT CHALLENGE</div>
+    <div class="terminal-prompt-tag">${t.incomingChallengeTag}</div>
 
-    <h1 class="page-title">允许连接 Schwab MCP？</h1>
-    <p class="page-subtitle">客户端正在申请接入您的个人 Charles Schwab MCP 实例</p>
+    <h1 class="page-title">${t.consentHeading}</h1>
+    <p class="page-subtitle">${t.consentSubtitle}</p>
 
     <div class="auth-card">
       <div class="info-row">
-        <span class="info-label">客户端标识</span>
+        <span class="info-label">${t.clientLabel}</span>
         <span class="info-value">
           ${props.clientName}
           <span class="tag-badge">OAuth 2.1</span>
@@ -606,7 +717,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
         </span>
       </div>
       <div class="info-row column">
-        <span class="info-label">重定向回调地址</span>
+        <span class="info-label">${t.redirectUriLabel}</span>
         <div class="uri-box">${props.redirectUri}</div>
       </div>
 
@@ -622,8 +733,8 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
             </svg>
           </div>
           <div class="policy-content">
-            <div class="policy-title">账户与行情读取</div>
-            <div class="policy-desc">允许查询实时报价、历史 K 线、期权链、账户资产与交易历史流水。</div>
+            <div class="policy-title">${t.readAccountTitle}</div>
+            <div class="policy-desc">${t.readAccountDesc}</div>
           </div>
         </div>
         <div class="policy-item">
@@ -634,26 +745,26 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
             </svg>
           </div>
           <div class="policy-content">
-            <div class="policy-title">受控交易工具与安全防护</div>
-            <div class="policy-desc">仅完整访问客户端可看到交易工具。真实交易仍受部署总开关、明确用户指令以及二次确认约束；保留显式开启的 session 直下模式和撤单例外。</div>
+            <div class="policy-title">${t.tradingPolicyTitle}</div>
+            <div class="policy-desc">${t.tradingPolicyDesc}</div>
           </div>
         </div>
       </div>
 
       <fieldset class="permission-options">
-        <legend>选择此客户端的权限等级</legend>
+        <legend>${t.permissionLegend}</legend>
         <label class="permission-option">
           <input type="radio" name="permissionLevel" value="read_only" form="authorize-form" required ${props.advancedSecurity ? "" : "checked"}>
           <span>
-            <span class="policy-title">只读 · Read only</span><br>
-            <span class="policy-desc">允许读取账户与行情；不向模型暴露交易工具。</span>
+            <span class="policy-title">${t.readOnlyTitle}</span><br>
+            <span class="policy-desc">${t.readOnlyDesc}</span>
           </span>
         </label>
         <label class="permission-option">
           <input type="radio" name="permissionLevel" value="full_access" form="authorize-form" required ${props.advancedSecurity ? "checked" : ""}>
           <span>
-            <span class="policy-title">完整访问 · Full access</span><br>
-            <span class="policy-desc">向模型暴露所有工具；保留现有二次确认、session 直下模式和撤单规则。</span>
+            <span class="policy-title">${t.fullAccessTitle}</span><br>
+            <span class="policy-desc">${t.fullAccessDesc}</span>
           </span>
         </label>
       </fieldset>
@@ -661,8 +772,8 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
       <label class="permission-option" id="advanced-option" style="margin-top: 10px;">
         <input type="checkbox" name="advancedSecurity" form="authorize-form" ${props.advancedSecurity ? "checked" : ""}>
         <span>
-          <span class="policy-title">Advanced Security · Passkey 订单批准</span><br>
-          <span class="policy-desc">仅完整访问可开启。每笔建单、改单及延迟任务创建和修改均需浏览器 Passkey 批准；禁止 session 直下。设置按客户端生效。</span>
+          <span class="policy-title">${t.advancedSecurityTitle}</span><br>
+          <span class="policy-desc">${t.advancedSecurityDesc}</span>
         </span>
       </label>
 
@@ -680,7 +791,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
           <line x1="12" y1="8" x2="12.01" y2="8"/>
         </svg>
         <div>
-          点击继续将跳转至 <strong>GitHub</strong> 验证您的拥有者身份（匹配预配置的数字 ID 白名单）。
+          ${raw(t.githubOwnerNotice)}
         </div>
       </div>
     </div>
@@ -691,35 +802,41 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
         <svg viewBox="0 0 24 24">
           <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
         </svg>
-        <span>继续 GitHub 身份验证并授权</span>
+        <span>${t.continueButton}</span>
       </button>
     </form>
 
     <div class="auth-footer">
-      <span>如非本人操作请直接关闭页面</span>
+      <span>${t.footerHint}</span>
       <span class="footer-dot">·</span>
-      <span>Charles Schwab MCP</span>
+      <span>${t.footerBrand}</span>
     </div>
   </div>
+  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
 </body>
 </html>`;
 }
 
-export function renderSchwabConnectedPage(): string {
-  return renderCompletionPage(false);
+export function renderSchwabConnectedPage(langCandidate?: SupportedLang): string {
+  return renderCompletionPage(false, langCandidate);
 }
 
-export function renderPasskeyAuthorizedPage(): string {
-  return renderCompletionPage(true);
+export function renderPasskeyAuthorizedPage(langCandidate?: SupportedLang): string {
+  return renderCompletionPage(true, langCandidate);
 }
 
-function renderCompletionPage(passkey: boolean): string {
+function renderCompletionPage(passkey: boolean, langCandidate?: SupportedLang): string {
+  const lang = resolveLang(langCandidate);
+  const dict = getDictionary(lang);
+  const t = dict.auth;
+  const c = dict.common;
+
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${passkey ? "授权完成" : "Schwab 已连接"} · Schwab MCP</title>
+  <title>${passkey ? t.passkeyAuthorizedTitle : t.schwabConnectedTitle}</title>
   ${FAVICON_LINK}
   <style>${COMMON_STYLES}</style>
 </head>
@@ -730,36 +847,37 @@ function renderCompletionPage(passkey: boolean): string {
     <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
       <div class="telemetry-node">
         <span class="status-pulse-dot"></span>
-        <span>&gt;_ SCHWAB_MCP // ${passkey ? "PASSKEY_AUTHORIZATION_PASSED" : "BROKERAGE_HANDSHAKE_PASSED"}</span>
+        <span>&gt;_ SCHWAB_MCP // ${passkey ? "PASSKEY_VERIFIED" : "BROKERAGE_CONNECTED"}</span>
       </div>
       <div class="telemetry-chips">
+        ${renderLangDropdown(lang)}
         <span class="tag-badge green">&bull; ${passkey ? "DONE" : "ONLINE"}</span>
         <span class="tag-badge">${passkey ? "PASSKEY_VERIFIED" : "VAULT_ENCRYPTED"}</span>
       </div>
     </div>
     <div class="brand-header">
       ${BRAND_LOGO_SVG}
-      <span class="brand-title">SCHWAB MCP</span>
+      <span class="brand-title">${c.brandTitle}</span>
     </div>
 
     <div class="terminal-prompt-tag">&gt;_ ${passkey ? "PASSKEY AUTHORIZATION SUCCESS" : "BROKERAGE CONNECTION VERIFIED"}</div>
 
-    <h1 class="page-title">${passkey ? "授权完成，可以关闭页面" : "Schwab 账户已成功连接"}</h1>
-    <p class="page-subtitle">${passkey ? "Passkey 批准已完成，请返回 MCP 客户端查看执行状态与结果。" : "OAuth 凭据已安全持久化至 SQLite 隔离存储 · 守护进程运行中"}</p>
+    <h1 class="page-title">${passkey ? t.passkeyAuthorizedHeading : t.schwabConnectedHeading}</h1>
+    <p class="page-subtitle">${passkey ? t.passkeyAuthorizedSubtitle : t.schwabConnectedSubtitle}</p>
 
     <div class="auth-card">
       <div class="info-row">
-        <span class="info-label">${passkey ? "授权状态" : "连接状态"}</span>
+        <span class="info-label">${t.statusLabel}</span>
         <span class="info-value">
-          ${passkey ? "已通过 Passkey 批准" : "已授权绑定"}
+          ${passkey ? t.passkeyStatusValue : t.schwabStatusValue}
           <span class="tag-badge green">${passkey ? "完成 DONE" : "正常 ONLINE"}</span>
         </span>
       </div>
       <div class="card-divider"></div>
       <div class="info-row">
-        <span class="info-label">安全防护</span>
+        <span class="info-label">${t.securityLabel}</span>
         <span class="info-value">
-          ${passkey ? "Passkey 身份验证已通过" : "SchwabVault DO 加密持久化"}
+          ${passkey ? t.passkeySecurityValue : t.schwabSecurityValue}
           <span class="tag-badge">${passkey ? "VERIFIED" : "ENCLAVE SEALED"}</span>
         </span>
       </div>
@@ -770,7 +888,7 @@ function renderCompletionPage(passkey: boolean): string {
           <polyline points="12 6 12 12 16 14"/>
         </svg>
         <div>
-          您现在可以安全关闭此浏览器窗口，并返回您的 MCP 客户端继续使用。
+          ${t.completionNotice}
         </div>
       </div>
     </div>
@@ -780,15 +898,16 @@ function renderCompletionPage(passkey: boolean): string {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="20 6 9 17 4 12"/>
         </svg>
-        <span>完成并关闭页面</span>
+        <span>${t.doneCloseButton}</span>
       </button>
-      <div class="action-hint">若浏览器限制脚本自动关闭，请直接关闭当前标签页</div>
+      <div class="action-hint">${t.closeTabHint}</div>
     </div>
 
     <div class="auth-footer">
-      <span>Charles Schwab MCP · 个人专用高安全实例</span>
+      <span>${t.completionFooter}</span>
     </div>
   </div>
+  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
 </body>
 </html>`;
 }

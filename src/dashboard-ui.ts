@@ -1,12 +1,14 @@
 import { html, raw } from "hono/html";
 import type { BrowserSession } from "./security-store";
 import { BACKGROUND_SVG, BRAND_LOGO_SVG, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
+import { formatString, getDashboardClientI18n, getDictionary, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
 
 export interface DashboardPageProps {
   session: BrowserSession;
   appVersion: string;
   allowedUserId: string;
   highlightNotificationId?: string;
+  lang?: SupportedLang;
 }
 
 const DASHBOARD_STYLES = `
@@ -1029,6 +1031,102 @@ dialog .actions {
   }
 }
 
+/* Language Dropdown Menu */
+.lang-dropdown {
+  position: relative;
+  display: inline-block;
+  user-select: none;
+}
+
+.lang-dropdown summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-container);
+  color: var(--text);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  transition: all 0.15s ease;
+  min-height: 26px;
+}
+
+.lang-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.lang-dropdown summary:hover,
+.lang-dropdown[open] summary {
+  color: var(--text-bright);
+  border-color: var(--primary);
+  background: var(--surface-high);
+}
+
+.lang-dropdown .lang-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.lang-dropdown .lang-caret {
+  font-size: 9px;
+  opacity: 0.7;
+  transition: transform 0.15s ease;
+}
+
+.lang-dropdown[open] .lang-caret {
+  transform: rotate(180deg);
+}
+
+.lang-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  min-width: 130px;
+  background: var(--surface);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  padding: 4px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lang-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 11px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.lang-dropdown-item:hover {
+  background: var(--surface-container);
+  color: var(--text-bright);
+  text-decoration: none;
+}
+
+.lang-dropdown-item.active {
+  color: var(--primary);
+  font-weight: 600;
+  background: rgba(78, 222, 163, 0.08);
+}
+
+.lang-dropdown-item .lang-check {
+  font-size: 11px;
+  color: var(--primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -1042,6 +1140,14 @@ const DASHBOARD_SCRIPT = String.raw`
 'use strict';
 (() => {
 const $ = id => document.getElementById(id);
+const i18n = (typeof globalThis !== 'undefined' && globalThis.__I18N__) || (typeof window !== 'undefined' && window.__I18N__) || {};
+function t(k, fallback = '') { return i18n[k] !== undefined ? i18n[k] : fallback; }
+function format(str, vars) {
+  let res = str;
+  if (!vars) return res;
+  for (const [key, val] of Object.entries(vars)) res = res.replaceAll('{' + key + '}', val);
+  return res;
+}
 const csrf = document.querySelector('meta[name="csrf"]').content;
 const sessionExpiresAt = Number(document.querySelector('meta[name="session-expires"]').content);
 const supportsPasskeys = !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
@@ -1081,21 +1187,21 @@ function syncControls() {
 function markExpired() {
   if (expired) return;
   expired = true;
-  $('session-state').textContent = '会话已过期';
+  $('session-state').textContent = t('sessionExpired', '会话已过期');
   $('session-state').className = 'badge bad';
   $('session-login').hidden = false;
-  message('浏览器安全会话已失效。请重新通过 GitHub owner 登录；未完成的 Passkey 操作不会自动继续。', true);
+  message(t('sessionExpiredMessage', '浏览器安全会话已失效。请重新通过 GitHub owner 登录；未完成的 Passkey 操作不会自动继续。'), true);
   if (dialog.open && !busy) { pending = null; dialog.close(); }
   syncControls();
 }
 async function api(path, method = 'GET', body) {
-  if (expired || Date.now() >= sessionExpiresAt) { markExpired(); throw new Error('会话已过期，请重新登录。'); }
+  if (expired || Date.now() >= sessionExpiresAt) { markExpired(); throw new Error(t('sessionExpiredError', '会话已过期，请重新登录。')); }
   let res;
   try {
     res = await fetch(path, {method, credentials:'same-origin', cache:'no-store', redirect:'error', headers:{'Accept':'application/json', ...(method === 'POST' ? {'Content-Type':'application/json','X-CSRF-Token':csrf} : {})}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
-  } catch { throw new Error('网络请求失败或登录状态已变更。请检查连接并刷新；若已提交操作，请核对服务器状态，勿盲目重复。'); }
+  } catch { throw new Error(t('networkError', '网络请求失败或登录状态已变更。请检查连接并刷新；若已提交操作，请核对服务器状态，勿盲目重复。')); }
   let data;
-  try { data = await res.json(); } catch { throw new Error('服务器未返回有效 JSON（HTTP ' + res.status + '）。请重新登录或稍后刷新。'); }
+  try { data = await res.json(); } catch { throw new Error(format(t('invalidJsonError', '服务器未返回有效 JSON（HTTP {status}）。请重新登录或稍后刷新。'), { status: res.status })); }
   if (res.status === 401 || data.error?.code === 'BROWSER_AUTH_REQUIRED') markExpired();
   if (!res.ok) throw new Error((data.error?.message || data.error_description || '请求失败') + (data.error?.code ? ' [' + data.error.code + ']' : '') + ' (HTTP ' + res.status + ')');
   return data;
@@ -1106,7 +1212,7 @@ async function run(action) {
   syncControls();
   try { await action(); }
   catch (error) {
-    if (!expired) message(error.name === 'NotAllowedError' || error.name === 'AbortError' ? 'Passkey 操作已取消或超时，未提交变更。请重新开始；不会降级为普通验证。' : (error.message || '操作失败，请刷新后重试。'), true);
+    if (!expired) message(error.name === 'NotAllowedError' || error.name === 'AbortError' ? t('passkeyCancelledOrTimeout', 'Passkey 操作已取消或超时，未提交变更。请重新开始；不会降级为普通验证。') : (error.message || '操作失败，请刷新后重试。'), true);
   } finally {
     busy = false;
     syncControls();
@@ -1117,9 +1223,9 @@ async function run(action) {
 function requireArray(value) { if (!Array.isArray(value)) throw new Error('服务器列表数据格式异常。'); return value; }
 function requireCount(value) { if (!Number.isFinite(value) || value < 0) throw new Error('服务器统计数据格式异常。'); return value; }
 function date(value) {
-  if (value === null || value === undefined || value === 0) return '暂无记录';
+  if (value === null || value === undefined || value === 0) return t('neverInvoked', '暂无记录');
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? '时间格式异常' : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? t('unknown', '时间格式异常') : d.toLocaleString();
 }
 function tableMessage(body, columns, text, error = false) {
   const row = node('tr'); const cell = node('td',text,'empty' + (error ? ' load-error' : ''));
@@ -1136,7 +1242,7 @@ function updateOverviewStatus() {
   const connected = overview.schwabConnected && (!refresh || refresh > Date.now());
   const status = $('schwab-status-badge');
   status.className = 'badge ' + (!connected ? 'bad' : soon ? 'warn' : 'good');
-  status.textContent = !connected ? 'Schwab 需重新授权' : soon ? 'Schwab 授权即将到期' : 'Schwab 已连接';
+  status.textContent = !connected ? t('schwabReauth', 'Schwab 需重新授权') : soon ? t('schwabExpiringSoon', 'Schwab 授权即将到期') : t('schwabConnected', 'Schwab 已连接');
 }
 async function loadOverview() {
   try {
@@ -1146,18 +1252,18 @@ async function loadOverview() {
     overview = data;
     updateOverviewStatus();
     $('trading-status-badge').className = 'badge ' + (data.tradingEnabled ? 'good' : 'neutral');
-    $('trading-status-badge').textContent = data.tradingEnabled ? '交易总开关已开启' : '交易总开关已关闭';
-    $('access-expiry').textContent = 'Access 到期：' + date(data.schwabStatus?.accessExpiresAt);
-    $('refresh-expiry').textContent = 'Refresh 到期：' + date(data.schwabStatus?.refreshExpiresAt);
-    $('overview-counts').textContent = data.clientCount + ' 个客户端 / ' + data.toolCallsCount + ' 次调用 / ' + data.passkeyCount + ' 个 Passkey' + (data.legacyGrantCount ? '；' + data.legacyGrantCount + ' 条旧版 MCP 授权需在客户端重新授权' : '');
+    $('trading-status-badge').textContent = data.tradingEnabled ? t('tradingEnabled', '交易总开关已开启') : t('tradingDisabled', '交易总开关已关闭');
+    $('access-expiry').textContent = t('accessExpiry', 'Access 到期：') + date(data.schwabStatus?.accessExpiresAt);
+    $('refresh-expiry').textContent = t('refreshExpiry', 'Refresh 到期：') + date(data.schwabStatus?.refreshExpiresAt);
+    $('overview-counts').textContent = format(t('overviewCounts', '{clients} 个客户端 / {calls} 次调用 / {passkeys} 个 Passkey'), { clients: data.clientCount, calls: data.toolCallsCount, passkeys: data.passkeyCount }) + (data.legacyGrantCount ? format(t('legacyGrantNotice', '；{count} 条旧版 MCP 授权需在客户端重新授权'), { count: data.legacyGrantCount }) : '');
     $('stat-clients-count').textContent = data.clientCount;
     $('stat-total-calls').textContent = data.toolCallsCount;
     $('stat-passkeys-count').textContent = data.passkeyCount;
   } catch (error) {
     overview = null;
-    $('schwab-status-badge').textContent = '连接状态读取失败'; $('schwab-status-badge').className = 'badge bad';
-    $('trading-status-badge').textContent = '交易开关状态未知'; $('trading-status-badge').className = 'badge warn';
-    $('overview-counts').textContent = '概览读取失败'; $('access-expiry').textContent = 'Access 到期：未知'; $('refresh-expiry').textContent = 'Refresh 到期：未知';
+    $('schwab-status-badge').textContent = t('schwabReadFailed', '连接状态读取失败'); $('schwab-status-badge').className = 'badge bad';
+    $('trading-status-badge').textContent = t('tradingUnknown', '交易开关状态未知'); $('trading-status-badge').className = 'badge warn';
+    $('overview-counts').textContent = '概览读取失败'; $('access-expiry').textContent = t('accessExpiry', 'Access 到期：') + '未知'; $('refresh-expiry').textContent = t('refreshExpiry', 'Refresh 到期：') + '未知';
     ['stat-clients-count','stat-total-calls','stat-passkeys-count'].forEach(id => $(id).textContent = '—');
     throw error;
   }
@@ -1168,31 +1274,31 @@ async function loadClients() {
     const data = await api('/dashboard/api/clients');
     const clients = requireArray(data.clients);
     body.replaceChildren();
-    $('clients-count').textContent = clients.length + ' 个客户端';
-    if (!clients.length) tableMessage(body,6,'暂无已授权客户端。请在 MCP 客户端中发起 OAuth 授权。');
+    $('clients-count').textContent = clients.length + (t('colClient') === 'Client / Redirect URI' ? ' clients' : ' 个客户端');
+    if (!clients.length) tableMessage(body,6,t('noClients', '暂无已授权客户端。请在 MCP 客户端中发起 OAuth 授权。'));
     for (const client of clients) {
       const row = node('tr');
       const identity = node('td',null,'client-meta');
       identity.append(node('div',client.clientName || '未命名客户端','client-name'),node('code',client.clientId));
-      const redirects = node('details',null,'redirects'); redirects.append(node('summary','重定向 URI (' + requireArray(client.redirectUris).length + ')'));
+      const redirects = node('details',null,'redirects'); redirects.append(node('summary',(t('colClient') === 'Client / Redirect URI' ? 'Redirect URIs (' : '重定向 URI (') + requireArray(client.redirectUris).length + ')'));
       const uris = node('ul'); client.redirectUris.forEach(uri => uris.append(node('li',uri,'mono'))); redirects.append(uris); identity.append(redirects);
-      const state = node('td'); state.append(badge(client.revoked ? '已撤销' : '已授权',client.revoked ? 'bad' : 'good'));
+      const state = node('td'); state.append(badge(client.revoked ? t('revoked', '已撤销') : t('authorized', '已授权'),client.revoked ? 'bad' : 'good'));
       const permissionCell = node('td'); const permission = node('select',null,'permission');
-      permission.dataset.action = ''; permission.setAttribute('aria-label',(client.clientName || client.clientId) + ' 权限等级');
-      [['read_only','只读'],['full_access','完整交易']].forEach(([value,label]) => { const option = node('option',label); option.value = value; permission.append(option); });
+      permission.dataset.action = ''; permission.setAttribute('aria-label',(client.clientName || client.clientId) + ' ' + t('colPermission', '权限等级'));
+      [['read_only',t('permReadOnly', '只读')],['full_access',t('permFullAccess', '完整交易')]].forEach(([value,label]) => { const option = node('option',label); option.value = value; permission.append(option); });
       permission.value = client.permissionLevel; disabled(permission,!!client.revoked);
       permission.addEventListener('change', () => {
         const desired = permission.value; permission.value = client.permissionLevel;
         run(async () => {
           await api('/dashboard/api/clients/permission','POST',{clientId:client.clientId,permissionLevel:desired});
-          await refreshAll(); message('客户端权限已更新。后续 MCP 请求使用新权限。');
+          await refreshAll(); message(t('permissionUpdated', '客户端权限已更新。后续 MCP 请求使用新权限。'));
         });
       });
-      permissionCell.append(permission,node('span','权限不会改变部署级交易总开关。','policy-note'));
+      permissionCell.append(permission,node('span',t('permPolicyNote', '权限不会改变部署级交易总开关。'),'policy-note'));
       const advancedCell = node('td'); const toggleLabel = node('label',null,'toggle'); const toggle = node('input');
       toggle.type = 'checkbox'; toggle.checked = !!client.advancedSecurity; toggle.dataset.action = ''; toggle.setAttribute('aria-label',(client.clientName || client.clientId) + ' Advanced Security');
       disabled(toggle,!!client.revoked || !supportsPasskeys || (client.permissionLevel !== 'full_access' && !client.advancedSecurity));
-      toggleLabel.append(toggle,node('span',client.advancedSecurity ? 'Passkey 增强' : '普通模式'));
+      toggleLabel.append(toggle,node('span',client.advancedSecurity ? t('modeEnhanced', 'Passkey 增强') : t('modeStandard', '普通模式')));
       toggle.addEventListener('change', () => {
         const desired = toggle.checked; toggle.checked = !!client.advancedSecurity;
         run(async () => {
@@ -1200,15 +1306,15 @@ async function loadClients() {
           const challenge = await api('/dashboard/api/clients/advanced-security','POST',values);
           stageChallenge(challenge,(desired ? '开启' : '关闭') + ' Advanced Security',
             (client.clientName || client.clientId) + '：' + (desired ? '开启后，每笔受保护交易须由 Passkey 批准。' : '关闭后此客户端将使用普通交易确认。') + (challenge.registration ? ' 此操作将同时登记首个 Passkey。' : ''),
-            response => api('/dashboard/api/clients/advanced-security','POST',{...values,challengeId:challenge.challengeId,response}), 'Advanced Security 策略已验证并更新。');
+            response => api('/dashboard/api/clients/advanced-security','POST',{...values,challengeId:challenge.challengeId,response}), t('passkeyOperationSuccess', 'Advanced Security 策略已验证并更新。'));
         });
       });
-      advancedCell.append(toggleLabel,node('span','策略版本 v' + client.version,'policy-note'));
-      if (client.permissionLevel !== 'full_access' && !client.advancedSecurity) advancedCell.append(node('span','仅完整访问可开启。','policy-note'));
-      const times = node('td'); times.append(node('div','授权：' + date(client.createdAt),'timestamp'),node('div','最后调用：' + date(client.lastInvocationAt),'timestamp muted'));
-      const actions = node('td'); actions.append(button('撤销授权',async () => {
-        if (!window.confirm('撤销 ' + (client.clientName || client.clientId) + ' 的全部授权及 Token？此客户端需要重新授权才能连接。')) return;
-        await api('/dashboard/api/clients/revoke','POST',{clientId:client.clientId}); await refreshAll(); message('客户端已撤销，全部旧 Token 已失效。');
+      advancedCell.append(toggleLabel,node('span',format(t('policyVersion', '策略版本 v{version}'), { version: client.version }),'policy-note'));
+      if (client.permissionLevel !== 'full_access' && !client.advancedSecurity) advancedCell.append(node('span',t('fullAccessOnlyNote', '仅完整访问可开启。'),'policy-note'));
+      const times = node('td'); times.append(node('div',t('createdAt', '授权：') + date(client.createdAt),'timestamp'),node('div',t('lastInvocationAt', '最后调用：') + date(client.lastInvocationAt),'timestamp muted'));
+      const actions = node('td'); actions.append(button(t('revokeBtn', '撤销授权'),async () => {
+        if (!window.confirm(format(t('revokeConfirm', '撤销 {name} 的全部授权及 Token？此客户端需要重新授权才能连接。'), { name: client.clientName || client.clientId }))) return;
+        await api('/dashboard/api/clients/revoke','POST',{clientId:client.clientId}); await refreshAll(); message(t('revokedSuccess', '客户端已撤销，全部旧 Token 已失效。'));
       },!!client.revoked,'danger'));
       row.append(identity,state,permissionCell,advancedCell,times,actions); body.append(row);
     }
@@ -1233,15 +1339,15 @@ async function loadAudit() {
     $('audit-error-count').textContent = data.errorCount;
     $('audit-active24h').textContent = data.active24h;
     body.replaceChildren();
-    if (!data.items.length) tableMessage(body,7,'没有符合当前筛选条件的调用记录。');
+    if (!data.items.length) tableMessage(body,7,t('noAuditItems', '没有符合当前筛选条件的调用记录。'));
     for (const item of data.items) {
       const row = node('tr'); const state = node('td'); state.append(badge(item.status,item.status === 'SUCCESS' ? 'good' : 'bad'));
-      const summary = node('td',null,'summary'); summary.append(node('div',item.parametersSummary || '无参数摘要','mono'));
+      const summary = node('td',null,'summary'); summary.append(node('div',item.parametersSummary || t('noSummary', '无参数摘要'),'mono'));
       if (item.errorCode || item.errorMessage) summary.append(node('div',[item.errorCode,item.errorMessage].filter(Boolean).join(' · '),'load-error'));
       row.append(node('td',date(item.createdAt),'timestamp'),node('td',item.clientId,'mono'),node('td',item.toolName,'mono'),state,node('td',item.durationMs + ' ms','timestamp'),summary,node('td',item.requestId,'mono request-id'));
       body.append(row);
     }
-    $('audit-pagination-info').textContent = (data.items.length ? auditOffset + 1 : 0) + '–' + (data.items.length ? auditOffset + data.items.length : 0) + ' / ' + data.total + ' 条';
+    $('audit-pagination-info').textContent = format(t('paginationInfo', '显示 {start}–{end} / 共 {total} 条'), { start: data.items.length ? auditOffset + 1 : 0, end: data.items.length ? auditOffset + data.items.length : 0, total: data.total });
     disabled($('audit-prev-btn'),auditOffset === 0); disabled($('audit-next-btn'),auditOffset + data.items.length >= auditTotal || data.items.length === 0);
   } catch (error) {
     tableMessage(body,7,'审计日志读取失败：' + error.message,true);
@@ -1259,27 +1365,27 @@ async function loadPasskeys() {
     const data = await api('/dashboard/api/session');
     credentials = requireArray(data.credentials);
     list.replaceChildren();
-    if (!credentials.length) list.append(node('li','尚未登记 Passkey。可在下方注册首个凭据，或在客户端开启 Advanced Security 时注册。','empty'));
+    if (!credentials.length) list.append(node('li',t('noPasskeysRegistered', '尚未登记 Passkey。可在下方注册首个凭据，或在客户端开启 Advanced Security 时注册。'),'empty'));
     for (const credential of credentials) {
       const item = node('li',null,'credential'); const identity = node('div'); identity.append(node('h3',credential.name),node('code',credential.id,'credential-id'));
       const actions = node('div',null,'actions');
-      actions.append(button('重命名',async () => {
-        const name = window.prompt('新的 Passkey 名称（1–80 字符）',credential.name);
+      actions.append(button(t('rename', '重命名'),async () => {
+        const name = window.prompt(t('promptNewKeyName', '新的 Passkey 名称（1–80 字符）'),credential.name);
         if (name === null) return;
         const trimmed = name.trim(); if (!trimmed || trimmed.length > 80) throw new Error('Passkey 名称须为 1–80 字符。');
         const challenge = await securityOptions('rename',credential.id,trimmed);
         stageChallenge(challenge,'重命名 Passkey','将 “' + credential.name + '” 改为 “' + trimmed + '”。须验证已有 Passkey。',response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),'Passkey 已重命名。');
       },!supportsPasskeys));
-      actions.append(button('删除',async () => {
-        if (!window.confirm('删除 Passkey “' + credential.name + '”？此操作须先验证已有 Passkey。')) return;
+      actions.append(button(t('delete', '删除'),async () => {
+        if (!window.confirm(format(t('deleteConfirm', '删除 Passkey “{name}”？此操作须先验证已有 Passkey。'), { name: credential.name }))) return;
         const challenge = await securityOptions('delete',credential.id);
         stageChallenge(challenge,'删除 Passkey','验证已有 Passkey 后删除 “' + credential.name + '”。其他凭据不受影响。',response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),'Passkey 已删除。');
       },!supportsPasskeys || credentials.length <= 1,'danger'));
-      if (credentials.length <= 1) actions.append(node('small','最后一个凭据不可删除'));
+      if (credentials.length <= 1) actions.append(node('small',t('cannotDeleteLast', '最后一个凭据不可删除')));
       item.append(identity,actions); list.append(item);
     }
-    $('passkeys-state').textContent = credentials.length ? credentials.length + ' 个 owner 共享凭据' : '尚未启用 Passkey 防护';
-    $('add-passkey-btn').textContent = credentials.length ? '添加 Passkey · 先验证已有凭据' : '注册首个 Passkey';
+    $('passkeys-state').textContent = credentials.length ? format(t('ownerSharedCount', '{n} 个 owner 共享凭据'), { n: credentials.length }) : t('noPasskeyProtection', '尚未启用 Passkey 防护');
+    $('add-passkey-btn').textContent = credentials.length ? t('addKeyWithVerify', '添加 Passkey · 先验证已有凭据') : t('registerFirstKey', '注册首个 Passkey');
     disabled($('add-passkey-btn'),!supportsPasskeys);
   } catch (error) {
     credentials = null; list.replaceChildren(node('li','Passkey 读取失败：' + error.message,'empty load-error')); $('passkeys-state').textContent = '凭据状态未知'; disabled($('add-passkey-btn'),true); throw error;
@@ -1292,28 +1398,28 @@ async function loadPendingApprovals() {
   try {
     const data = await api('/dashboard/api/pending-approvals');
     const items = data.items || [];
-    if (countTag) countTag.textContent = items.length + ' 待办';
+    if (countTag) countTag.textContent = format(t('pendingCountTag', '{n} 待办'), { n: items.length });
     if (inboxBadge) {
       inboxBadge.textContent = String(items.length);
       inboxBadge.hidden = items.length === 0;
     }
     container.replaceChildren();
     if (!items.length) {
-      container.append(node('p', '当前没有待 Passkey 核准的交易或授权请求。', 'muted'));
+      container.append(node('p', t('noPending', '当前没有待 Passkey 核准的交易或授权请求。'), 'muted'));
       return;
     }
     for (const item of items) {
       const card = node('div', null, 'approval-item-card');
       card.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--surface-container);border-radius:var(--radius-sm);margin-bottom:8px;gap:12px;flex-wrap:wrap;';
       const info = node('div');
-      const kindLabel = item.kind === 'trade' ? '[交易提案]' : '[客户端授权]';
+      const kindLabel = item.kind === 'trade' ? t('tradeProposalTag', '[交易提案]') : t('clientAuthTag', '[客户端授权]');
       const title = node('div', null);
       title.append(node('span', kindLabel + ' ', 'badge ' + (item.kind === 'trade' ? 'warning' : 'good')));
       title.append(node('strong', item.clientId, 'mono'));
-      const timeInfo = node('div', '申请时间: ' + new Date(item.createdAt).toLocaleTimeString() + ' · 截止: ' + new Date(item.expiresAt).toLocaleTimeString(), 'muted');
+      const timeInfo = node('div', new Date(item.createdAt).toLocaleTimeString() + ' · 截止: ' + new Date(item.expiresAt).toLocaleTimeString(), 'muted');
       timeInfo.style.fontSize = '11px';
       info.append(title, timeInfo);
-      const link = node('a', '前往核准 →', 'button primary compact');
+      const link = node('a', t('proceedToApproval', '前往核准 →'), 'button primary compact');
       link.href = item.actionPath;
       card.append(info, link);
       container.append(card);
@@ -1330,13 +1436,13 @@ async function loadNotifications(offset = 0) {
   try {
     const data = await api('/dashboard/api/notifications?limit=15&offset=' + offset);
     notificationsTotal = data.total;
-    if (unreadTag) unreadTag.textContent = data.unreadCount + ' 未读';
-    if (infoEl) infoEl.textContent = '显示 ' + (data.total ? offset + 1 : 0) + '–' + Math.min(offset + 15, data.total) + ' / 共 ' + data.total + ' 条';
+    if (unreadTag) unreadTag.textContent = format(t('unreadCountTag', '{n} 未读'), { n: data.unreadCount });
+    if (infoEl) infoEl.textContent = format(t('paginationInfo', '显示 {start}–{end} / 共 {total} 条'), { start: data.total ? offset + 1 : 0, end: Math.min(offset + 15, data.total), total: data.total });
     disabled($('notifications-prev-btn'), offset <= 0);
     disabled($('notifications-next-btn'), offset + 15 >= data.total);
     tbody.replaceChildren();
     if (!data.items.length) {
-      tableMessage(tbody, 5, '暂无通知记录。');
+      tableMessage(tbody, 5, t('noNotifications', '暂无通知记录。'));
       return;
     }
     for (const item of data.items) {
@@ -1347,14 +1453,14 @@ async function loadNotifications(offset = 0) {
       const typeTd = node('td');
       typeTd.append(node('span', item.type, 'badge'));
       const summaryTd = node('td', item.summary);
-      const statusTd = node('td', item.readAt ? '已读' : '未读', item.readAt ? 'muted' : 'badge warning');
+      const statusTd = node('td', item.readAt ? t('read', '已读') : t('unread', '未读'), item.readAt ? 'muted' : 'badge warning');
       const actionTd = node('td');
       if (item.actionPath) {
-        const link = node('a', '查看详情 →', 'card-action-link');
+        const link = node('a', t('viewDetails', '查看详情 →'), 'card-action-link');
         link.href = item.actionPath;
         actionTd.append(link);
       } else if (!item.readAt) {
-        actionTd.append(button('标为已读', async () => {
+        actionTd.append(button(t('markAsRead', '标为已读'), async () => {
           await api('/dashboard/api/notifications/read', 'POST', { id: item.id });
           loadNotifications(notificationsOffset);
         }, false, 'compact'));
@@ -1376,7 +1482,7 @@ async function loadHighlightedNotification() {
     const item = await api('/dashboard/api/notifications/' + encodeURIComponent(id));
     banner.replaceChildren(node('strong', item.summary), node('p', item.type + ' · ' + new Date(item.createdAt).toLocaleString(), 'muted'));
     if (item.actionPath) {
-      const link = node('a', '前往处理 →', 'card-action-link');
+      const link = node('a', t('proceedToApproval', '前往核准 →'), 'card-action-link');
       link.href = item.actionPath;
       banner.append(link);
     }
@@ -1423,7 +1529,7 @@ async function currentPushDevice() {
 function renderNotificationPermission() {
   const badge = $('push-permission-badge');
   const permission = 'Notification' in window ? Notification.permission : null;
-  badge.textContent = permission === 'granted' ? '通知权限：已允许' : permission === 'denied' ? '通知权限：已禁止' : permission === 'default' ? '通知权限：未授权' : '通知权限：不支持';
+  badge.textContent = permission === 'granted' ? t('permGranted', '通知权限：已允许') : permission === 'denied' ? t('permDenied', '通知权限：已禁止') : permission === 'default' ? t('permDefault', '通知权限：未授权') : t('permUnsupported', '通知权限：不支持');
   badge.className = 'badge ' + (permission === 'granted' ? 'good' : 'neutral');
   return permission;
 }
@@ -1432,14 +1538,14 @@ async function loadPushSettings() {
   const toggleBtn = $('push-toggle-btn');
   const testBtn = $('push-test-btn');
   toggleBtn.dataset.pushActive = 'false';
-  toggleBtn.textContent = '开启本机通知推送';
+  toggleBtn.textContent = t('enablePushBtn', '开启本机通知推送');
   toggleBtn.className = 'button primary';
   const devicesBody = $('push-devices-table-body');
   disabled(toggleBtn, true); disabled(testBtn, true);
   const supported = ('serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
   renderNotificationPermission();
   if (!supported) {
-    if (badge) { badge.textContent = '环境不支持'; badge.className = 'badge neutral'; }
+    if (badge) { badge.textContent = t('pushBadgeUnsupported', '环境不支持'); badge.className = 'badge neutral'; }
     disabled(toggleBtn, true); disabled(testBtn, true);
     return;
   }
@@ -1447,16 +1553,16 @@ async function loadPushSettings() {
     const { device } = await currentPushDevice();
     const permission = renderNotificationPermission();
     if (permission === 'denied') {
-      if (badge) { badge.textContent = '通知被禁止'; badge.className = 'badge neutral'; }
+      if (badge) { badge.textContent = t('pushBadgePermDenied', '通知权限已禁止'); badge.className = 'badge neutral'; }
       disabled(toggleBtn, true); disabled(testBtn, true);
     } else if (permission === 'granted' && device?.active) {
-      if (badge) { badge.textContent = '本机已开启推送'; badge.className = 'badge good'; }
+      if (badge) { badge.textContent = t('pushBadgeEnabled', '本机已开启推送'); badge.className = 'badge good'; }
       toggleBtn.dataset.pushActive = 'true';
-      toggleBtn.textContent = '停用本机推送';
+      toggleBtn.textContent = t('disablePushBtn', '停用本机推送');
       toggleBtn.className = 'button danger';
       disabled(toggleBtn, false); disabled(testBtn, false);
     } else {
-      if (badge) { badge.textContent = permission === 'granted' ? '权限已允许，尚未开启推送' : '未开启推送'; badge.className = 'badge warning'; }
+      if (badge) { badge.textContent = permission === 'granted' ? t('pushBadgePermGrantedUnsubscribed', '权限已允许，尚未开启推送') : t('pushBadgeDisabled', '未开启推送'); badge.className = 'badge warning'; }
       disabled(toggleBtn, false); disabled(testBtn, true);
     }
     const devData = await pushApi('/dashboard/api/push/subscriptions');
@@ -1471,13 +1577,13 @@ async function loadPushSettings() {
       tr.append(
         node('td', dev.id.slice(0, 8) + '…', 'mono'),
         node('td', dev.label),
-        node('td', dev.active ? '活跃' : '已停用', 'badge ' + (dev.active ? 'good' : 'neutral')),
+        node('td', dev.active ? t('active', '活跃') : t('pushBadgeDisabled', '已停用'), 'badge ' + (dev.active ? 'good' : 'neutral')),
         node('td', new Date(dev.createdAt).toLocaleDateString(), 'mono'),
         node('td')
       );
       if (dev.active) {
         tr.lastChild.append(button('解绑', async () => {
-          if (!confirm('确定解绑设备 “' + dev.label + '”？该设备将不再接收新提醒。')) return;
+          if (!confirm(format(t('deleteConfirm', '确定解绑设备 “{name}”？该设备将不再接收新提醒。'), { name: dev.label }))) return;
           await api('/dashboard/api/push/unsubscribe', 'POST', { id: dev.id });
           loadPushSettings();
         }, false, 'danger compact'));
@@ -1486,7 +1592,7 @@ async function loadPushSettings() {
     }
   } catch (err) {
     renderNotificationPermission();
-    if (badge) { badge.textContent = '推送暂不可用：' + err.message; badge.className = 'badge neutral'; }
+    if (badge) { badge.textContent = t('pushBadgeServiceUnavailable', '推送暂不可用') + '：' + err.message; badge.className = 'badge neutral'; }
     disabled(toggleBtn, Notification.permission === 'denied'); disabled(testBtn, true);
   } finally {
     syncControls();
@@ -1500,19 +1606,19 @@ function checkPwaDisplayMode() {
   const installBtn = $('pwa-install-btn');
   if (isStandalone) {
     if (badge) { badge.textContent = 'STANDALONE'; badge.className = 'badge good'; }
-    if (statusEl) statusEl.textContent = '已安装为主屏幕应用 (独立全屏运行模式)';
+    if (statusEl) statusEl.textContent = t('pwaStandalone', '已作为独立应用运行 (独立全屏运行模式)');
     if (iosGuideEl) iosGuideEl.style.display = 'none';
     if (installBtn) installBtn.hidden = true;
   } else {
     const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
     if (isIos) {
-      if (badge) { badge.textContent = '浏览器运行中'; badge.className = 'badge warning'; }
+      if (badge) { badge.textContent = t('pwaBrowser', '浏览器运行中'); badge.className = 'badge warning'; }
       if (statusEl) statusEl.textContent = '当前通过 Safari 打开。建议添加至主屏幕以获得完整 PWA 与锁屏推送能力。';
       if (iosGuideEl) iosGuideEl.style.display = 'block';
       if (installBtn) installBtn.hidden = true;
     } else {
-      if (badge) { badge.textContent = '网页运行中'; badge.className = 'badge neutral'; }
-      if (statusEl) statusEl.textContent = '支持添加到桌面或通过浏览器菜单安装应用。';
+      if (badge) { badge.textContent = t('pwaBrowser', '浏览器标签页模式'); badge.className = 'badge neutral'; }
+      if (statusEl) statusEl.textContent = '可在支持的浏览器（如 Chrome / Edge）中安装为独立桌面应用。';
       if (iosGuideEl) iosGuideEl.style.display = 'none';
     }
   }
@@ -1632,15 +1738,15 @@ $('notifications-next-btn')?.addEventListener('click',() => run(async () => { if
 $('push-toggle-btn')?.addEventListener('click', () => run(async () => {
   try {
     if ($('push-toggle-btn').dataset.pushActive === 'true') {
-      pushProgress('正在停用本机推送…');
+      pushProgress(t('pushBadgePendingUnsubscribe', '正在停用本机推送…'));
       const { sub, device } = await currentPushDevice();
       if (device?.active) await api('/dashboard/api/push/unsubscribe', 'POST', { id: device.id });
       if (sub) await pushWait(sub.unsubscribe(), '停用本机推送订阅');
-      pushProgress('已停用本机推送通知。');
-      message('已停用本机推送通知。');
+      pushProgress(t('disablePushSuccess', '已停用本机推送通知。'));
+      message(t('disablePushSuccess', '已停用本机推送通知。'));
       return;
     }
-    pushProgress('正在检查通知权限…');
+    pushProgress(t('permChecking', '正在检查通知权限…'));
     const perm = Notification.permission === 'granted' ? 'granted' : await pushWait(Notification.requestPermission(), '等待通知权限', 60000);
     if (perm !== 'granted') throw new Error('未授权通知权限，无法开启推送。');
     renderNotificationPermission();
@@ -1649,7 +1755,7 @@ $('push-toggle-btn')?.addEventListener('click', () => run(async () => {
     const reg = await pushRegistration();
     let sub = await pushWait(reg.pushManager.getSubscription(), '读取本机推送订阅');
     if (!sub) {
-      pushProgress('正在连接浏览器推送服务（最长等待 20 秒）…');
+      pushProgress(t('connectingPushService', '正在连接浏览器推送服务（最长等待 20 秒）…'));
       // Reuse an in-flight browser operation when retrying after a timeout.
       if (!pendingPushSubscription) {
         pendingPushSubscription = reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
@@ -1658,15 +1764,15 @@ $('push-toggle-btn')?.addEventListener('click', () => run(async () => {
       sub = await pushWait(pendingPushSubscription, '连接浏览器推送服务');
     }
     const subJson = sub.toJSON();
-    pushProgress('正在登记本机推送设备…');
+    pushProgress(t('pushBadgePendingRegistration', '正在登记本机推送设备…'));
     await pushApi('/dashboard/api/push/subscribe', 'POST', {
       subscription: { endpoint: sub.endpoint, expirationTime: sub.expirationTime, keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth } },
       label: $('push-device-label').value.trim() || (navigator.userAgent.includes('iPhone') ? 'iPhone' : '桌面 Chrome'),
     });
-    pushProgress('通知已成功启用！');
-    message('通知已成功启用！');
+    pushProgress(t('enablePushSuccess', '已成功开启本机推送！'));
+    message(t('enablePushSuccess', '已成功开启本机推送！'));
   } catch (error) {
-    const detail = ($('push-toggle-btn').dataset.pushActive === 'true' ? '停用通知失败：' : '开启推送失败：') + (error.message || '请刷新后重试。');
+    const detail = ($('push-toggle-btn').dataset.pushActive === 'true' ? t('disablePushFailed', '停用通知失败：') : '开启推送失败：') + (error.message || '请刷新后重试。');
     pushProgress(detail, true);
     message(detail, true);
   } finally { await loadPushSettings(); }
@@ -1676,8 +1782,8 @@ $('push-test-btn')?.addEventListener('click', async () => {
     const { device } = await currentPushDevice();
     if (!device?.active) { alert('未找到活跃的本机推送设备，请先开启推送。'); return; }
     await api('/dashboard/api/push/test', 'POST', { id: device.id });
-    alert('测试通知已发送！请观察设备通知栏。');
-  } catch (err) { alert('发送测试通知失败: ' + err.message); }
+    alert(t('testPushSent', '测试通知已发送！请观察设备通知栏。'));
+  } catch (err) { alert(t('testPushFailed', '发送测试通知失败: ') + err.message); }
 });
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', e => {
@@ -1771,22 +1877,27 @@ run(async () => { await refreshAll(); await loadHighlightedNotification(); });
 
 export function renderDashboardPage(props: DashboardPageProps) {
   const { session, appVersion, allowedUserId, highlightNotificationId } = props;
+  const lang = resolveLang(props.lang);
+  const dict = getDictionary(lang);
+  const d = dict.dashboard;
+  const c = dict.common;
+
   return html`<!doctype html>
-<html lang="zh-CN">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf" content="${session.csrf}">
   <meta name="session-expires" content="${session.expiresAt}">
   <meta name="highlight-notification" content="${highlightNotificationId ?? ""}">
-  <title>Schwab MCP · 控制面板</title>
+  <title>${d.pageTitle}</title>
   ${FAVICON_LINK}
   ${PWA_HEAD_TAGS}
   <style>${raw(DASHBOARD_STYLES)}</style>
 </head>
 <body>
 ${raw(BACKGROUND_SVG)}
-<a class="skip" href="#dashboard-main">跳至控制面板</a>
+<a class="skip" href="#dashboard-main">${d.skipLink}</a>
 <div class="shell">
   <div class="telemetry-bar-top" role="region" aria-label="系统运行遥测">
     <div class="telemetry-node">
@@ -1804,115 +1915,116 @@ ${raw(BACKGROUND_SVG)}
     <div class="brand">
       ${raw(BRAND_LOGO_SVG)}
       <div>
-        <div class="eyebrow">&gt;_ SCHWAB MCP // OBSIDIAN TELEMETRY v${appVersion}</div>
-        <h1>客户端与安全控制面板</h1>
-        <p>授权策略、调用审计与 owner Passkey</p>
+        <div class="eyebrow">&gt;_ SCHWAB MCP // v${appVersion}</div>
+        <h1>${d.sysTitle}</h1>
+        <p>${d.sysSubtitle}</p>
       </div>
     </div>
     <div class="actions">
-      <div class="owner">GitHub owner <strong class="mono">${allowedUserId}</strong> <span class="badge good" style="font-size:10px;padding:1px 5px">VERIFIED</span><br><span id="last-refresh">尚未刷新</span></div>
-      <button id="refresh-all-btn" class="button primary" data-action type="button">&#x21bb; 刷新全部</button>
+      <div class="owner">GitHub owner <strong class="mono">${allowedUserId}</strong> <span class="badge good" style="font-size:10px;padding:1px 5px">${c.verified}</span><br><span id="last-refresh">${d.notRefreshed}</span></div>
+      ${raw(renderLangDropdown(lang))}
+      <button id="refresh-all-btn" class="button primary" data-action type="button">&#x21bb; ${d.refreshAllBtn}</button>
     </div>
   </header>
   <section class="status-deck" aria-label="服务与会话状态">
     <div class="status-cell card-schwab">
       <div class="status-cell-header">
-        <span class="label">01 / SCHWAB LINK</span>
-        <span id="schwab-status-badge" class="badge neutral">正在读取连接状态</span>
+        <span class="label">${d.schwabLink}</span>
+        <span id="schwab-status-badge" class="badge neutral">${d.schwabReading}</span>
       </div>
       <div class="status-cell-body">
-        <p id="access-expiry" class="telemetry-stat">Access 到期：读取中</p>
-        <p id="refresh-expiry" class="telemetry-stat">Refresh 到期：读取中</p>
-        <p class="telemetry-stat">安全协议：TLS 1.3 // REST+JSON</p>
+        <p id="access-expiry" class="telemetry-stat">${d.accessExpiry}${c.loading}</p>
+        <p id="refresh-expiry" class="telemetry-stat">${d.refreshExpiry}${c.loading}</p>
+        <p class="telemetry-stat">${d.securityProtocol}</p>
       </div>
       <div class="status-cell-footer">
-        <a class="card-action-link" href="/auth/schwab/connect">重新授权 Schwab &rarr;</a>
+        <a class="card-action-link" href="/auth/schwab/connect">${d.reconnectSchwab}</a>
       </div>
     </div>
     <div class="status-cell card-runtime">
       <div class="status-cell-header">
-        <span class="label">02 / RUNTIME ENGINE</span>
-        <span id="trading-status-badge" class="badge neutral">正在读取交易总开关</span>
+        <span class="label">${d.runtimeEngine}</span>
+        <span id="trading-status-badge" class="badge neutral">${d.tradingReading}</span>
       </div>
       <div class="status-cell-body">
-        <p>由部署配置 ENABLE_TRADING 控制；仪表板不能开启交易。</p>
-        <p id="overview-counts" class="telemetry-stat">正在读取概览</p>
+        <p>${d.tradingSwitchDesc}</p>
+        <p id="overview-counts" class="telemetry-stat">${d.overviewReading}</p>
         <p class="telemetry-stat">安全策略：IMMUTABLE_ENCLAVE</p>
       </div>
     </div>
     <div class="status-cell card-session">
       <div class="status-cell-header">
-        <span class="label">03 / BROWSER ENCLAVE</span>
-        <span id="session-state" class="badge neutral">正在检查会话</span>
+        <span class="label">${d.browserEnclave}</span>
+        <span id="session-state" class="badge neutral">${d.sessionState}</span>
       </div>
       <div class="status-cell-body">
-        <p>GitHub owner 验证 · 15 分钟有效期</p>
+        <p>${d.sessionDesc}</p>
         <p class="telemetry-stat">沙箱状态：EPHEMERAL_ISOLATION</p>
       </div>
       <div class="status-cell-footer">
-        <a class="card-action-link" href="/security">独立安全中心</a>
-        <a class="card-action-link secondary" href="/dashboard/login">重新登录 / 续期</a>
+        <a class="card-action-link" href="/security">${d.securityCenter}</a>
+        <a class="card-action-link secondary" href="/dashboard/login">${d.reloginRenew}</a>
       </div>
     </div>
   </section>
   <div id="global-msg" class="message" role="status" aria-live="polite" aria-atomic="true" hidden></div>
-  <p id="session-login" class="session-link" hidden><a class="button primary" href="/dashboard/login">通过 GitHub owner 重新登录</a></p>
-  <p id="webauthn-warning" class="support-warning" style="margin-top:16px" hidden>当前浏览器或连接不支持 WebAuthn。Passkey 与 Advanced Security 操作已禁用。请在支持 Passkey 的安全外部浏览器中打开仪表板；不会使用普通验证代替。</p>
+  <p id="session-login" class="session-link" hidden><a class="button primary" href="/dashboard/login">${d.sessionReloginBtn}</a></p>
+  <p id="webauthn-warning" class="support-warning" style="margin-top:16px" hidden>${d.webauthnUnsupported}</p>
   <main id="dashboard-main" tabindex="-1" aria-busy="false">
     <div class="tabs" role="tablist" aria-label="控制面板模块">
-      <button id="inbox-tab" class="tab" role="tab" aria-selected="${Boolean(highlightNotificationId)}" aria-controls="tab-inbox" tabindex="${highlightNotificationId ? "0" : "-1"}" type="button"><span>[01/INBOX]</span> 待办与通知 <span id="inbox-badge" class="badge warning" style="font-size:10px;padding:1px 5px" hidden>0</span></button>
-      <button id="clients-tab" class="tab" role="tab" aria-selected="${highlightNotificationId ? "false" : "true"}" aria-controls="tab-clients" tabindex="${highlightNotificationId ? "-1" : "0"}" type="button"><span>[02/ACCESS]</span> 授权客户端</button>
-      <button id="audit-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-audit" tabindex="-1" type="button"><span>[03/ACTIVITY]</span> 调用审计</button>
-      <button id="passkeys-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-passkeys" tabindex="-1" type="button"><span>[04/SECURITY]</span> Passkey 管理</button>
-      <button id="settings-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1" type="button"><span>[05/DEVICE]</span> 应用与设置</button>
+      <button id="inbox-tab" class="tab" role="tab" aria-selected="${Boolean(highlightNotificationId)}" aria-controls="tab-inbox" tabindex="${highlightNotificationId ? "0" : "-1"}" type="button"><span>[01/INBOX]</span> ${d.tabInbox} <span id="inbox-badge" class="badge warning" style="font-size:10px;padding:1px 5px" hidden>0</span></button>
+      <button id="clients-tab" class="tab" role="tab" aria-selected="${highlightNotificationId ? "false" : "true"}" aria-controls="tab-clients" tabindex="${highlightNotificationId ? "-1" : "0"}" type="button"><span>[02/ACCESS]</span> ${d.tabClients}</button>
+      <button id="audit-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-audit" tabindex="-1" type="button"><span>[03/ACTIVITY]</span> ${d.tabAudit}</button>
+      <button id="passkeys-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-passkeys" tabindex="-1" type="button"><span>[04/SECURITY]</span> ${d.tabPasskeys}</button>
+      <button id="settings-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1" type="button"><span>[05/DEVICE]</span> ${d.tabSettings}</button>
     </div>
     <section id="tab-inbox" class="panel" role="tabpanel" aria-labelledby="inbox-tab" tabindex="0" ${highlightNotificationId ? "" : "hidden"}>
       <div class="section-head">
         <div>
-          <h2>待办核准与通知中心</h2>
-          <p>待 Passkey 批准的即时订单、受保护任务修改及客户端授权；系统重要变动与状态提醒。</p>
+          <h2>${d.inboxTitle}</h2>
+          <p>${d.inboxSubtitle}</p>
         </div>
-        <button id="inbox-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新待办与通知</button>
+        <button id="inbox-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshInbox}</button>
       </div>
       <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
         <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
             <h3 style="font-size:13px;color:var(--text-bright);display:flex;align-items:center;gap:8px;">
-              <span>⚡ 待 Passkey 核准项目</span>
-              <span id="pending-count-tag" class="badge neutral" style="font-size:10px">0 待办</span>
+              <span>${d.pendingApprovals}</span>
+              <span id="pending-count-tag" class="badge neutral" style="font-size:10px">${formatString(d.pendingCountTag, { n: 0 })}</span>
             </h3>
           </div>
           <div id="pending-approvals-container">
-            <p class="muted" style="font-size:12px;">正在检查待办事项…</p>
+            <p class="muted" style="font-size:12px;">${d.checkingPending}</p>
           </div>
         </div>
         <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-            <h3 style="font-size:13px;color:var(--text-bright);">历史通知记录</h3>
-            <span id="notifications-unread-tag" class="badge neutral" style="font-size:10px">0 未读</span>
+            <h3 style="font-size:13px;color:var(--text-bright);">${d.notificationHistory}</h3>
+            <span id="notifications-unread-tag" class="badge neutral" style="font-size:10px">${formatString(d.unreadCountTag, { n: 0 })}</span>
           </div>
           <div id="notification-detail-banner" class="security-notice" style="display:none;margin-bottom:12px;"></div>
           <div class="table-scroll" role="region" aria-label="通知列表，可横向滚动" tabindex="0">
             <table id="notifications-table">
               <thead>
                 <tr>
-                  <th scope="col">时间</th>
-                  <th scope="col">类型</th>
-                  <th scope="col">提醒摘要</th>
-                  <th scope="col">状态</th>
-                  <th scope="col">操作</th>
+                  <th scope="col">${d.colTime}</th>
+                  <th scope="col">${d.colType}</th>
+                  <th scope="col">${d.colSummary}</th>
+                  <th scope="col">${d.colStatus}</th>
+                  <th scope="col">${d.colAction}</th>
                 </tr>
               </thead>
               <tbody id="notifications-table-body">
-                <tr><td colspan="5" class="empty">正在加载通知…</td></tr>
+                <tr><td colspan="5" class="empty">${d.loadingNotifications}</td></tr>
               </tbody>
             </table>
           </div>
           <div class="pagination" style="margin-top:12px;">
-            <span id="notifications-pagination-info" role="status">正在读取分页</span>
+            <span id="notifications-pagination-info" role="status">${c.loading}</span>
             <div class="actions">
-              <button id="notifications-prev-btn" class="button" data-action data-disabled="true" type="button" disabled>&larr; 上一页</button>
-              <button id="notifications-next-btn" class="button" data-action data-disabled="true" type="button" disabled>下一页 &rarr;</button>
+              <button id="notifications-prev-btn" class="button" data-action data-disabled="true" type="button" disabled>${c.prevPage}</button>
+              <button id="notifications-next-btn" class="button" data-action data-disabled="true" type="button" disabled>${c.nextPage}</button>
             </div>
           </div>
         </div>
@@ -1921,26 +2033,26 @@ ${raw(BACKGROUND_SVG)}
     <section id="tab-clients" class="panel" role="tabpanel" aria-labelledby="clients-tab" tabindex="0" ${highlightNotificationId ? "hidden" : ""}>
       <div class="section-head">
         <div>
-          <h2>已授权 MCP 客户端矩阵</h2>
-          <p>每个客户端独立授权。权限调整与撤销在后续 MCP 请求即时生效；Advanced Security 变更须由 Passkey 验证。</p>
+          <h2>${d.clientsTitle}</h2>
+          <p>${d.clientsSubtitle}</p>
         </div>
-        <button id="clients-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新客户端</button>
+        <button id="clients-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshClients}</button>
       </div>
       <div class="table-scroll" role="region" aria-label="客户端列表，可横向滚动" tabindex="0">
         <table id="clients-table">
-          <caption id="clients-count">正在读取客户端</caption>
+          <caption id="clients-count">${c.loading}</caption>
           <thead>
             <tr>
-              <th scope="col">客户端 / 重定向 URI</th>
-              <th scope="col">状态</th>
-              <th scope="col">权限等级</th>
-              <th scope="col">Advanced Security</th>
-              <th scope="col">授权 / 最后调用</th>
-              <th scope="col">操作</th>
+              <th scope="col">${d.colClient}</th>
+              <th scope="col">${d.colStatus}</th>
+              <th scope="col">${d.colPermission}</th>
+              <th scope="col">${d.colAdvancedSecurity}</th>
+              <th scope="col">${d.colTimestamps}</th>
+              <th scope="col">${d.colActions}</th>
             </tr>
           </thead>
           <tbody id="clients-table-body">
-            <tr><td colspan="6" class="empty">正在加载客户端…</td></tr>
+            <tr><td colspan="6" class="empty">${c.loading}</td></tr>
           </tbody>
         </table>
       </div>
@@ -1948,133 +2060,133 @@ ${raw(BACKGROUND_SVG)}
     <section id="tab-audit" class="panel" role="tabpanel" aria-labelledby="audit-tab" tabindex="0" hidden>
       <div class="section-head">
         <div>
-          <h2>协议工具调用审计</h2>
-          <p>只读与交易工具的脱敏调用记录。保留最近 30 天，最多 5,000 条；统计依据当前已应用的筛选条件。</p>
+          <h2>${d.auditTitle}</h2>
+          <p>${d.auditSubtitle}</p>
         </div>
-        <button id="audit-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新日志</button>
+        <button id="audit-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshAudit}</button>
       </div>
       <div class="stats" aria-label="审计统计">
-        <div class="stat"><span class="label">匹配调用量</span><div id="audit-total-count" class="stat-value">—</div></div>
-        <div class="stat"><span class="label">成功率</span><div id="audit-success-rate" class="stat-value">—</div></div>
-        <div class="stat"><span class="label">成功</span><div id="audit-success-count" class="stat-value">—</div></div>
-        <div class="stat"><span class="label">错误</span><div id="audit-error-count" class="stat-value">—</div></div>
-        <div class="stat"><span class="label">近 24 小时调用</span><div id="audit-active24h" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statMatchedCalls}</span><div id="audit-total-count" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statSuccessRate}</span><div id="audit-success-rate" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statSuccess}</span><div id="audit-success-count" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statError}</span><div id="audit-error-count" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statActive24h}</span><div id="audit-active24h" class="stat-value">—</div></div>
       </div>
       <form id="audit-filter-form" class="filters">
-        <label class="field" for="audit-filter-client">Client ID（精确匹配）<input id="audit-filter-client" data-action type="text" placeholder="全部客户端" autocomplete="off" spellcheck="false"></label>
-        <label class="field" for="audit-filter-tool">工具名称（精确匹配）<input id="audit-filter-tool" data-action type="text" placeholder="例如 get_quotes" autocomplete="off" spellcheck="false"></label>
-        <label class="field" for="audit-filter-status">执行状态<select id="audit-filter-status" data-action><option value="">全部状态</option><option value="SUCCESS">成功 SUCCESS</option><option value="ERROR">错误 ERROR</option></select></label>
-        <div class="actions"><button class="button primary" data-action type="submit">应用筛选</button><button id="audit-clear-btn" class="button" data-action type="button">清除</button></div>
+        <label class="field" for="audit-filter-client">${d.filterClientLabel}<input id="audit-filter-client" data-action type="text" placeholder="${d.filterClientPlaceholder}" autocomplete="off" spellcheck="false"></label>
+        <label class="field" for="audit-filter-tool">${d.filterToolLabel}<input id="audit-filter-tool" data-action type="text" placeholder="${d.filterToolPlaceholder}" autocomplete="off" spellcheck="false"></label>
+        <label class="field" for="audit-filter-status">${d.filterStatusLabel}<select id="audit-filter-status" data-action><option value="">${d.filterAllStatus}</option><option value="SUCCESS">${d.filterSuccess}</option><option value="ERROR">${d.filterError}</option></select></label>
+        <div class="actions"><button class="button primary" data-action type="submit">${d.applyFilter}</button><button id="audit-clear-btn" class="button" data-action type="button">${d.clearFilter}</button></div>
       </form>
       <div class="table-scroll" role="region" aria-label="调用日志，可横向滚动" tabindex="0">
         <table id="audit-table">
           <thead>
             <tr>
-              <th scope="col">时间</th>
+              <th scope="col">${d.colTime}</th>
               <th scope="col">Client ID</th>
-              <th scope="col">工具</th>
-              <th scope="col">状态</th>
-              <th scope="col">耗时</th>
-              <th scope="col">脱敏参数 / 错误</th>
-              <th scope="col">完整 Request ID</th>
+              <th scope="col">${d.colTool}</th>
+              <th scope="col">${d.colStatus}</th>
+              <th scope="col">${d.colDuration}</th>
+              <th scope="col">${d.colSummaryParams}</th>
+              <th scope="col">${d.colRequestId}</th>
             </tr>
           </thead>
           <tbody id="audit-table-body">
-            <tr><td colspan="7" class="empty">正在加载审计记录…</td></tr>
+            <tr><td colspan="7" class="empty">${c.loading}</td></tr>
           </tbody>
         </table>
       </div>
       <div class="pagination">
-        <span id="audit-pagination-info" role="status">正在读取分页</span>
+        <span id="audit-pagination-info" role="status">${c.loading}</span>
         <div class="actions">
-          <button id="audit-prev-btn" class="button" data-action data-disabled="true" type="button" disabled>&larr; 上一页</button>
-          <button id="audit-next-btn" class="button" data-action data-disabled="true" type="button" disabled>下一页 &rarr;</button>
+          <button id="audit-prev-btn" class="button" data-action data-disabled="true" type="button" disabled>${c.prevPage}</button>
+          <button id="audit-next-btn" class="button" data-action data-disabled="true" type="button" disabled>${c.nextPage}</button>
         </div>
       </div>
     </section>
     <section id="tab-passkeys" class="panel" role="tabpanel" aria-labelledby="passkeys-tab" tabindex="0" hidden>
       <div class="section-head">
         <div>
-          <h2>Owner 硬件 Passkey 管理</h2>
-          <p>凭据由 owner 共享。添加、重命名、删除均需验证已有 Passkey；最后一个凭据不可删除，取消或失败不会降级。</p>
+          <h2>${d.passkeysTitle}</h2>
+          <p>${d.passkeysSubtitle}</p>
         </div>
-        <button id="passkeys-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新凭据</button>
+        <button id="passkeys-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshPasskeys}</button>
       </div>
       <div class="stats overview-stats" aria-label="全局概览">
-        <div class="stat"><span class="label">已授权客户端</span><div id="stat-clients-count" class="stat-value">—</div></div>
-        <div class="stat"><span class="label">保留调用记录</span><div id="stat-total-calls" class="stat-value">—</div></div>
-        <div class="stat"><span class="label">已登记 Passkey</span><div id="stat-passkeys-count" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statClientsCount}</span><div id="stat-clients-count" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statTotalCalls}</span><div id="stat-total-calls" class="stat-value">—</div></div>
+        <div class="stat"><span class="label">${d.statPasskeysCount}</span><div id="stat-passkeys-count" class="stat-value">—</div></div>
       </div>
       <div class="panel-body">
-        <h3 id="passkeys-state">正在读取凭据</h3>
-        <ul id="passkeys-list" class="credentials"><li class="empty">正在加载 Passkey…</li></ul>
+        <h3 id="passkeys-state">${c.loading}</h3>
+        <ul id="passkeys-list" class="credentials"><li class="empty">${c.loading}</li></ul>
         <form id="add-passkey-form" class="add-passkey">
-          <label class="field" for="credential-name">新 Passkey 名称<input id="credential-name" data-action type="text" maxlength="80" required value="我的 Passkey" autocomplete="off"></label>
-          <button id="add-passkey-btn" class="button primary" data-action data-disabled="true" type="submit" disabled>+ 添加 Passkey</button>
+          <label class="field" for="credential-name">${d.addKeyLabel}<input id="credential-name" data-action type="text" maxlength="80" required value="${d.addKeyDefaultValue}" autocomplete="off"></label>
+          <button id="add-passkey-btn" class="button primary" data-action data-disabled="true" type="submit" disabled>+ ${d.addKeyWithVerify}</button>
         </form>
-        <p class="muted" style="font-size:12px;margin-top:10px">添加已有凭据后的新设备分两步：先验证现有凭据，再单独点击注册。系统提示中请选择所需设备。</p>
+        <p class="muted" style="font-size:12px;margin-top:10px">${d.addKeyStepHint}</p>
         <div class="recovery">
-          <p>所有凭据均丢失？通过独立 GitHub owner OAuth 恢复。恢复将使旧会话与待批准提案失效。</p>
-          <a class="button danger" href="/security/recover">Passkey 灾难恢复</a>
+          <p>${d.recoveryNotice}</p>
+          <a class="button danger" href="/security/recover">${d.disasterRecoveryBtn}</a>
         </div>
       </div>
     </section>
     <section id="tab-settings" class="panel" role="tabpanel" aria-labelledby="settings-tab" tabindex="0" hidden>
       <div class="section-head">
         <div>
-          <h2>应用运行环境与通知设备设置</h2>
-          <p>管理 Web Push 推送设备订阅、通知权限检测及 PWA 主屏幕安装指引。</p>
+          <h2>${d.settingsTitle}</h2>
+          <p>${d.settingsSubtitle}</p>
         </div>
-        <button id="settings-refresh-btn" class="button" data-action type="button">&#x21bb; 刷新设备状态</button>
+        <button id="settings-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshSettings}</button>
       </div>
       <div class="panel-body" style="display:flex;flex-direction:column;gap:16px;">
         <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-            <h3 style="font-size:13px;color:var(--text-bright);">Web Push 消息推送</h3>
-            <span id="push-status-badge" class="badge neutral">检查推送能力中…</span>
+            <h3 style="font-size:13px;color:var(--text-bright);">${d.pushTitle}</h3>
+            <span id="push-status-badge" class="badge neutral">${d.pushBadgeChecking}</span>
           </div>
-          <p style="margin-bottom:10px;"><span id="push-permission-badge" class="badge neutral" role="status">检查通知权限中…</span></p>
-          <p class="muted" style="font-size:12px;margin-bottom:12px;">浏览器允许通知后，还需点击“开启本机通知推送”完成本机订阅与设备登记。</p>
-          <p class="muted" style="font-size:12px;margin-bottom:12px;">在 iPhone PWA（iOS 16.4+ 添加至主屏幕）或桌面 Chrome 上启用推送，即可在后台或锁屏接收待核准、交易结果与授权失效提醒。</p>
-          <p><label for="push-device-label">设备名称（可选）</label> <input id="push-device-label" type="text" maxlength="80" placeholder="例如：我的 iPhone、办公 Chrome"></p>
+          <p style="margin-bottom:10px;"><span id="push-permission-badge" class="badge neutral" role="status">${d.permChecking}</span></p>
+          <p class="muted" style="font-size:12px;margin-bottom:12px;">${d.pushHint1}</p>
+          <p class="muted" style="font-size:12px;margin-bottom:12px;">${d.pushHint2}</p>
+          <p><label for="push-device-label">${d.deviceLabel}</label> <input id="push-device-label" type="text" maxlength="80" placeholder="${d.devicePlaceholder}"></p>
           <div id="push-action-buttons" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
-            <button id="push-toggle-btn" class="button primary" data-action data-disabled="true" type="button" disabled>开启本机通知推送</button>
-            <button id="push-test-btn" class="button" data-action data-disabled="true" type="button" disabled>发送测试提醒</button>
+            <button id="push-toggle-btn" class="button primary" data-action data-disabled="true" type="button" disabled>${d.enablePushBtn}</button>
+            <button id="push-test-btn" class="button" data-action data-disabled="true" type="button" disabled>${d.sendTestBtn}</button>
           </div>
           <p id="push-action-status" class="muted" role="status" aria-live="polite"></p>
-          <h4 style="font-size:12px;color:var(--text);margin-bottom:8px;text-transform:uppercase;">已登记推送设备</h4>
+          <h4 style="font-size:12px;color:var(--text);margin-bottom:8px;text-transform:uppercase;">${d.registeredDevices}</h4>
           <div class="table-scroll" role="region" aria-label="推送设备列表" tabindex="0">
             <table id="push-devices-table">
               <thead>
                 <tr>
-                  <th scope="col">设备标识</th>
-                  <th scope="col">名称</th>
-                  <th scope="col">状态</th>
-                  <th scope="col">登记时间</th>
-                  <th scope="col">操作</th>
+                  <th scope="col">${d.colDeviceId}</th>
+                  <th scope="col">${d.colDeviceName}</th>
+                  <th scope="col">${c.status}</th>
+                  <th scope="col">${d.colDeviceTime}</th>
+                  <th scope="col">${c.action}</th>
                 </tr>
               </thead>
               <tbody id="push-devices-table-body">
-                <tr><td colspan="5" class="empty">正在加载设备…</td></tr>
+                <tr><td colspan="5" class="empty">${c.loading}</td></tr>
               </tbody>
             </table>
           </div>
         </div>
         <div style="background:var(--surface-lowest);border:1px solid var(--outline-variant);border-radius:var(--radius-md);padding:14px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-            <h3 style="font-size:13px;color:var(--text-bright);">PWA 渐进式应用安装</h3>
-            <span id="pwa-install-badge" class="badge neutral">检测模式中…</span>
+            <h3 style="font-size:13px;color:var(--text-bright);">${d.pwaTitle}</h3>
+            <span id="pwa-install-badge" class="badge neutral">${d.pwaChecking}</span>
           </div>
           <div id="pwa-install-container">
-            <p id="pwa-install-status" class="muted" style="font-size:12px;margin-bottom:12px;">正在检测当前运行环境…</p>
-            <button id="pwa-install-btn" class="button primary" type="button" hidden>+ 安装为桌面应用</button>
+            <p id="pwa-install-status" class="muted" style="font-size:12px;margin-bottom:12px;">${c.loading}</p>
+            <button id="pwa-install-btn" class="button primary" type="button" hidden>${d.pwaInstallBtn}</button>
             <div id="pwa-ios-guide" class="security-notice" style="display:none;margin-top:10px;">
-              <div style="font-weight:600;margin-bottom:4px;">iPhone / iPad 添加至主屏幕指引：</div>
+              <div style="font-weight:600;margin-bottom:4px;">${d.pwaIosGuideTitle}</div>
               <ol style="margin-left:20px;line-height:1.6;font-size:12px;">
-                <li>轻点 Safari 底部工具栏的“分享”图标（带有向上箭头的方框）；</li>
-                <li>向下滚动并选择“添加到主屏幕” (Add to Home Screen)；</li>
-                <li>轻点右上角“添加”完成安装；</li>
-                <li>从主屏幕打开 Schwab MCP 图标，即可享受独立运行与 Web Push 锁屏通知。</li>
+                <li>${d.pwaIosStep1}</li>
+                <li>${d.pwaIosStep2}</li>
+                <li>${d.pwaIosStep3}</li>
+                <li>${d.pwaIosStep4}</li>
               </ol>
             </div>
           </div>
@@ -2084,20 +2196,24 @@ ${raw(BACKGROUND_SVG)}
   </main>
   <footer class="footer">
     <div class="footer-left">
-      <span>SYSTEM READY // SCHWAB MCP v${appVersion}</span>
+      <span>${d.footerStatus} v${appVersion}</span>
       <span>&bull;</span>
       <span>WORKERS / SQLITE / WEBAUTHN</span>
     </div>
     <div class="footer-right">
-      <span>ENCLAVE: SECURE &middot; 零明文账户/Secret读取</span>
+      <span>${d.footerSecurity}</span>
     </div>
   </footer>
 </div>
 <dialog id="passkey-dialog" aria-labelledby="ceremony-title" aria-describedby="ceremony-description ceremony-state">
-  <h2 id="ceremony-title">验证 Passkey</h2><p id="ceremony-description"></p><p id="ceremony-state" role="status" aria-live="polite"></p>
-  <div class="actions"><button id="ceremony-cancel" class="button" data-action type="button">取消</button><button id="ceremony-submit" class="button primary" data-action type="button">验证 Passkey 并确认</button></div>
+  <h2 id="ceremony-title">${d.dialogTitle}</h2><p id="ceremony-description"></p><p id="ceremony-state" role="status" aria-live="polite"></p>
+  <div class="actions"><button id="ceremony-cancel" class="button" data-action type="button">${d.dialogCancel}</button><button id="ceremony-submit" class="button primary" data-action type="button">${d.dialogConfirm}</button></div>
 </dialog>
-<script>${raw(DASHBOARD_SCRIPT)}</script>
+<script>
+globalThis.__I18N__ = ${raw(JSON.stringify(getDashboardClientI18n(lang)))};
+${raw(DASHBOARD_SCRIPT)}
+</script>
+<script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
 ${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;
