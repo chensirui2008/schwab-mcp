@@ -784,6 +784,15 @@ app.post("/dashboard/api/push/test", c => dashboardRequest(c, async () => {
   });
   return c.json(result);
 }));
+app.post("/dashboard/api/email/test", c => dashboardRequest(c, async () => {
+  const input = z.object({}).strict().parse(await readBoundedJson(c.req.raw));
+  const result = await dashboardVault(c.env, "/notifications/email-test", z.object({ id: z.uuid() }), {
+    sessionId: getCookie(c, SECURITY_COOKIE),
+    csrf: c.req.header("X-CSRF-Token"),
+    input,
+  });
+  return c.json(result);
+}));
 app.get("/dashboard/api/pending-approvals", c => dashboardRequest(c, async () => {
   const result = await dashboardVault(c.env, "/notifications/pending-approvals", z.object({
     items: z.array(z.object({

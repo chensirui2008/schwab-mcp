@@ -1,4 +1,5 @@
 import { buildPushPayload } from "@block65/webcrypto-web-push";
+import { emailAlertConfig, type EmailAlertReason } from "./email-alerts";
 import type { AppEnv } from "./env";
 import type { SecurityStore } from "./security-store";
 
@@ -46,6 +47,19 @@ export interface NotificationDelivery {
   nextAttemptAt: number;
   leaseUntil: number;
   lastStatusCode: number | null;
+}
+
+export interface ClaimedEmailDelivery {
+  deliveryId: string;
+  eventId: string;
+  eventEntityId: string;
+  reason: EmailAlertReason;
+  eventCreatedAt: number;
+  eventExpiresAt: number;
+  attemptCount: number;
+  leaseUntil: number;
+  senderAddress: string;
+  destinationAddress: string;
 }
 
 export class NotificationError extends Error {
@@ -204,6 +218,19 @@ export class NotificationStore {
         UNIQUE(event_id, subscription_id)
       );
       CREATE INDEX IF NOT EXISTS idx_notification_delivery_dispatch ON notification_delivery(status, next_attempt_at, lease_until);
+      CREATE TABLE IF NOT EXISTS email_delivery (
+        id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE REFERENCES notification_event(id),
+        reason TEXT NOT NULL,
+        sender_address TEXT NOT NULL,
+        destination_address TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        lease_until INTEGER NOT NULL DEFAULT 0,
+        last_error_code TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_email_delivery_dispatch ON email_delivery(status, next_attempt_at, lease_until);
     `);
     const subColumns = new Set(this.storage.sql.exec<{ name: string }>("PRAGMA table_info(push_subscription)").toArray().map(r => r.name));
     if (!subColumns.has("last_test_at")) {
@@ -428,6 +455,7 @@ export class NotificationStore {
     entityId: string;
     summary: string;
     expiresAt?: number;
+    executionStatus?: "EXECUTION_UNCERTAIN";
   }): NotificationEvent | null {
     const now = Date.now();
     const defaultTtlMs = 24 * 60 * 60 * 1000;
@@ -486,6 +514,20 @@ export class NotificationStore {
         );
       }
 
+      const reason: EmailAlertReason | null = event.type === "SCHWAB_REAUTH_DUE_SOON"
+        ? "REAUTH_DUE_SOON"
+        : event.type === "SCHWAB_REAUTH_REQUIRED"
+          ? "REAUTH_REQUIRED"
+          : event.type === "TRADE_RESULT" && event.executionStatus === "EXECUTION_UNCERTAIN"
+            ? "EXECUTION_UNCERTAIN"
+            : null;
+      if (reason) {
+        const config = emailAlertConfig(this.env);
+        if (config?.enabled) {
+          this.insertEmailDelivery(id, reason, config, now);
+        }
+      }
+
       this.pruneOldEvents();
 
       return {
@@ -498,6 +540,42 @@ export class NotificationStore {
         expiresAt,
         readAt: null,
       };
+    });
+  }
+
+  private insertEmailDelivery(
+    eventId: string,
+    reason: EmailAlertReason,
+    config: { sender: string; recipient: string },
+    now: number
+  ): void {
+    this.storage.sql.exec(
+      `INSERT INTO email_delivery
+       (id, event_id, reason, sender_address, destination_address, status, attempt_count, next_attempt_at, lease_until, last_error_code)
+       VALUES (?, ?, ?, ?, ?, 'PENDING', 0, ?, 0, NULL)`,
+      crypto.randomUUID(),
+      eventId,
+      reason,
+      config.sender,
+      config.recipient,
+      now
+    );
+  }
+
+  suppressPendingReauthorizationEmails(
+    generation: string,
+    reasons: readonly ("REAUTH_DUE_SOON" | "REAUTH_REQUIRED")[]
+  ): void {
+    this.storage.transactionSync(() => {
+      for (const reason of reasons) {
+        this.storage.sql.exec(
+          `UPDATE email_delivery SET status = 'SUPPRESSED', lease_until = 0
+           WHERE status IN ('PENDING', 'SENDING') AND reason = ?
+             AND event_id IN (SELECT id FROM notification_event WHERE entity_id = ?)`,
+          reason,
+          generation
+        );
+      }
     });
   }
 
@@ -653,6 +731,54 @@ export class NotificationStore {
     });
   }
 
+  triggerTestEmail(): NotificationEvent {
+    const now = Date.now();
+    return this.storage.transactionSync(() => {
+      const config = emailAlertConfig(this.env);
+      if (!config) {
+        throw new NotificationError("UPSTREAM_UNAVAILABLE", "邮件通知尚未配置", 503);
+      }
+
+      const lastTest = this.storage.sql.exec<{ created_at: number }>(
+        `SELECT e.created_at FROM notification_event e
+         JOIN email_delivery d ON d.event_id = e.id
+         WHERE d.reason = 'TEST'
+         ORDER BY e.created_at DESC LIMIT 1`
+      ).toArray()[0];
+      if (lastTest && now - lastTest.created_at < 60_000) {
+        throw new NotificationError("RATE_LIMITED", "测试通知过于频繁，请一分钟后重试", 429);
+      }
+
+      const id = crypto.randomUUID();
+      const dedupeKey = "email-test:" + id;
+      const entityId = "owner-email";
+      const expiresAt = now + 60 * 60 * 1000;
+      const summary = "测试邮件通知已加入发送队列";
+      this.storage.sql.exec(
+        "INSERT INTO notification_event VALUES (?, ?, 'TEST', ?, ?, ?, ?, NULL)",
+        id,
+        dedupeKey,
+        entityId,
+        summary,
+        now,
+        expiresAt
+      );
+      this.insertEmailDelivery(id, "TEST", config, now);
+      this.pruneOldEvents();
+
+      return {
+        id,
+        dedupeKey,
+        type: "TEST",
+        entityId,
+        summary,
+        createdAt: now,
+        expiresAt,
+        readAt: null,
+      };
+    });
+  }
+
   onPasskeyRecovery(): void {
     const now = Date.now();
     this.storage.transactionSync(() => {
@@ -667,49 +793,53 @@ export class NotificationStore {
   }
 
   private pruneOldEvents(): void {
+    const deleteEvents = (events: Array<{ id: string }>): void => {
+      if (events.length === 0) return;
+      const ids = JSON.stringify(events.map(event => event.id));
+      this.storage.sql.exec(
+        "DELETE FROM notification_delivery WHERE event_id IN (SELECT value FROM json_each(?))",
+        ids
+      );
+      this.storage.sql.exec(
+        "DELETE FROM email_delivery WHERE event_id IN (SELECT value FROM json_each(?))",
+        ids
+      );
+      this.storage.sql.exec(
+        "DELETE FROM notification_event WHERE id IN (SELECT value FROM json_each(?))",
+        ids
+      );
+    };
+
+    // Select each set once before deleting either channel's child records.
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    // Delete child deliveries before their events; outstanding work is retained.
-    const expiredEvents = `
+    const expiredEvents = this.storage.sql.exec<{ id: string }>(`
       SELECT id FROM notification_event
       WHERE created_at < ?
         AND id NOT IN (
-          SELECT event_id FROM notification_delivery
-          WHERE status IN ('PENDING', 'SENDING')
+          SELECT event_id FROM notification_delivery WHERE status IN ('PENDING', 'SENDING')
+          UNION ALL
+          SELECT event_id FROM email_delivery WHERE status IN ('PENDING', 'SENDING')
         )
-    `;
-    this.storage.sql.exec(
-      `DELETE FROM notification_delivery WHERE event_id IN (${expiredEvents})`,
-      thirtyDaysAgo
-    );
-    this.storage.sql.exec(
-      `DELETE FROM notification_event WHERE id IN (${expiredEvents})`,
-      thirtyDaysAgo
-    );
+    `, thirtyDaysAgo).toArray();
+    deleteEvents(expiredEvents);
 
-    // Keep max 1,000 events
+    // Keep at most 1,000 events unless outstanding work requires retaining more.
     const count = this.storage.sql.exec<{ count: number }>(
       "SELECT COUNT(*) as count FROM notification_event"
     ).one().count;
 
     if (count > 1000) {
-      const excess = count - 1000;
-      const excessEvents = `
+      const excessEvents = this.storage.sql.exec<{ id: string }>(`
         SELECT id FROM notification_event
         WHERE id NOT IN (
-          SELECT event_id FROM notification_delivery
-          WHERE status IN ('PENDING', 'SENDING')
+          SELECT event_id FROM notification_delivery WHERE status IN ('PENDING', 'SENDING')
+          UNION ALL
+          SELECT event_id FROM email_delivery WHERE status IN ('PENDING', 'SENDING')
         )
         ORDER BY created_at ASC, id ASC
         LIMIT ?
-      `;
-      this.storage.sql.exec(
-        `DELETE FROM notification_delivery WHERE event_id IN (${excessEvents})`,
-        excess
-      );
-      this.storage.sql.exec(
-        `DELETE FROM notification_event WHERE id IN (${excessEvents})`,
-        excess
-      );
+      `, count - 1000).toArray();
+      deleteEvents(excessEvents);
     }
   }
 
@@ -909,20 +1039,133 @@ export class NotificationStore {
     });
   }
 
+  claimEmailDeliveriesForDispatch(maxBatch = 1, leaseDurationMs = 120_000): ClaimedEmailDelivery[] {
+    const now = Date.now();
+    return this.storage.transactionSync(() => {
+      const candidates = this.storage.sql.exec<{
+        delivery_id: string;
+        event_id: string;
+        entity_id: string;
+        reason: EmailAlertReason;
+        created_at: number;
+        expires_at: number;
+        attempt_count: number;
+        sender_address: string;
+        destination_address: string;
+      }>(`
+        SELECT d.id AS delivery_id, d.event_id, e.entity_id, d.reason,
+               e.created_at, e.expires_at, d.attempt_count,
+               d.sender_address, d.destination_address
+        FROM email_delivery d
+        JOIN notification_event e ON e.id = d.event_id
+        WHERE (d.status = 'PENDING' AND d.next_attempt_at <= ?)
+           OR (d.status = 'SENDING' AND d.lease_until <= ?)
+        ORDER BY d.next_attempt_at ASC, d.id ASC
+        LIMIT ?
+      `, now, now, maxBatch).toArray();
+
+      if (candidates.length === 0) return [];
+      const config = emailAlertConfig(this.env);
+      const claimed: ClaimedEmailDelivery[] = [];
+      for (const row of candidates) {
+        if (row.expires_at <= now || !config
+          || (row.reason !== "TEST" && !config.enabled)
+          || row.sender_address !== config.sender
+          || row.destination_address !== config.recipient) {
+          this.storage.sql.exec(
+            "UPDATE email_delivery SET status = 'SUPPRESSED', lease_until = 0 WHERE id = ?",
+            row.delivery_id
+          );
+          continue;
+        }
+        if (row.attempt_count >= 3) {
+          this.storage.sql.exec(
+            `UPDATE email_delivery SET status = 'FAILED', lease_until = 0,
+             last_error_code = COALESCE(last_error_code, 'EMAIL_SEND_FAILED') WHERE id = ?`,
+            row.delivery_id
+          );
+          continue;
+        }
+
+        const leaseUntil = now + leaseDurationMs;
+        const attemptCount = row.attempt_count + 1;
+        this.storage.sql.exec(
+          `UPDATE email_delivery SET status = 'SENDING', attempt_count = ?, lease_until = ?
+           WHERE id = ?`,
+          attemptCount,
+          leaseUntil,
+          row.delivery_id
+        );
+        claimed.push({
+          deliveryId: row.delivery_id,
+          eventId: row.event_id,
+          eventEntityId: row.entity_id,
+          reason: row.reason,
+          eventCreatedAt: row.created_at,
+          eventExpiresAt: row.expires_at,
+          attemptCount,
+          leaseUntil,
+          senderAddress: row.sender_address,
+          destinationAddress: row.destination_address,
+        });
+      }
+      return claimed;
+    });
+  }
+
+  recordEmailDeliveryOutcome(deliveryId: string, result: {
+    leaseUntil: number;
+    status: "SENT" | "FAILED" | "RETRY" | "SUPPRESSED";
+    errorCode?: string;
+    nextAttemptAt?: number;
+  }): void {
+    this.storage.transactionSync(() => {
+      const current = this.storage.sql.exec<{ attempt_count: number; expires_at: number }>(
+        `SELECT d.attempt_count, e.expires_at FROM email_delivery d
+         JOIN notification_event e ON e.id = d.event_id
+         WHERE d.id = ? AND d.status = 'SENDING' AND d.lease_until = ?`,
+        deliveryId,
+        result.leaseUntil
+      ).toArray()[0];
+      if (!current) return;
+
+      const now = Date.now();
+      const nextAttemptAt = result.nextAttemptAt ?? (now + 30_000);
+      const status = result.status === "RETRY"
+        ? current.attempt_count >= 3 || current.expires_at <= Math.max(now, nextAttemptAt)
+          ? "FAILED"
+          : "PENDING"
+        : result.status;
+      this.storage.sql.exec(
+        `UPDATE email_delivery SET status = ?, lease_until = 0, last_error_code = ?,
+         next_attempt_at = CASE WHEN ? = 'PENDING' THEN ? ELSE next_attempt_at END
+         WHERE id = ? AND status = 'SENDING' AND lease_until = ?`,
+        status,
+        result.errorCode ?? null,
+        status,
+        nextAttemptAt,
+        deliveryId,
+        result.leaseUntil
+      );
+    });
+  }
+
   getNextAlarmTime(): number | null {
     const now = Date.now();
-    // 1. Next pending delivery attempt
-    const nextPending = this.storage.sql.exec<{ next_attempt_at: number }>(`
-      SELECT MIN(next_attempt_at) as next_attempt_at 
-      FROM notification_delivery 
-      WHERE status = 'PENDING'
+    const nextPending = this.storage.sql.exec<{ next_attempt_at: number | null }>(`
+      SELECT MIN(next_attempt_at) AS next_attempt_at FROM (
+        SELECT next_attempt_at FROM notification_delivery WHERE status = 'PENDING'
+        UNION ALL
+        SELECT next_attempt_at FROM email_delivery WHERE status = 'PENDING'
+      )
     `).toArray()[0]?.next_attempt_at;
 
-    // 2. Next expired lease on SENDING delivery
-    const nextLease = this.storage.sql.exec<{ lease_until: number }>(`
-      SELECT MIN(lease_until) as lease_until 
-      FROM notification_delivery 
-      WHERE status = 'SENDING' AND lease_until > 0
+    const nextLease = this.storage.sql.exec<{ lease_until: number | null }>(`
+      SELECT MIN(lease_until) AS lease_until FROM (
+        SELECT lease_until FROM notification_delivery WHERE status = 'SENDING' AND lease_until > 0
+        UNION ALL
+        SELECT lease_until FROM email_delivery WHERE status = 'SENDING' AND lease_until > 0
+      )
     `).toArray()[0]?.lease_until;
 
     const times = [nextPending, nextLease].filter((t): t is number => typeof t === "number" && t > 0);
