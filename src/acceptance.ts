@@ -16,13 +16,20 @@ const fake = {
   SCHWAB_REDIRECT_URI: `${HOST}/auth/schwab/callback`,
   MARKET_DATA_BASE_URL: "https://blocked.invalid/market", TRADER_BASE_URL: "https://blocked.invalid/trader",
   APP_VERSION: "cloud-oauth-acceptance",
+  OWNER_ALERT_EMAIL: undefined,
+  EMAIL_ALERTS_ENABLED: "false",
+  ALERT_EMAIL_FROM: undefined,
+  ALERT_EMAIL_TO: undefined,
 };
 export class AcceptanceVault extends SchwabVault {
-  constructor(ctx: DurableObjectState, env: AppEnv) { super(ctx, { ...env, ...fake }); }
+  constructor(ctx: DurableObjectState, env: AppEnv) {
+    super(ctx, { ...env, ...fake, BROWSER_AUTH_RATE_LIMITER: env.ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER });
+  }
   override fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     // No credentials or Schwab requests can enter this namespace, even with a leaked test token.
-    if (!["/state", "/state/consume"].includes(path) && !path.startsWith("/security/")) {
+    const policyRead = request.method === "GET" && path === "/client/policy";
+    if (!policyRead && !["/state", "/state/consume"].includes(path) && !path.startsWith("/security/")) {
       return Promise.resolve(new Response("Acceptance vault blocks account and trading operations", { status: 403 }));
     }
     return super.fetch(request);
@@ -47,6 +54,11 @@ function isolated(env: AppEnv, run: string, crossOrigin = false): AppEnv {
   const binding = env.ACCEPTANCE_VAULT;
   if (!binding || !env.ACCEPTANCE_KV) throw new Error("Acceptance bindings missing");
   return { ...env, ...fake, OAUTH_KV: env.ACCEPTANCE_KV,
+    BROWSER_AUTH_RATE_LIMITER: env.ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER,
+    OWNER_ALERT_EMAIL: undefined,
+    EMAIL_ALERTS_ENABLED: "false",
+    ALERT_EMAIL_FROM: undefined,
+    ALERT_EMAIL_TO: undefined,
     SCHWAB_VAULT: { get: () => binding.get(binding.idFromName(run)), idFromName: binding.idFromName.bind(binding), idFromString: binding.idFromString.bind(binding), newUniqueId: binding.newUniqueId.bind(binding), getByName: () => binding.get(binding.idFromName(run)), jurisdiction: binding.jurisdiction.bind(binding) },
     acceptanceGitHub: { url: crossOrigin ? "http://127.0.0.1:8797/authorize" : `${HOST}${ROOT}/mock/github`, fetch: mockFetch },
   };

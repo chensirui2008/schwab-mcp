@@ -10,13 +10,30 @@ import headersText from "../public/_headers?raw";
 
 const origin = "https://example.com";
 
+function mockLimiter(): RateLimit {
+  return {
+    limit() {
+      return Promise.resolve({ success: true });
+    },
+  };
+}
+
 function setup() {
-  return { ...env } as unknown as AppEnv;
+  const appEnv = { ...env } as unknown as AppEnv;
+  appEnv.BROWSER_AUTH_RATE_LIMITER = mockLimiter();
+  appEnv.ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER = mockLimiter();
+  return appEnv;
 }
 
 async function dispatch(request: Request, appEnv: AppEnv) {
+  let req = request;
+  if (!req.headers.has("CF-Connecting-IP")) {
+    const headers = new Headers(req.headers);
+    headers.set("CF-Connecting-IP", "192.0.2.10");
+    req = new Request(req, { headers });
+  }
   const ctx = createExecutionContext();
-  const response = await worker.fetch(request, appEnv, ctx);
+  const response = await worker.fetch(req, appEnv, ctx);
   const body = response.body === null ? null : await response.arrayBuffer();
   await waitOnExecutionContext(ctx);
   return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });

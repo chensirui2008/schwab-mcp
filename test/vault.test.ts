@@ -110,6 +110,85 @@ describe("SchwabVault token status", () => {
   });
 });
 
+describe("SchwabVault application telemetry privacy", () => {
+  it("reports refresh network failures with the caller request ID but no exception or credentials", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    await runInDurableObject(vault, (_instance, state) => {
+      state.storage.sql.exec("UPDATE schwab_token SET access_expires_at = ?", Date.now() - 1);
+    });
+    const output: unknown[][] = [];
+    const capture = (...args: unknown[]) => { output.push(args); };
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    const requestId = crypto.randomUUID();
+    const upstream = vi.fn().mockRejectedValue(new Error(
+      "private-refresh-network-sentinel https://upstream.example/token?code=private-refresh-query-sentinel refresh-secret",
+    ));
+    vi.stubGlobal("fetch", upstream);
+    const response = await post(vault, "/request", {
+      base: "market", path: "/quotes", query: { symbols: "private-refresh-parameter-sentinel" }, requestId, tool: "get_quotes",
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: { code: "UPSTREAM_UNAVAILABLE", message: "Unable to refresh Schwab authorization", requestId, attempts: 1 },
+    });
+    expect(upstream).toHaveBeenCalledTimes(1);
+    expect(upstream.mock.calls[0]?.[0]).toBe("https://api.schwabapi.com/v1/oauth/token");
+    const events = output.flat().filter((line): line is string => typeof line === "string")
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toEqual([{
+      event: "schwab_token_refresh", requestId, status: "network_error", durationMs: expect.any(Number) as unknown,
+    }]);
+    expect(Number(events[0]?.durationMs)).toBeGreaterThanOrEqual(0);
+    expect(await (await vault.fetch("https://vault/status")).json()).toMatchObject({ connected: true });
+    const serialized = JSON.stringify(output);
+    for (const sensitive of [
+      "private-refresh-network-sentinel", "private-refresh-query-sentinel", "private-refresh-parameter-sentinel",
+      "access-secret", "refresh-secret", "https://", "errorType", "message",
+    ]) expect(serialized).not.toContain(sensitive);
+  });
+
+  it("keeps native invalid-JSON exception text and request URLs private without retrying or changing the error outcome", async () => {
+    const vault = stub();
+    await saveToken(vault);
+    const output: unknown[][] = [];
+    const capture = (...args: unknown[]) => { output.push(args); };
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    const requestId = crypto.randomUUID();
+    // A short invalid body appears verbatim in the native JSON parser's exception.
+    const invalidBody = "JSECRET";
+    const invalidResponse = new Response(invalidBody, { headers: { "Content-Type": "application/json" } });
+    await expect(invalidResponse.clone().json()).rejects.toThrow(invalidBody);
+    const upstream = vi.fn().mockResolvedValue(invalidResponse);
+    vi.stubGlobal("fetch", upstream);
+    const response = await post(vault, "/request", {
+      base: "market", path: "/quotes", query: { symbols: "private-invalid-json-parameter-sentinel" }, requestId, tool: "get_quotes",
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: { code: "UPSTREAM_UNAVAILABLE", message: "Schwab returned an invalid response", requestId, attempts: 1 },
+    });
+    expect(upstream).toHaveBeenCalledTimes(1);
+    const requestedUrl = String(upstream.mock.calls[0]?.[0]);
+    expect(requestedUrl).toContain("private-invalid-json-parameter-sentinel");
+    const events = output.flat().filter((line): line is string => typeof line === "string")
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toEqual([
+      { event: "schwab_api_request", requestId, tool: "get_quotes", method: "GET", status: 200, attempts: 1, durationMs: expect.any(Number) as unknown },
+      { event: "schwab_response_invalid", requestId, tool: "get_quotes" },
+    ]);
+    expect(Number(events[0]?.durationMs)).toBeGreaterThanOrEqual(0);
+    const serialized = JSON.stringify(output);
+    for (const sensitive of [invalidBody, "private-invalid-json-parameter-sentinel", requestedUrl, "access-secret", "refresh-secret", "https://", "message"]) {
+      expect(serialized).not.toContain(sensitive);
+    }
+  });
+});
+
 describe("SchwabVault unified alarm recovery", () => {
   it("migrates a connected pre-upgrade token and schedules its reminder without a trade", async () => {
     const vault = stub();

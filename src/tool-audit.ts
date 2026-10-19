@@ -4,7 +4,7 @@ import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
 import type { ClientIdentity } from "./security-store";
 import type { ErrorCode } from "./types";
-
+import { logEvent } from "./log";
 const TOOL_NAMES: Readonly<Record<string, true>> = {
   schwab_connection_status: true, get_trading_diagnostics: true, get_quotes: true, get_price_history: true,
   get_option_chain: true, get_option_expiration_chain: true, get_market_hours: true, get_movers: true,
@@ -195,6 +195,14 @@ class ToolAuditTransport implements Transport {
 
   private async record(call: PendingCall, errorCode?: string): Promise<void> {
     const durationMs = Math.max(0, Math.round(performance.now() - call.startedAt));
+    const status = errorCode ? "ERROR" : "SUCCESS";
+    logEvent("mcp_tool_call", {
+      tool: call.toolName,
+      requestId: call.requestId,
+      status,
+      durationMs,
+      ...(errorCode ? { errorCode } : {}),
+    });
     try {
       const response = await vaultStub(this.env).fetch("https://vault/audit/tool", {
         method: "POST",

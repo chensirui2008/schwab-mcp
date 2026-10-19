@@ -210,6 +210,8 @@ Expected response:
   ```bash
   npx wrangler tail schwab-mcp --format json
   ```
-  All tokens, credentials, and account numbers are automatically scrubbed.
+  Application events contain allowlisted fields only; this is not an automatic scrubber for arbitrary logs. Automatic Invocation Logs and Traces are disabled to avoid full callback URL/query collection. Worker source maps are uploaded outside public assets.
 - **Enable Trading (Optional & Caution)**:
   To enable trading operations, update `ENABLE_TRADING` to `"true"` in `wrangler.jsonc` and redeploy (`npm run deploy`). All trading writes still require explicit two-phase phrase repetition.
+
+Optional critical owner email setup, recipient ownership verification and the protected test request are documented in [the deployment guide](README.md#optional-owner-email-alerts). Keep `PROD_EMAIL_ALERTS_ENABLED=false` until the owner confirms a real test message. Local simulation does not deliver mail.

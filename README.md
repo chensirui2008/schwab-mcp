@@ -219,7 +219,7 @@ Unlinking a push device asks for device-specific confirmation and stops future n
 
 The dashboard loads operational state and audit history on page load or explicit refresh. The Inbox also refreshes while visible and when a push message arrives. It does not provide a live JSON-RPC protocol stream or continuously verified hardware-readiness telemetry. An unavailable Service Worker disables push controls without blocking the rest of the dashboard.
 
-Dashboard writes require same-origin JSON, the browser cookie and CSRF header, with an actual 64 KiB body limit. Pages and APIs are no-store and deny framing. No new secrets, bindings, CDN or frontend dependencies are needed. Automated signatures and local runtime smoke do not replace final-origin Safari/mobile hardware acceptance.
+Dashboard writes require same-origin JSON, the browser cookie and CSRF header, with an actual 64 KiB body limit. Pages and APIs are no-store and deny framing. Core dashboard operations need no new secrets, CDN or frontend dependencies; optional owner email uses a restricted `send_email` binding. Automated signatures and local runtime smoke do not replace final-origin Safari/mobile hardware acceptance.
 
 Only public static assets are cached for offline use. Notifications, subscriptions and VAPID keys remain in owner SQLite; push payloads contain only event identifiers, types and timestamps. The unified alarm handles delivery, token-expiry reminders and delayed trades, including reminder scheduling for existing token records after upgrade. Retention removes completed deliveries before their parent events, and resolved notifications cannot be resurrected by a late retry.
 
@@ -318,6 +318,10 @@ The repository includes [`.github/workflows/deploy.yml`](.github/workflows/deplo
 
 Run `npm run configure:deploy` in CI to generate the deployment `wrangler.jsonc`. **Never put Schwab or GitHub client secrets in GitHub Actions!**
 
+Browser authorization starts use Workers Rate Limiting: 30 attempts per 60 seconds per connecting IP and Cloudflare location. Shared outbound IPs share this loose, eventually consistent allowance; it is not a global Schwab API quota. Rejections return `429 RATE_LIMITED` with `Retry-After: 60`; unavailable admission returns `503 UPSTREAM_UNAVAILABLE`. MCP, token exchange, registration, callbacks and authenticated dashboard APIs do not consume this allowance. Acceptance routes use a separate binding. Optional `PROD_BROWSER_AUTH_RATE_LIMIT_NAMESPACE_ID` / `PROD_ACCEPTANCE_BROWSER_AUTH_RATE_LIMIT_NAMESPACE_ID` override the two distinct positive-integer namespace IDs; no zone/WAF setup is required.
+
+Workers Logs retain allowlisted application events (`mcp_tool_call`, `schwab_api_request`, admission failures) with request IDs, status and duration. Automatic Invocation Logs and Traces are disabled because they can collect full callback URLs and query strings. Source maps are uploaded with the Worker, not served as public assets. Application logs never include raw tool arguments, order bodies, credentials, addresses or upstream exception messages; they are short-term diagnostics, not a compliance archive.
+
 ### Step 4: Authorize Charles Schwab
 
 Visit in your browser:
@@ -327,6 +331,32 @@ https://<your-worker-domain>/auth/schwab/connect
 1. Authenticate with GitHub (must match `ALLOWED_GITHUB_USER_ID`).
 2. Log in to Schwab and approve account access.
 3. Tokens are securely encrypted into `SchwabVault` Durable Object.
+
+### Optional owner email alerts
+
+Critical email is independent of Web Push: authorization due within 24 hours, reauthorization required, and `EXECUTION_UNCERTAIN` results. No success, routine failure or approval-request emails. The same owner SQLite/Alarm stores unique event deliveries, frozen addresses and fenced leases; no Queue/KV/R2 copy is added. Each delivery has at most three attempts (30-second then 120-second backoff); `SENT` means service acceptance, not inbox delivery. A crash after acceptance can cause a duplicate. Renewed authorization suppresses obsolete reminders; Passkey recovery does not disable the deployment-controlled owner mailbox.
+
+Before enabling:
+1. Choose a sender domain you control and one owner recipient. Authorize the correct Cloudflare account if the domain is not visible. Prefer an unused mail domain: [Email Routing onboarding](https://developers.cloudflare.com/email-service/get-started/route-emails/) can change MX/SPF/DKIM; do not overwrite an existing mailbox provider's MX.
+2. Add the destination in Email Routing → Destination Addresses, then **personally open Cloudflare's verification email**. Use the [verified-destination route](https://developers.cloudflare.com/email-service/) rather than enabling arbitrary-recipient paid sending. Verified-destination sends are currently free; Worker/storage/log quotas still apply.
+3. Set Actions **Variables** `PROD_ALERT_EMAIL_FROM`, `PROD_ALERT_EMAIL_TO` and `PROD_EMAIL_ALERTS_ENABLED=false`, then deploy. Both addresses must be present and valid; the generator restricts `OWNER_ALERT_EMAIL` to that recipient. No new Worker Secret, application-domain change, OAuth reauthorization or Passkey registration is needed. Do not commit generated personal addresses.
+4. While signed into `/dashboard`, run this once in its same-origin browser console:
+
+```js
+const csrf = document.querySelector('meta[name="csrf"]').content;
+await fetch('/dashboard/api/email/test', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+  body: '{}',
+}).then(r => r.json());
+```
+
+The UUID response means queued. TEST mail works while business alerts are disabled, has a one-minute cooldown and expires after one hour. The API cannot accept recipient/sender fields and is not an MCP tool. Check `email_alert_delivery` by `eventId` in application logs, then **personally confirm receipt**, including spam, sender and link. Only then set `PROD_EMAIL_ALERTS_ENABLED=true` and redeploy.
+
+Mail contains only a fixed reason, event UUID, UTC time and the canonical dashboard notification link—never account/order details, credentials or approval capabilities. Disabling the flag or changing addresses suppresses outstanding business deliveries; TEST is the explicit exception. Removing both address variables while disabled removes the binding. With no mail configuration, the feature stays off and existing trading/push paths are unchanged.
+
+Local Wrangler smoke uses a non-remote email binding and cannot prove inbox delivery. Production email remains pending until domain/destination verification and the human receipt check are complete.
+
 
 ---
 

@@ -6,6 +6,7 @@ import type { ApprovalBinding, ClientAuthorization, ClientIdentity } from "./sec
 import { NotificationError, NotificationStore, sendWebPush } from "./notifications";
 import { z } from "zod";
 import { logEvent } from "./log";
+import { emailAlertConfig, sendOwnerAlert } from "./email-alerts";
 import { toolSchemas, tradeConditionSchema } from "./schemas";
 import { assertSafeOrderPayload, canonicalJson, collectQuoteSymbols, evaluateCondition, randomToken, sha256, tokenMatches } from "./trading";
 import type { JsonValue, PublicError, TokenRecord, TradeCondition, TradeProposalInput, VaultRequest } from "./types";
@@ -22,6 +23,17 @@ const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 const DISABLED_ALARM_RECHECK_MS = 15 * 60 * 1000;
 const DIRECT_TRADING_IDLE_TTL_MS = 30 * 60 * 1000;
 const DIRECT_TRADING_MAX_TTL_MS = 8 * 60 * 60 * 1000;
+const PERMANENT_EMAIL_ERRORS: Readonly<Record<string, true>> = {
+  E_VALIDATION_ERROR: true, E_FIELD_MISSING: true, E_SENDER_NOT_VERIFIED: true,
+  E_RECIPIENT_NOT_ALLOWED: true, E_RECIPIENT_SUPPRESSED: true, E_SENDER_DOMAIN_NOT_AVAILABLE: true,
+  E_CONTENT_TOO_LARGE: true, E_DELIVERY_FAILED: true,
+};
+const EMAIL_ERROR_CODES: Readonly<Record<string, true>> = {
+  ...PERMANENT_EMAIL_ERRORS, E_TOO_MANY_RECIPIENTS: true, E_TOO_MANY_ATTACHMENTS: true,
+  E_RATE_LIMIT_EXCEEDED: true, E_DAILY_LIMIT_EXCEEDED: true, E_INTERNAL_SERVER_ERROR: true,
+  E_HEADER_NOT_ALLOWED: true, E_HEADER_USE_API_FIELD: true, E_HEADER_VALUE_INVALID: true,
+  E_HEADER_VALUE_TOO_LONG: true, E_HEADER_NAME_INVALID: true, E_HEADERS_TOO_LARGE: true, E_HEADERS_TOO_MANY: true,
+};
 
 interface ProposalRow {
   [key: string]: string | number | null;
@@ -677,6 +689,18 @@ export class SchwabVault extends DurableObject<AppEnv> {
   }
 
   private async notificationsRequest(request: Request, path: string): Promise<Response> {
+    if (path === "/notifications/email-test") {
+      if (request.method !== "POST" || !isJsonContentType(request.headers.get("Content-Type"))) throw new RequestBodyError("JSON POST required");
+      const raw = z.object({
+        sessionId: z.string(),
+        csrf: z.string(),
+        input: z.object({}).strict(),
+      }).strict().parse(await readBoundedJson(request));
+      this.security.dashboardSession(raw.sessionId, raw.csrf);
+      const event = this.notifications.triggerTestEmail();
+      await this.scheduleNextAlarm();
+      return jsonResponse({ id: event.id });
+    }
     if (path === "/notifications/push-config") {
       return jsonResponse(await this.notifications.ensureVapidIdentity());
     }
@@ -962,6 +986,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
     if (!isTokenResponse(value)) return new Response("Invalid token response", { status: 400 });
     const now = Date.now();
     const generation = crypto.randomUUID();
+    const previous = this.readToken();
+    if (previous) this.notifications.suppressPendingReauthorizationEmails(previous.authorizationGeneration ?? "legacy", ["REAUTH_DUE_SOON", "REAUTH_REQUIRED"]);
     this.writeToken({
       accessToken: value.access_token,
       refreshToken: value.refresh_token,
@@ -1027,6 +1053,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
   private async markReauthorizationRequired(token: TokenRecord): Promise<void> {
     if (token.status === "connected") {
       const generation = token.authorizationGeneration ?? "legacy";
+      this.notifications.suppressPendingReauthorizationEmails(generation, ["REAUTH_DUE_SOON"]);
       this.notifications.recordEvent({
         dedupeKey: `schwab_reauth_required:${generation}`,
         type: "SCHWAB_REAUTH_REQUIRED",
@@ -1067,12 +1094,11 @@ export class SchwabVault extends DurableObject<AppEnv> {
         },
         body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken }),
       });
-    } catch (error) {
+    } catch {
       logEvent("schwab_token_refresh", {
         requestId,
         status: "network_error",
         durationMs: Date.now() - started,
-        message: error instanceof Error ? error.message : "Unknown error",
       });
       throw new Error("UPSTREAM_UNAVAILABLE");
     }
@@ -1284,6 +1310,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       type: "TRADE_RESULT",
       entityId: parsed.data.executionKey,
       summary: directSummary,
+      ...(status === "EXECUTION_UNCERTAIN" ? { executionStatus: status } : {}),
     });
     await this.scheduleNextAlarm();
     return jsonResponse(payload, response.status);
@@ -1507,6 +1534,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       type: "TRADE_RESULT",
       entityId: proposal.id,
       summary: finishSummary,
+      ...(status === "EXECUTION_UNCERTAIN" ? { executionStatus: status } : {}),
     });
     await this.scheduleNextAlarm();
     return jsonResponse(payload, response.status);
@@ -1535,6 +1563,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       type: "TRADE_RESULT",
       entityId: String(parsed.data.orderId),
       summary: cancelSummary,
+      ...(status === "EXECUTION_UNCERTAIN" ? { executionStatus: status } : {}),
     });
     await this.scheduleNextAlarm();
     return jsonResponse(payload, response.status);
@@ -1598,11 +1627,21 @@ export class SchwabVault extends DurableObject<AppEnv> {
     await this.ready;
     const now = Date.now();
     try {
-      this.ctx.storage.sql.exec(
-        "UPDATE delayed_trade SET status = 'EXECUTION_UNCERTAIN', updated_at = ? WHERE status = 'EXECUTING' AND updated_at < ?",
-        now,
-        now - 5 * 60 * 1000,
-      );
+      this.ctx.storage.transactionSync(() => {
+        const stale = this.ctx.storage.sql.exec<{ id: string; version: number }>(
+          "UPDATE delayed_trade SET status = 'EXECUTION_UNCERTAIN', updated_at = ? WHERE status = 'EXECUTING' AND updated_at < ? RETURNING id, version",
+          now, now - 5 * 60 * 1000,
+        ).toArray();
+        for (const task of stale) {
+          this.notifications.recordEvent({
+            dedupeKey: `delayed_trade:${task.id}:${String(task.version)}:EXECUTION_UNCERTAIN`,
+            type: "TRADE_RESULT",
+            entityId: task.id,
+            summary: "延迟交易执行中断，结果不确定，请先人工查询订单状态",
+            executionStatus: "EXECUTION_UNCERTAIN",
+          });
+        }
+      });
       this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'EXPIRED', updated_at = ? WHERE status = 'ACTIVE' AND valid_until <= ?", now, now);
 
       await this.checkTokenExpirationAlarm(now);
@@ -1616,7 +1655,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
         for (const task of due) await this.processDelayedTrade(task);
       }
 
-      await this.drainNotificationDeliveries();
+      await Promise.all([this.drainNotificationDeliveries(), this.drainEmailDeliveries()]);
     } finally {
       await this.scheduleNextAlarm();
     }
@@ -1730,6 +1769,56 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
   }
 
+  private async drainEmailDeliveries(): Promise<void> {
+    if (!emailAlertConfig(this.env) && this.ctx.storage.sql.exec(
+      "SELECT 1 FROM email_delivery WHERE status IN ('PENDING', 'SENDING') LIMIT 1",
+    ).toArray().length > 0) {
+      logEvent("email_alert_configuration_invalid", { requestId: crypto.randomUUID() });
+    }
+    const claimed = this.notifications.claimEmailDeliveriesForDispatch();
+    for (const item of claimed) {
+      const requestId = crypto.randomUUID();
+      let status: "SENT" | "FAILED" | "RETRY" | "SUPPRESSED";
+      let errorCode: string | undefined;
+      let nextAttemptAt: number | undefined;
+      const now = Date.now();
+      const token = this.readToken();
+      const staleReminder = (item.reason === "REAUTH_DUE_SOON" || item.reason === "REAUTH_REQUIRED") &&
+        (!token || (token.authorizationGeneration ?? "legacy") !== item.eventEntityId ||
+          (item.reason === "REAUTH_DUE_SOON"
+            ? token.status !== "connected" || token.refreshExpiresAt <= now || token.refreshExpiresAt > now + 86_400_000
+            : token.status !== "reauthorization_required"));
+      if (staleReminder) {
+        status = "SUPPRESSED";
+      } else {
+        try {
+          await sendOwnerAlert(this.env, { reason: item.reason, eventId: item.eventId, createdAt: item.eventCreatedAt });
+          status = "SENT";
+        } catch (error) {
+          const rawCode = error !== null && typeof error === "object" ? field(error, "code") : undefined;
+          errorCode = typeof rawCode === "string" && Object.hasOwn(EMAIL_ERROR_CODES, rawCode) ? rawCode : "EMAIL_SEND_FAILED";
+          const retryAt = Date.now() + (item.attemptCount === 1 ? 30_000 : 120_000);
+          if (!Object.hasOwn(PERMANENT_EMAIL_ERRORS, errorCode) && item.attemptCount < 3 && retryAt < item.eventExpiresAt) {
+            status = "RETRY";
+            nextAttemptAt = retryAt;
+          } else {
+            status = "FAILED";
+          }
+        }
+      }
+      this.notifications.recordEmailDeliveryOutcome(item.deliveryId, {
+        leaseUntil: item.leaseUntil, status,
+        ...(errorCode ? { errorCode } : {}),
+        ...(nextAttemptAt !== undefined ? { nextAttemptAt } : {}),
+      });
+      logEvent("email_alert_delivery", {
+        requestId, eventId: item.eventId, deliveryId: item.deliveryId,
+        reason: item.reason, status, attemptCount: item.attemptCount,
+        ...(errorCode ? { errorCode } : {}),
+      });
+    }
+  }
+
   private async processDelayedTrade(task: DelayedTradeRow): Promise<void> {
     const requestId = crypto.randomUUID();
     let condition: TradeCondition;
@@ -1810,6 +1899,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       type: "TRADE_RESULT",
       entityId: task.id,
       summary: delayedSummary,
+      ...(status === "EXECUTION_UNCERTAIN" ? { executionStatus: status } : {}),
     });
     await this.scheduleNextAlarm();
   }
@@ -1852,6 +1942,10 @@ export class SchwabVault extends DurableObject<AppEnv> {
       const activeCount = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM delayed_trade WHERE status = 'ACTIVE'").one().count;
       if (activeCount > 0) candidateTimes.push(now + DISABLED_ALARM_RECHECK_MS);
     }
+    const executingDeadline = this.ctx.storage.sql.exec<{ deadline: number | null }>(
+      "SELECT MIN(updated_at) + 300001 AS deadline FROM delayed_trade WHERE status = 'EXECUTING'",
+    ).one().deadline;
+    if (executingDeadline !== null) candidateTimes.push(executingDeadline);
 
     // 2. Notification deliveries / lease timeouts
     const nextDelivery = this.notifications.getNextAlarmTime();
@@ -1993,8 +2087,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
         let result: unknown;
         try {
           result = await upstream.json();
-        } catch (error) {
-          logEvent("schwab_response_invalid", { requestId: input.requestId, tool: input.tool, message: error instanceof Error ? error.message : "Invalid JSON" });
+        } catch {
+          logEvent("schwab_response_invalid", { requestId: input.requestId, tool: input.tool });
           return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab returned an invalid response", requestId: input.requestId, attempts }, 502);
         }
         return jsonResponse({ result, attempts, refreshExpiresAt: token.refreshExpiresAt });

@@ -253,7 +253,7 @@ Passkey 批准仅授权冻结提案，不执行余额、名义金额上限或洗
 
 仪表板在页面加载或手动刷新时读取运行状态和审计历史；待办与通知还会在页面可见期间及收到推送消息时刷新。不提供实时 JSON-RPC 协议流，也不持续验证硬件认证器就绪状态。Service Worker 不可用时仅禁用推送功能，不阻塞其他模块。
 
-写请求要求同源 JSON、浏览器 cookie 和 CSRF header，实际请求体限制 64 KiB；页面/API 禁止缓存和嵌入。无需新增 Secret、binding、CDN 或前端依赖。自动签名测试和本地 runtime smoke 不能替代最终域名 Safari/手机硬件验收。
+写请求要求同源 JSON、浏览器 cookie 和 CSRF header，实际请求体限制 64 KiB；页面/API 禁止缓存和嵌入。核心仪表板无需新增 Secret、CDN 或前端依赖；可选 owner 邮件使用受限的 `send_email` binding。自动签名测试和本地 runtime smoke 不能替代最终域名 Safari/手机硬件验收。
 
 离线缓存仅保存公开静态资源；通知、订阅和 VAPID 密钥只存 owner SQLite，推送载荷仅含事件 ID、类型及时间。统一 alarm 负责投递、授权到期提醒和延迟交易，升级后已有 token 也会初始化提醒调度。保留期清理先删除已完成投递再删除父事件，已处理通知不会因迟到的重试重新进入待投递状态。
 
@@ -480,6 +480,8 @@ npm run deploy
 
 部署前运行 `npm run configure:deploy`，从上述环境变量写入本次构建的 `wrangler.jsonc`；缺失必需配置或无效的 KV ID、数字用户 ID、回调地址、交易开关会立即失败。该命令不读取或写入 Worker Secrets，请勿提交注入后的配置文件。
 
+浏览器授权起点采用 Workers Rate Limiting：每个连接 IP、每个 Cloudflare location 为 30 次/60 秒；共享出口共用额度，最终一致，不是 Schwab 账户全局配额。429 返回 `RATE_LIMITED` 与 `Retry-After: 60`；IP/binding 缺失或准入异常返回 503 `UPSTREAM_UNAVAILABLE`。MCP、换票、注册、回调及已有会话的 API 不计数；隔离验收使用独立 binding。可选 `PROD_BROWSER_AUTH_RATE_LIMIT_NAMESPACE_ID`、`PROD_ACCEPTANCE_BROWSER_AUTH_RATE_LIMIT_NAMESPACE_ID` 设置不同正整数 namespace，默认无需额外域名或 WAF 配置。
+
 如果同时启用 Cloudflare **Workers Builds**，GitHub Actions 的 Repository Variables 不会自动传入该构建环境。需在每个触发器的 Build variables 中配置同名参数，并设置 Build command 为 `npm run validate && npm run configure:deploy`。生产分支的 Deploy command 保持 `npx wrangler deploy`，非生产分支保持 `npx wrangler versions upload`（仅上传版本，不切换生产流量）；非生产构建的 `PROD_ENABLE_TRADING` 使用 `false`。测试使用独立的虚构身份配置，无需生产参数。
 
 > [!CAUTION]
@@ -576,21 +578,47 @@ https://<your-worker-domain>/mcp
 ```
 客户端可感知该通知并适时提示用户提前续期，防止交易中断。
 
+### 可选 owner 关键邮件
+
+邮件独立于 Web Push，覆盖授权剩余 24 小时、必须重新授权、交易结果 `EXECUTION_UNCERTAIN`；不发送普通成功/失败或审批提示。任务与冻结地址保存在原 owner SQLite，由同一个 Alarm 调度；不增加 Queue/KV/R2 副本。每封最多尝试三次，失败后退避 30 秒/120 秒；`SENT` 仅代表服务接受，不证明收件。接受后、落库前中断仍可能重复邮件，不承诺 exactly-once 或准点送达。
+
+本人需完成：
+1. 选择自己控制的发信域名和唯一收件邮箱，授权能看到该域名的 Cloudflare 账号。优先用闲置邮件域名；[Email Routing onboarding](https://developers.cloudflare.com/email-service/get-started/route-emails/) 涉及 MX/SPF/DKIM，禁止直接覆盖现有邮箱服务的 MX。发信域名可与应用域名不同，不迁移应用、不重新授权 OAuth/Passkey。
+2. 在 Email Routing → Destination Addresses 添加邮箱，并**亲自点击 Cloudflare 收件验证邮件**。采用[已验证 destination 路径](https://developers.cloudflare.com/email-service/)，不自动启用任意收件人的付费发送。已验证地址发送当前免费，Worker/存储/日志仍受套餐额度约束。
+3. 在 Actions **Variables** 设置 `PROD_ALERT_EMAIL_FROM`、`PROD_ALERT_EMAIL_TO`、`PROD_EMAIL_ALERTS_ENABLED=false`，部署后绑定只允许该收件人；无需新增 Worker Secret。地址必须完整合法，不提交带本人地址的生成配置。
+4. 已登录 `/dashboard` 时，在同源控制台执行：
+
+```js
+const csrf = document.querySelector('meta[name="csrf"]').content;
+await fetch('/dashboard/api/email/test', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+  body: '{}',
+}).then(r => r.json());
+```
+
+返回事件 UUID 仅表示排队；按 `email_alert_delivery` 与 `eventId` 查服务接受/失败。配置完整时，业务关闭也可发送 TEST；冷却一分钟、有效期一小时。测试接口不能指定收发地址，没有对应 MCP 工具。**本人确认真实收件（含垃圾箱）、发件身份和链接后**，才设置 `PROD_EMAIL_ALERTS_ENABLED=true` 并重新部署。
+
+邮件仅含固定原因、事件 UUID、UTC 时间和固定 origin 的控制台通知链接，不含账户/订单、凭据或直接批准 capability。重新授权抑制旧凭据提醒；关闭业务或变更地址抑制不再有效的待发送任务，TEST 仅豁免业务开关。Passkey 恢复保留部署 owner 邮箱，仍撤销旧 push。业务关闭且撤除两项地址变量时，生成器移除邮件 binding。未配置时原有交易和推送照常工作。
+
+本地 Wrangler 原生模拟器只证明发送路径与内容，不能替代真实收件；域名/邮箱验证和本人收件验收完成前，生产邮件保持关闭。
+
+
 ### 实时结构化日志监控
 
-生产环境已启用 Cloudflare Workers Observability，可通过 Wrangler 实时流式捕获结构化事件日志：
+生产环境保留白名单字段的应用事件日志；自动 Invocation Logs 和 Traces 关闭，避免完整回调 URL/query 被自动采集。Source map 随 Worker 上传，不进入 public。可通过 Wrangler 查看事件：
 
 ```bash
 npx wrangler tail schwab-mcp --format json
 ```
 
 结构化日志标准字段：
-- `event`: 核心事件类型 (`schwab_api_request`, `schwab_token_refresh`, `schwab_response_invalid`, `github_oauth_failed`, `schwab_oauth_failed`, `mcp_handler_error` 等)；
+- `event`: 核心事件类型（`mcp_tool_call`、`schwab_api_request`、`schwab_token_refresh`、`schwab_response_invalid`、`browser_auth_rate_limited` 等）；
 - `requestId`: 全链路可关联的 UUID 追踪编号；
 - `tool`: 被调用的 MCP 工具名称；
-- `status`: 请求状态码；
+- `status`: 上游 HTTP 状态或工具 `SUCCESS` / `ERROR`；
 - `attempts`: 当前重试次数；
 - `durationMs`: 执行耗时。
 
 > [!NOTE]
-> 日志脱敏过滤器会自动过滤请求头、授权凭据、OAuth Code、Access Token、Refresh Token、完整订单报文及真实证券账号，确保审计过程绝无敏感数据外泄。
+应用事件只主动输出白名单字段，不输出原始工具参数、完整 URL、请求头、凭据、订单正文、邮箱或上游异常原文；不是对任意 console 输出自动脱敏的过滤器，也不是永久合规归档。

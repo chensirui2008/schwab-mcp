@@ -39,14 +39,30 @@ interface DashboardBrowser {
   csrf: string;
 }
 
+function mockLimiter(): RateLimit {
+  return {
+    limit() {
+      return Promise.resolve({ success: true });
+    },
+  };
+}
+
 function setup() {
   const appEnv = { ...env } as unknown as AppEnv;
+  appEnv.BROWSER_AUTH_RATE_LIMITER = mockLimiter();
+  appEnv.ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER = mockLimiter();
   appEnv.OAUTH_PROVIDER = getOAuthApi(providerOptions, appEnv);
   return appEnv;
 }
 async function dispatch(request: Request, appEnv: AppEnv) {
+  let req = request;
+  if (!req.headers.has("CF-Connecting-IP")) {
+    const headers = new Headers(req.headers);
+    headers.set("CF-Connecting-IP", "192.0.2.10");
+    req = new Request(req, { headers });
+  }
   const ctx = createExecutionContext();
-  const response = await worker.fetch(request, appEnv, ctx);
+  const response = await worker.fetch(req, appEnv, ctx);
   // Streamable HTTP can finish its tool handler after response headers arrive.
   // Consume the finite response before draining audits registered by that send.
   const body = response.body === null ? null : await response.arrayBuffer();
@@ -523,6 +539,114 @@ describe("Dashboard Passkey policy ceremonies", () => {
 });
 
 describe("Dashboard persisted tool invocation audit", () => {
+  it("logs only normalized tool outcomes while preserving correlated owner audit records", async () => {
+    const output: unknown[][] = [];
+    const capture = (...args: unknown[]) => { output.push(args); };
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    const appEnv = setup();
+    const client = await authorize(appEnv, "full_access", "private-client-name-sentinel");
+    const ui = await login(appEnv);
+    await connectSchwab(appEnv);
+    const upstream = vi.fn()
+      .mockImplementationOnce(() => Response.json({ AAPL: { quote: { lastPrice: 123 } } }))
+      .mockImplementationOnce(() => Response.json({ message: "private-upstream-body-sentinel" }, { status: 403 }));
+    vi.stubGlobal("fetch", upstream);
+
+    const success = await tool(appEnv, client.tokens, "get_quotes", { symbols: ["AAPL"], indicative: true });
+    expect(success.status).toBe(200);
+    const successText = await success.text();
+    expect(successText).not.toContain('"isError":true');
+    const successRequestId = successText.match(/"requestId":"([0-9a-f-]+)"/)?.[1];
+    const failed = await tool(appEnv, client.tokens, "get_quotes", { symbols: ["AAPL"] });
+    expect(failed.status).toBe(200);
+    const failureText = await failed.text();
+    expect(failureText).toContain('"isError":true');
+    expect(failureText).toContain('"code":"SCHWAB_REJECTED"');
+    const failureRequestId = failureText.match(/"requestId":"([0-9a-f-]+)"/)?.[1];
+    const invalid = await tool(appEnv, client.tokens, "get_quotes", {
+      symbols: [], access_token: "private-parameter-sentinel", accountNumber: "private-account-sentinel",
+    });
+    expect(await invalid.text()).toContain("Input validation error:");
+    const unknown = await tool(appEnv, client.tokens, "private-tool-name-sentinel", { secret: "private-unknown-argument-sentinel" });
+    expect(await unknown.text()).toContain('"code":-32602');
+    expect(upstream).toHaveBeenCalledTimes(2);
+
+    const page = await audit(ui);
+    expect(page).toMatchObject({ total: 4, successCount: 1, errorCount: 3 });
+    const events = output.flat().filter((line): line is string => typeof line === "string")
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .filter(event => event.event === "mcp_tool_call");
+    expect(events).toHaveLength(4);
+    expect(successRequestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(failureRequestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(failureRequestId).not.toBe(successRequestId);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool: "get_quotes", requestId: successRequestId, status: "SUCCESS" }),
+      expect.objectContaining({ tool: "get_quotes", requestId: failureRequestId, status: "ERROR", errorCode: "SCHWAB_REJECTED" }),
+      expect.objectContaining({ tool: "get_quotes", status: "ERROR", errorCode: "INVALID_ARGUMENT" }),
+      expect.objectContaining({ tool: "unknown_tool", status: "ERROR", errorCode: "INVALID_ARGUMENT" }),
+    ]));
+    for (const event of events) {
+      expect(Object.keys(event).sort()).toEqual([
+        "durationMs", ...(event.status === "ERROR" ? ["errorCode"] : []), "event", "requestId", "status", "tool",
+      ].sort());
+      expect(event.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      expect(event.durationMs).toEqual(expect.any(Number));
+      expect(Number.isSafeInteger(event.durationMs)).toBe(true);
+      expect(Number(event.durationMs)).toBeGreaterThanOrEqual(0);
+      const row = page.items.find(item => item.requestId === event.requestId);
+      expect(row).toMatchObject({
+        clientId: client.clientId, toolName: event.tool, status: event.status,
+        durationMs: event.durationMs, errorCode: event.errorCode ?? null,
+      });
+    }
+    expect(page.items.find(row => row.requestId === successRequestId)?.parametersSummary).toBe('{"symbolsCount":1,"indicative":true}');
+    const serialized = JSON.stringify(output);
+    for (const sensitive of [
+      "private-client-name-sentinel", "private-upstream-body-sentinel", "private-parameter-sentinel",
+      "private-account-sentinel", "private-tool-name-sentinel", "private-unknown-argument-sentinel",
+      client.clientId, client.tokens.access_token, client.tokens.refresh_token,
+      "fake-access-secret", "fake-refresh-secret", "parametersSummary", "symbolsCount", "https://",
+    ]) expect(serialized).not.toContain(sensitive);
+  });
+
+  it.each(["github", "schwab"] as const)("keeps %s OAuth callback query and upstream exception text out of application logs", async provider => {
+    const output: unknown[][] = [];
+    const capture = (...args: unknown[]) => { output.push(args); };
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    const appEnv = setup();
+    let state: string;
+    if (provider === "github") {
+      const start = await dispatch(new Request(`${origin}/dashboard/login`), appEnv);
+      expect(start.status).toBe(302);
+      state = new URL(start.headers.get("location") ?? "").searchParams.get("state") ?? "";
+      expect(state).not.toBe("");
+    } else {
+      state = crypto.randomUUID();
+      const saved = await postVault(appEnv, "/state", { state, kind: "schwab", payload: { origin }, expiresAt: Date.now() + 60_000 });
+      expect(saved.status).toBe(204);
+    }
+    const code = `private-${provider}-callback-code-sentinel`;
+    const callbackUrl = `${origin}/auth/${provider}/callback?state=${state}&code=${code}&private=private-callback-query-sentinel`;
+    const upstream = vi.fn().mockRejectedValue(new Error(`private-callback-upstream-sentinel ${callbackUrl}`));
+    vi.stubGlobal("fetch", upstream);
+    const response = await dispatch(new Request(callbackUrl, { headers: { Cookie: `__Host-schwab-oauth=${state}` } }), appEnv);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe(provider === "github" ? "GitHub authorization failed" : "Schwab authorization failed");
+    expect(upstream).toHaveBeenCalledTimes(1);
+    const events = output.flat().filter((line): line is string => typeof line === "string")
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toContainEqual({ event: `${provider}_oauth_failed`, errorType: "Error" });
+    const serialized = JSON.stringify(output);
+    for (const sensitive of [state, code, callbackUrl, "private-callback-query-sentinel", "private-callback-upstream-sentinel", "https://"]) {
+      expect(serialized).not.toContain(sensitive);
+    }
+  });
+
   it("audits real get_quotes and list_accounts executions with mocked Schwab, safe parameters, counts and last invocation", async () => {
     const appEnv = setup(); const client = await authorize(appEnv); const ui = await login(appEnv); await connectSchwab(appEnv);
     const upstream = vi.fn((input: RequestInfo | URL) => {
