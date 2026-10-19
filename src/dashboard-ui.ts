@@ -1583,7 +1583,7 @@ async function loadPushSettings() {
       );
       if (dev.active) {
         tr.lastChild.append(button('解绑', async () => {
-          if (!confirm(format(t('deleteConfirm', '确定解绑设备 “{name}”？该设备将不再接收新提醒。'), { name: dev.label }))) return;
+          if (!confirm(format(t('unsubscribeDeviceConfirm', '确定解绑设备 “{name}”？该设备将不再接收新提醒。'), { name: dev.label }))) return;
           await api('/dashboard/api/push/unsubscribe', 'POST', { id: dev.id });
           loadPushSettings();
         }, false, 'danger compact'));

@@ -31,6 +31,7 @@ export interface AuthorizePageProps {
   state: string;
   advancedSecurity?: boolean;
   lang?: SupportedLang;
+  authorizationQuery?: string;
 }
 
 // Finish the same-origin form navigation before starting GitHub OAuth. A 302
@@ -692,7 +693,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
         <span>${t.gatewayTag}</span>
       </div>
       <div class="telemetry-chips">
-        ${raw(renderLangDropdown(lang))}
+        ${raw(renderLangDropdown(lang, props.authorizationQuery))}
         <span class="tag-badge green">&bull; RFC 7636 S256</span>
         <span class="tag-badge">ENCLAVE_ISOLATED</span>
       </div>

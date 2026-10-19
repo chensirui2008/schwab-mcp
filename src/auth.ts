@@ -297,7 +297,7 @@ const app = new Hono<{ Bindings: AppEnv }>();
 app.use("*", async (c, next) => {
   await next();
   // Apply to the final response, including early errors built with Response.json().
-  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard")) {
+  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard") || c.req.path === "/auth/schwab/complete") {
     c.header("Cache-Control", "no-store");
     c.header("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
     c.header("X-Frame-Options", "DENY");
@@ -875,7 +875,7 @@ app.get("/authorize", async (c) => {
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   const clientName = client.clientName ?? client.clientId;
   const policy = await securityCall<ClientPolicy>(c.env, "/policy", { clientId: authRequest.clientId });
-  return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state, advancedSecurity: policy.advancedSecurity, lang }));
+  return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state, advancedSecurity: policy.advancedSecurity, lang, authorizationQuery: params.toString() }));
 });
 
 app.post("/authorize/approve", async (c) => {
@@ -1009,12 +1009,18 @@ app.get("/auth/schwab/callback", async (c) => {
     });
     if (!saved.ok) throw new Error("Schwab token response was invalid");
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
-    const lang = getRequestLang(c);
-    return c.html(renderSchwabConnectedPage(lang));
+    return c.redirect(`/auth/schwab/complete?lang=${getRequestLang(c)}`, 303);
   } catch (error) {
     console.error(JSON.stringify({ event: "schwab_oauth_failed", errorType: error instanceof Error ? error.name : "UnknownError" }));
     return c.text("Schwab authorization failed", 400);
   }
+});
+
+// Repeatable presentation only: never re-exchange a code when refreshing or changing language.
+app.get("/auth/schwab/complete", c => {
+  const lang = getRequestLang(c);
+  applyLangCookie(c, lang);
+  return c.html(renderSchwabConnectedPage(lang));
 });
 
 export { app as AuthHandler };

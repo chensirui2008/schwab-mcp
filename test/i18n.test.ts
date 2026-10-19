@@ -7,7 +7,6 @@ import {
   getRequestLang,
   getSecurityClientI18n,
   renderLangDropdown,
-  renderLangSwitcher,
   resolveLang,
 } from "../src/i18n";
 import { renderAuthorizePage, renderSchwabConnectedPage } from "../src/auth-ui";
@@ -69,6 +68,19 @@ describe("i18n getRequestLang", () => {
     expect(getRequestLang(req)).toBe("en-US");
   });
 
+  it.each([
+    ["fr-FR,fr;q=0.9,en-US;q=0.8", "en-US"],
+    ["zh-CN;q=0.2,en-US;q=0.9", "en-US"],
+    ["en-US;q=0,zh-CN;q=0.5", "zh-CN"],
+    ["en-US;q=0,fr;q=1,en-GB;q=0.4", "en-US"],
+    ["en-US;q=bad,zh-CN;q=0.8", "zh-CN"],
+    ["zh-CN;q=2,en-US;q=0.8", "en-US"],
+    ["en-US;q=0.8,zh-CN;q=0.8", "en-US"],
+  ])("negotiates supported preferences from %s", (header, expected) => {
+    const req = new Request("https://example.com/dashboard", { headers: { "Accept-Language": header } });
+    expect(getRequestLang(req)).toBe(expected);
+  });
+
   it("works with Hono Context-like object", () => {
     const fakeContext = {
       req: {
@@ -115,14 +127,27 @@ describe("i18n dictionaries and helpers", () => {
     expect(formatString("No vars", {})).toBe("No vars");
   });
 
-  it("renders language switcher button correctly", () => {
-    const zhSwitcher = renderLangSwitcher("zh-CN");
-    expect(zhSwitcher).toContain("English");
-    expect(zhSwitcher).toContain("?lang=en-US");
-
-    const enSwitcher = renderLangDropdown("en-US");
-    expect(enSwitcher).toContain("简体中文");
-    expect(enSwitcher).toContain("?lang=zh-CN");
+  it("preserves OAuth query values while replacing only the language", () => {
+    const params = new URLSearchParams({
+      client_id: "client-123",
+      redirect_uri: "https://client.example/callback?foo=1&bar=2",
+      state: "state + / & \" < >",
+      code_challenge: "a".repeat(43),
+      code_challenge_method: "S256",
+      lang: "zh-CN",
+    });
+    params.append("lang", "zh");
+    const dropdown = renderLangDropdown("zh-CN", params.toString());
+    const links = [...dropdown.matchAll(/href="([^"]+)"/g)];
+    expect(links).toHaveLength(2);
+    for (const [index, match] of links.entries()) {
+      const url = new URL((match[1] ?? "").replaceAll("&amp;", "&"), "https://example.com/authorize");
+      expect(url.pathname).toBe("/authorize");
+      expect(url.searchParams.getAll("lang")).toEqual([index === 0 ? "zh-CN" : "en-US"]);
+      for (const key of ["client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method"]) {
+        expect(url.searchParams.get(key)).toBe(params.get(key));
+      }
+    }
   });
 
   it("provides client i18n payload for dashboard and security", () => {

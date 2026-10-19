@@ -117,6 +117,78 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("localized OAuth navigation", () => {
+  function flowCookie(response: Response) {
+    return response.headers.get("set-cookie")?.match(/(?:^|, )(__Host-schwab-oauth=[^;,]+)/)?.[1] ?? "";
+  }
+
+  it("keeps consent usable after switching languages", async () => {
+    const { appEnv, helpers } = setup();
+    const params = authorizationParams(await authRequest(helpers));
+    const page = await dispatch(new Request(`${origin}/authorize?${params}`), appEnv);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const target = [...html.matchAll(/href="([^"]+)"/g)]
+      .map(match => new URL((match[1] ?? "").replaceAll("&amp;", "&"), `${origin}/authorize`))
+      .find(url => url.searchParams.get("lang") === "en-US");
+    if (!target) throw new Error("Missing English language link");
+    const translated = await dispatch(new Request(target, { headers: { Cookie: flowCookie(page) } }), appEnv);
+    expect(translated.status).toBe(200);
+    const translatedHtml = await translated.text();
+    expect(translatedHtml).toContain('<html lang="en-US">');
+    const state = translatedHtml.match(/name="state" value="([^"]+)"/)?.[1] ?? "";
+    const approved = await dispatch(new Request(`${origin}/authorize/approve`, {
+      method: "POST",
+      headers: { Cookie: flowCookie(translated) + "; schwab_lang=en-US" },
+      body: new URLSearchParams({ state, permissionLevel: "read_only" }),
+    }), appEnv);
+    const github = await githubContinueUrl(approved);
+    expect(github.searchParams.get("state")).not.toBe(state);
+  });
+
+  it("leaves the one-time Schwab callback before translating or refreshing completion", async () => {
+    const { appEnv } = setup();
+    const upstream = vi.fn()
+      .mockResolvedValueOnce(Response.json({ access_token: "test-github-token" }))
+      .mockResolvedValueOnce(Response.json({ id: Number(appEnv.ALLOWED_GITHUB_USER_ID), login: "owner", name: null }))
+      .mockResolvedValueOnce(Response.json({ access_token: "test-schwab-token", refresh_token: "test-schwab-refresh", expires_in: 1800 }));
+    vi.stubGlobal("fetch", upstream);
+    const connect = await dispatch(new Request(`${origin}/auth/schwab/connect`), appEnv);
+    const github = new URL(connect.headers.get("location") ?? "");
+    const owner = await dispatch(new Request(`${origin}/auth/github/callback?state=${github.searchParams.get("state") ?? ""}&code=test-github-code`, {
+      headers: { Cookie: flowCookie(connect) },
+    }), appEnv);
+    const schwab = new URL(owner.headers.get("location") ?? "");
+    const connected = await dispatch(new Request(`${origin}/auth/schwab/callback?state=${schwab.searchParams.get("state") ?? ""}&code=test-schwab-code`, {
+      headers: { Cookie: flowCookie(owner) + "; schwab_lang=en-US" },
+    }), appEnv);
+    expect(connected.status).toBe(303);
+    expect(connected.headers.get("set-cookie")).toContain("__Host-schwab-oauth=;");
+    const completionUrl = new URL(connected.headers.get("location") ?? "", origin);
+    expect(completionUrl.pathname).toBe("/auth/schwab/complete");
+    expect(completionUrl.searchParams.has("code")).toBe(false);
+    expect(completionUrl.searchParams.has("state")).toBe(false);
+    const completion = await dispatch(new Request(completionUrl), appEnv);
+    expect(completion.status).toBe(200);
+    expect(completion.headers.get("cache-control")).toBe("no-store");
+    const completionHtml = await completion.text();
+    expect(completionHtml).toContain('<html lang="en-US">');
+    const target = [...completionHtml.matchAll(/href="([^"]+)"/g)]
+      .map(match => new URL((match[1] ?? "").replaceAll("&amp;", "&"), completionUrl))
+      .find(url => url.searchParams.get("lang") === "zh-CN");
+    if (!target) throw new Error("Missing Chinese language link");
+    expect(target.pathname).toBe("/auth/schwab/complete");
+    for (let refresh = 0; refresh < 2; refresh++) {
+      const translated = await dispatch(new Request(target), appEnv);
+      expect(translated.status).toBe(200);
+      expect(await translated.text()).toContain('<html lang="zh-CN">');
+    }
+    expect(upstream).toHaveBeenCalledTimes(3);
+    const status = await vaultStub(appEnv).fetch("https://vault/status");
+    expect(await status.json()).toMatchObject({ connected: true });
+  });
+});
+
 describe("OAuth permission enforcement", () => {
   it.each(["missing", "stale"])("expires access tokens, refresh tokens, and outstanding codes with %s authorization versions", async (version) => {
     const { appEnv, helpers } = setup();

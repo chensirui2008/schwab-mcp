@@ -202,6 +202,10 @@ Open `/dashboard` on the configured Schwab callback origin. GitHub numeric owner
 
 The dashboard's login/renew link uses `/dashboard/login` to start fresh GitHub owner OAuth, even with a valid session. Successful owner verification issues a new fifteen-minute session; refreshing `/dashboard` alone does not extend its expiry.
 
+Browser pages support Simplified Chinese and English. Language selection takes precedence over the saved `schwab_lang` cookie, then the highest-quality supported `Accept-Language` entry; unsupported languages and entries with `q=0` are skipped, with Chinese as the fallback. Consent-page language links preserve the OAuth request parameters, including PKCE and client state.
+
+After storing Schwab credentials, `/auth/schwab/callback` redirects with HTTP 303 to `/auth/schwab/complete`. This no-store completion page can be refreshed or translated without replaying the one-time OAuth callback. It acknowledges completion rather than querying current connection health; use the dashboard overview for current status.
+
 The overview reports unexpired grants with a missing or outdated authorization policy version as requiring client reauthorization. These historical grants do not count as authorized clients or initialize client policies, and do not prevent current clients from loading. Malformed current-version permission metadata still fails explicitly; historical grants remain unusable for MCP access.
 
 - **Clients**: inspect names, redirect URIs, grant dates and last calls; change read-only/full-access permissions or revoke all grants. SQLite policy is checked on every MCP request and token exchange; policy outages fail closed rather than restoring stale token privileges. Changes invalidate pending proposals, not already activated delayed tasks.
@@ -210,6 +214,8 @@ The overview reports unexpired grants with a missing or outdated authorization p
 - **Passkeys**: register, add, rename and delete using the existing `/security/api/*` ceremonies; deletion cannot remove the final credential. `/security/recover` remains the independent GitHub recovery entry.
 - **Inbox**: review pending client authorizations and trade proposals, and open notification details even when the event is outside the current page. Opening a notification marks that event read.
 - **App and push settings**: install the Dashboard as a PWA and manage optional Apple/FCM Web Push devices. Local test/disable controls resolve the current browser's exact subscription; endpoints and keys are not returned in device lists. A server-disabled subscription can be registered again from its original browser.
+
+Unlinking a push device asks for device-specific confirmation and stops future notifications to that device; it does not delete a Passkey or require a Passkey ceremony.
 
 The dashboard loads operational state and audit history on page load or explicit refresh. The Inbox also refreshes while visible and when a push message arrives. It does not provide a live JSON-RPC protocol stream or continuously verified hardware-readiness telemetry. An unavailable Service Worker disables push controls without blocking the rest of the dashboard.
 

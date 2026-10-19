@@ -30,8 +30,19 @@ export function getRequestLang(source: LangRequestSource): SupportedLang {
 
     const acceptLang = "header" in target ? target.header("Accept-Language") : target.headers.get("Accept-Language");
     if (acceptLang) {
-      const primary = acceptLang.split(",")[0]?.trim();
-      if (primary) return resolveLang(primary);
+      let selected: SupportedLang = DEFAULT_LANG;
+      let bestQuality = 0;
+      for (const entry of acceptLang.split(",")) {
+        const [range = "", ...parameters] = entry.trim().split(";");
+        if (!/^(en|zh)(?:-|$)/i.test(range)) continue;
+        const qualityParameter = parameters.find(parameter => parameter.trim().toLowerCase().startsWith("q="));
+        const quality = qualityParameter === undefined ? 1 : Number(qualityParameter.trim().slice(2));
+        if (quality > bestQuality && quality <= 1) {
+          selected = resolveLang(range);
+          bestQuality = quality;
+        }
+      }
+      return selected;
     }
   } catch {
     // Fallback to default on any parsing issue
@@ -351,6 +362,7 @@ export interface I18nDictionary {
     disablePushBtn: string;
     sendTestBtn: string;
     registeredDevices: string;
+    unsubscribeDeviceConfirm: string;
     colDeviceId: string;
     colDeviceName: string;
     colDeviceTime: string;
@@ -701,6 +713,7 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     disablePushBtn: "停用本机推送",
     sendTestBtn: "发送测试提醒",
     registeredDevices: "已登记推送设备",
+    unsubscribeDeviceConfirm: "确定解绑设备 “{name}”？该设备将不再接收新提醒。",
     colDeviceId: "设备标识",
     colDeviceName: "名称",
     colDeviceTime: "登记时间",
@@ -1051,6 +1064,7 @@ const DICTIONARY_EN_US: I18nDictionary = {
     disablePushBtn: "Disable Push Notifications",
     sendTestBtn: "Send Test Notification",
     registeredDevices: "Registered Push Devices",
+    unsubscribeDeviceConfirm: "Unlink push device '{name}'? This device will no longer receive new notifications.",
     colDeviceId: "Device ID",
     colDeviceName: "Name",
     colDeviceTime: "Registered At",
@@ -1133,9 +1147,15 @@ export function getSecurityClientI18n(lang: SupportedLang = DEFAULT_LANG): Recor
 /**
  * Renders an accessible, native dropdown menu for switching languages in the top-right corner.
  */
-export function renderLangDropdown(currentLang: SupportedLang = DEFAULT_LANG): string {
+export function renderLangDropdown(currentLang: SupportedLang = DEFAULT_LANG, query = ""): string {
   const isZh = currentLang === "zh-CN";
   const currentLabel = isZh ? "简体中文" : "English";
+  const languageHref = (lang: SupportedLang) => {
+    const params = new URLSearchParams(query);
+    params.set("lang", lang);
+    // URLSearchParams encodes attribute delimiters; escape its query separators for HTML.
+    return "?" + params.toString().replaceAll("&", "&amp;");
+  };
   return `<details class="lang-dropdown">
   <summary aria-haspopup="listbox" aria-label="切换语言 / Switch Language">
     <span class="lang-icon" aria-hidden="true">🌐</span>
@@ -1143,11 +1163,11 @@ export function renderLangDropdown(currentLang: SupportedLang = DEFAULT_LANG): s
     <span class="lang-caret" aria-hidden="true">▾</span>
   </summary>
   <div class="lang-dropdown-menu" role="listbox">
-    <a href="?lang=zh-CN" class="lang-dropdown-item${isZh ? " active" : ""}" role="option" aria-selected="${isZh ? "true" : "false"}" onclick="(function(){document.cookie='schwab_lang=zh-CN;path=/;max-age=31536000;SameSite=Lax';})()">
+    <a href="${languageHref("zh-CN")}" class="lang-dropdown-item${isZh ? " active" : ""}" role="option" aria-selected="${isZh ? "true" : "false"}">
       <span>简体中文</span>
       <span class="lang-check" aria-hidden="true"${isZh ? "" : ' style="visibility:hidden"'}>✓</span>
     </a>
-    <a href="?lang=en-US" class="lang-dropdown-item${!isZh ? " active" : ""}" role="option" aria-selected="${!isZh ? "true" : "false"}" onclick="(function(){document.cookie='schwab_lang=en-US;path=/;max-age=31536000;SameSite=Lax';})()">
+    <a href="${languageHref("en-US")}" class="lang-dropdown-item${!isZh ? " active" : ""}" role="option" aria-selected="${!isZh ? "true" : "false"}">
       <span>English</span>
       <span class="lang-check" aria-hidden="true"${!isZh ? "" : ' style="visibility:hidden"'}>✓</span>
     </a>
