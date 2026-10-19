@@ -2,9 +2,11 @@ import { html, raw } from "hono/html";
 import type { BrowserSession, ClientAuthorizationStatus } from "./security-store";
 import type { PermissionLevel } from "./oauth-access";
 import { BACKGROUND_SVG, BRAND_LOGO_SVG, COMMON_STYLES, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
+import { formatString, getDictionary, getSecurityClientI18n, type I18nDictionary, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
 
 // Native WebAuthn only; no framework, CDN or browser bearer token.
 const SCRIPT = `
+function t(k, fallback = '') { return (typeof i18n !== 'undefined' && i18n[k]) || fallback; }
 const status = document.querySelector('#status');
 const csrf = document.querySelector('meta[name="csrf"]').content;
 const data = JSON.parse(document.querySelector('#page-data').textContent);
@@ -13,7 +15,7 @@ const dec = s => Uint8Array.from(atob(s.replaceAll('-','+').replaceAll('_','/'))
 async function api(path, body) {
   const r = await fetch('/security/api/' + path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify(body)});
   const v = await r.json();
-  if (!r.ok || v.error) throw new Error(v.error?.message || '验证失败，请刷新页面重试。');
+  if (!r.ok || v.error) throw new Error(v.error?.message || t('error', '验证失败，请刷新页面重试。'));
   return v;
 }
 async function ceremony(v) {
@@ -24,7 +26,7 @@ async function ceremony(v) {
     o.excludeCredentials = (o.excludeCredentials || []).map(c => ({...c,id:dec(c.id)}));
   } else o.allowCredentials = (o.allowCredentials || []).map(c => ({...c,id:dec(c.id)}));
   const c = await navigator.credentials[v.registration ? 'create' : 'get']({publicKey:o});
-  if (!c) throw new Error('验证已取消，订单保持未批准。');
+  if (!c) throw new Error(t('scriptCancelledOrTimeout', '验证已取消，订单保持未批准。'));
   const response = {clientDataJSON:enc(c.response.clientDataJSON)};
   if (v.registration) {
     response.attestationObject = enc(c.response.attestationObject);
@@ -42,7 +44,7 @@ async function act(operation, target) {
   busy = true;
   const enabledButtons = [...document.querySelectorAll('button')].filter(b => !b.disabled);
   document.querySelectorAll('button').forEach(b => b.disabled = true);
-  if (status) status.textContent = '请在系统提示中完成 Passkey 验证…';
+  if (status) status.textContent = t('scriptVerifyingPrompt', '请在系统提示中完成 Passkey 验证…');
   try {
     const name = document.querySelector('#credential-name')?.value || 'Passkey';
     const v = await api('options', {operation,target,name,proposalId:data.proposalId,resetConfirmation:document.querySelector('#reset-confirmation')?.value});
@@ -51,7 +53,7 @@ async function act(operation, target) {
     if (result.redirectTo) { location.assign(result.redirectTo); return; }
     if (result.recovered) { location.assign('/security'); return; }
     if (result.registrationTicket) {
-      if (status) status.textContent = '已有 Passkey 验证成功。点击“注册新 Passkey”继续。';
+      if (status) status.textContent = t('scriptVerifySuccess', '已有 Passkey 验证成功。点击“注册新 Passkey”继续。');
       const button = document.querySelector('#register-add');
       if (button) { button.hidden = false; button.dataset.ticket = result.registrationTicket; }
       return;
@@ -66,7 +68,7 @@ async function act(operation, target) {
       if (approveBtn) approveBtn.hidden = true;
     } else location.reload();
   } catch(e) {
-    if (status) status.textContent = e.name === 'NotAllowedError' ? '操作已取消或超时，订单保持未批准。' : e.message;
+    if (status) status.textContent = e.name === 'NotAllowedError' ? t('scriptCancelledOrTimeout', '操作已取消或超时，订单保持未批准。') : e.message;
   } finally {
     busy = false;
     enabledButtons.forEach(b => b.disabled = false);
@@ -95,7 +97,7 @@ if (data && data.authorizationId) {
     if (resumePromise) return resumePromise;
     clearInterval(poller);
     document.querySelector('#action-buttons-container')?.remove();
-    if (status) status.textContent = 'Passkey 核准成功，正在完成授权并交付结果…';
+    if (status) status.textContent = t('scriptAuthResume', 'Passkey 核准成功，正在完成授权并交付结果…');
     resumePromise = api('authorization-resume', { authorizationId: authId }).then(result => {
       if (result.redirectTo) location.replace(result.redirectTo);
     }).catch(e => {
@@ -181,7 +183,7 @@ if (data && data.authorizationId) {
 }
 
 if (!window.PublicKeyCredential || !navigator.credentials) {
-  if (status) status.textContent = '此浏览器不支持 WebAuthn。请在支持 Passkey 的外部浏览器中打开；操作保持未批准。';
+  if (status) status.textContent = t('scriptUnsupported', '此浏览器不支持 WebAuthn。请在支持 Passkey 的外部浏览器中打开；操作保持未批准。');
   document.querySelectorAll('button').forEach(b => b.disabled = true);
 }
 `;
@@ -586,8 +588,8 @@ main:has(.approval-layout) {
 }
 `;
 
-function orderSummary(preview: unknown) {
-  if (!preview || typeof preview !== "object") return html`<p class="policy-desc">订单预览不可用。</p>`;
+function orderSummary(preview: unknown, s: I18nDictionary["security"]) {
+  if (!preview || typeof preview !== "object") return html`<p class="policy-desc">${s.seeJson}</p>`;
   const account: unknown = Reflect.get(preview, "accountHash");
   const action: unknown = Reflect.get(preview, "action");
   const mode: unknown = Reflect.get(preview, "executionMode");
@@ -600,27 +602,37 @@ function orderSummary(preview: unknown) {
       if (leg && typeof leg === "object") {
         const instrument: unknown = Reflect.get(leg, "instrument");
         legs.push({
-          symbol: instrument && typeof instrument === "object" ? Reflect.get(instrument, "symbol") as unknown : "见 JSON",
+          symbol: instrument && typeof instrument === "object" ? Reflect.get(instrument, "symbol") as unknown : s.seeJson,
           instruction: Reflect.get(leg, "instruction") as unknown, quantity: Reflect.get(leg, "quantity") as unknown,
-          type: record.orderType, price: record.price ?? record.stopPrice ?? "见 JSON", duration: record.duration,
+          type: record.orderType, price: record.price ?? record.stopPrice ?? s.seeJson, duration: record.duration,
         });
       }
     }
     if (Array.isArray(record.childOrderStrategies)) for (const child of record.childOrderStrategies as unknown[]) visit(child);
   }
   visit(order);
-  const display = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : "见 JSON";
+  const display = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : s.seeJson;
   return html`
-    <div class="info-row"><span class="info-label">账户标识</span><span class="info-value"><span class="tag-badge">${display(account)}</span></span></div>
-    <div class="info-row" style="margin-top: 6px;"><span class="info-label">操作类型</span><span class="info-value">${display(action)} · ${display(mode)}</span></div>
+    <div class="info-row"><span class="info-label">${s.accountLabel}</span><span class="info-value"><span class="tag-badge">${display(account)}</span></span></div>
+    <div class="info-row" style="margin-top: 6px;"><span class="info-label">${s.actionLabel}</span><span class="info-value">${display(action)} · ${display(mode)}</span></div>
     <table class="order-table">
-      <thead><tr><th>标的 / 方向</th><th>数量</th><th>价格类型 / 价格</th><th>有效期</th></tr></thead>
+      <thead><tr><th>${s.symbolSide}</th><th>${s.quantity}</th><th>${s.priceType}</th><th>${s.duration}</th></tr></thead>
       <tbody>${legs.map(leg => html`<tr><td>${display(leg.symbol)} / ${display(leg.instruction)}</td><td>${display(leg.quantity)}</td><td>${display(leg.type)} / ${display(leg.price)}</td><td>${display(leg.duration)}</td></tr>`)}</tbody>
     </table>
   `;
 }
 
-export function renderSecurityPage(session: BrowserSession, credentials: { id: string; name: string }[], proposal?: { proposalId: string; status: string; preview: unknown; intentDigest: string; expiresAt: string; outcome: unknown }) {
+export function renderSecurityPage(
+  session: BrowserSession,
+  credentials: { id: string; name: string }[],
+  proposal?: { proposalId: string; status: string; preview: unknown; intentDigest: string; expiresAt: string; outcome: unknown },
+  langCandidate?: SupportedLang
+) {
+  const lang = resolveLang(langCandidate);
+  const dict = getDictionary(lang);
+  const s = dict.security;
+  const c = dict.common;
+
   // JSON script content is escaped for the HTML parser as well as the JS parser.
   const data = JSON.stringify({ proposalId: proposal?.proposalId }).replaceAll("<", "\\u003c");
 
@@ -629,27 +641,27 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
       <div class="policy-item">
         <div class="policy-icon blue">${raw(SHIELD_ICON_SVG)}</div>
         <div class="policy-content">
-          <div class="policy-title">硬件级密钥保护</div>
-          <div class="policy-desc">私钥安全保存在本机 Secure Enclave 或硬件安全密钥中，永不离境。</div>
+          <div class="policy-title">${s.keyProtectionTitle}</div>
+          <div class="policy-desc">${s.keyProtectionDesc}</div>
         </div>
       </div>
       <div class="policy-item">
         <div class="policy-icon green">${raw(LOCK_ICON_SVG)}</div>
         <div class="policy-content">
-          <div class="policy-title">零对话降级与防篡改</div>
-          <div class="policy-desc">建单、改单及策略变更需经浏览器生物识别核验，防御客户端凭据失陷。</div>
+          <div class="policy-title">${s.tamperProofTitle}</div>
+          <div class="policy-desc">${s.tamperProofDesc}</div>
         </div>
       </div>
     </div>
   `;
 
   return html`<!doctype html>
-<html lang="zh-CN">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf" content="${session.csrf}">
-  <title>Advanced Security · Schwab MCP</title>
+  <title>${s.securityManagerTitle} · Schwab MCP</title>
   ${FAVICON_LINK}
   ${PWA_HEAD_TAGS}
   <style>${raw(SECURITY_STYLES)}</style>
@@ -660,9 +672,12 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
     <div class="brand-header" style="display:flex;align-items:center;justify-content:space-between;width:100%;">
       <div style="display:flex;align-items:center;gap:12px;">
         ${raw(BRAND_LOGO_SVG)}
-        <span class="brand-title">SCHWAB MCP</span>
+        <span class="brand-title">${c.brandTitle}</span>
       </div>
-      <a href="/dashboard" class="action-btn" style="text-decoration:none;padding:8px 14px;font-size:13px;width:auto;">&larr; 返回控制面板</a>
+      <div style="display:flex;align-items:center;gap:10px;">
+        ${raw(renderLangDropdown(lang))}
+        <a href="/dashboard" class="action-btn" style="text-decoration:none;padding:8px 14px;font-size:13px;width:auto;">&larr; ${c.backToDashboard}</a>
+      </div>
     </div>
     ${proposal ? html`
       <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
@@ -676,45 +691,45 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
         </div>
       </div>
       <div class="security-notice" style="width:100%;margin-bottom:14px;border-color:var(--brand-cyan-border);background:var(--brand-cyan-soft);color:var(--brand-cyan);font-size:11.5px;">
-        &bull; ZERO-KNOWLEDGE EXECUTION: Unconditional direct execution via Schwab Model Context Protocol. No conversational downgrade permitted.
+        ${s.zeroKnowledgeNotice}
       </div>
-      <h1 class="page-title">订单 Passkey 硬件批准</h1>
-      <p class="page-subtitle">请使用已绑定的 Passkey 核对并授权此笔交易 · 严格防篡改保障</p>
+      <h1 class="page-title">${s.orderApprovalTitle}</h1>
+      <p class="page-subtitle">${s.orderApprovalSubtitle}</p>
       <div class="approval-layout">
         <div class="approval-cockpit">
           <div class="auth-card">
             <div class="info-row">
-              <span class="info-label">提案状态</span>
+              <span class="info-label">${s.proposalStatus}</span>
               <span class="info-value">
                 <span class="tag-badge ${proposal.status === "PENDING" ? "" : "green"}">${proposal.status}</span>
               </span>
             </div>
             <div class="info-row">
-              <span class="info-label">批准截止</span>
+              <span class="info-label">${s.approvalDeadline}</span>
               <span class="info-value timestamp">${proposal.expiresAt}</span>
             </div>
             <div class="info-row column">
-              <span class="info-label">意图摘要</span>
+              <span class="info-label">${s.intentDigest}</span>
               <div class="uri-box">${proposal.intentDigest}</div>
             </div>
             <div class="card-divider"></div>
-            ${orderSummary(proposal.preview)}
+            ${orderSummary(proposal.preview, s)}
             <div class="card-divider"></div>
             ${policyListHtml}
             ${proposal.status === "PENDING" ? html`
               <div class="approval-sticky-bar">
                 <button id="approve" class="pill-btn full-width primary-glow" data-operation="approve">
                   ${raw(FINGERPRINT_ICON_SVG)}
-                  <span>⚡ 批准并提交 (Approve via Passkey)</span>
+                  <span>${s.approveSubmitBtn}</span>
                 </button>
                 <button id="ceremony-submit" class="pill-btn full-width primary-glow" hidden style="background:var(--primary);color:#003824;margin-top:8px;">
                   ${raw(FINGERPRINT_ICON_SVG)}
-                  <span>调起系统硬件验证</span>
+                  <span>${s.invokeHardwareBtn}</span>
                 </button>
               </div>
-              <div class="action-hint">验证成功后服务器立即提交即时订单或激活延迟任务。无对话确认降级。</div>
+              <div class="action-hint">${s.approveHint}</div>
             ` : html`
-              <div class="policy-title" style="margin: 12px 0 4px;">执行结果</div>
+              <div class="policy-title" style="margin: 12px 0 4px;">${s.executionOutcome}</div>
               <pre class="code-preview">${JSON.stringify(proposal.outcome, null, 2)}</pre>
             `}
           </div>
@@ -727,10 +742,10 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
                 <span class="terminal-dot yellow"></span>
                 <span class="terminal-dot green"></span>
               </div>
-              <span class="terminal-title">schwab_place_order.json [FROZEN]</span>
+              <span class="terminal-title">${s.frozenTitle}</span>
               <span class="tag-badge">IMMUTABLE</span>
             </div>
-            <div class="terminal-desc">请核对账户标识、每条订单腿的买卖方向及数量、价格类型、有效期；延迟订单同时核对条件和截止时间。下列完整 JSON 是本次批准并执行的内容。</div>
+            <div class="terminal-desc">${s.frozenDesc}</div>
             <pre class="code-preview">${JSON.stringify(proposal.preview, null, 2)}</pre>
             <div class="inspector-badge-row">
               <span class="tag-badge green">✓ Level 3 UV Required</span>
@@ -740,16 +755,16 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
           <div class="auth-card" style="padding:12px 14px;background:var(--surface-container);border-color:var(--outline-variant);">
             <div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text-main);font-weight:600;">
               <span class="status-pulse-dot"></span>
-              <span>硬件认证器就绪：YubiKey 5C NFC / Apple Secure Enclave</span>
+              <span>${s.authenticatorReady}</span>
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
-              FIDO2 Level 3 Authenticator &middot; WebAuthn User Verification Required
+              ${s.authenticatorMeta}
             </div>
           </div>
           <div class="terminal-hotkeys" style="margin-top:10px;font-size:11px;color:var(--text-muted);display:flex;justify-content:center;gap:10px;letter-spacing:0.04em;text-align:center;">
-            <span>[ENTER] 调起 Passkey</span>
+            <span>[ENTER] Passkey</span>
             <span>&bull;</span>
-            <span>[ESC] 取消提案</span>
+            <span>[ESC] ${c.cancel}</span>
             <span>&bull;</span>
             <span>ENCLAVE AIRGAP CERTIFIED</span>
           </div>
@@ -757,104 +772,108 @@ export function renderSecurityPage(session: BrowserSession, credentials: { id: s
       </div>
     ` : session.recovery ? html`
       <div class="terminal-prompt-tag">&gt;_ DISASTER RECOVERY PROTOCOL</div>
-      <h1 class="page-title">恢复 Passkey</h1>
-      <p class="page-subtitle">本流程已独立完成 GitHub owner OAuth 验证</p>
+      <h1 class="page-title">${s.recoverTitle}</h1>
+      <p class="page-subtitle">${s.recoverSubtitle}</p>
       <div class="auth-card">
         <div class="security-notice amber">
           ${raw(INFO_ICON_SVG)}
-          <div>GitHub 账户是凭据恢复的信任入口。新凭据注册成功前不删除旧凭据。完成后旧凭据、浏览器会话、challenge 和待批准增强提案全部失效；已激活延迟任务保留，Advanced Security 保持开启。</div>
+          <div>${s.recoverNotice}</div>
         </div>
         <div class="form-group">
           <label class="form-label" for="reset-confirmation">
-            <span>输入重置确认</span>
-            <span class="form-label-hint">必须精确匹配</span>
+            <span>${s.resetConfirmLabel}</span>
+            <span class="form-label-hint">${s.resetConfirmHint}</span>
           </label>
           <div class="input-wrapper">
-            <input id="reset-confirmation" class="text-input no-icon" autocomplete="off" placeholder="输入“重置全部 Passkey”">
+            <input id="reset-confirmation" class="text-input no-icon" autocomplete="off" placeholder="${s.resetConfirmPlaceholder}">
           </div>
         </div>
         <div class="form-group">
           <label class="form-label" for="credential-name">
-            <span>替代凭据名称</span>
-            <span class="form-label-hint">本机标识名</span>
+            <span>${s.replacementKeyLabel}</span>
+            <span class="form-label-hint">Passkey</span>
           </label>
           <div class="input-wrapper">
             <span class="input-icon">${raw(KEY_ICON_SVG)}</span>
-            <input id="credential-name" class="text-input" maxlength="80" value="替代 Passkey">
+            <input id="credential-name" class="text-input" maxlength="80" value="${s.replacementKeyDefault}">
           </div>
         </div>
         <button class="pill-btn full-width" data-operation="recover">
           ${raw(FINGERPRINT_ICON_SVG)}
-          <span>重置全部 Passkey 并注册替代凭据</span>
+          <span>${s.resetSubmitBtn}</span>
         </button>
       </div>
     ` : html`
       <div class="terminal-prompt-tag">&gt;_ CREDENTIAL SECURITY MANAGER</div>
-      <h1 class="page-title">Advanced Security</h1>
-      <p class="page-subtitle">设置按客户端生效。其他未开启客户端仍沿用对话确认与 session 直下策略。</p>
+      <h1 class="page-title">${s.securityManagerTitle}</h1>
+      <p class="page-subtitle">${s.securityManagerSubtitle}</p>
       <div class="auth-card">
         ${credentials.length ? html`
           <div class="info-row">
-            <span class="info-label">已绑定 Passkey</span>
-            <span class="info-value"><span class="tag-badge green">${credentials.length} 个活跃凭据</span></span>
+            <span class="info-label">${s.registeredPasskeys}</span>
+            <span class="info-value"><span class="tag-badge green">${formatString(s.activeCount, { n: credentials.length })}</span></span>
           </div>
           <ul class="credential-list">
-            ${credentials.map(c => html`
+            ${credentials.map(cr => html`
               <li class="credential-item">
                 <div class="credential-info">
-                  <span class="credential-name">${c.name}</span>
-                  <span class="credential-id mono">${c.id.slice(0, 16)}…</span>
+                  <span class="credential-name">${cr.name}</span>
+                  <span class="credential-id mono">${cr.id.slice(0, 16)}…</span>
                 </div>
                 <div class="credential-actions">
-                  <button class="action-btn" data-operation="rename" data-target="${c.id}">重命名</button>
-                  ${credentials.length > 1 ? html`<button class="action-btn danger" data-operation="delete" data-target="${c.id}">删除</button>` : ""}
+                  <button class="action-btn" data-operation="rename" data-target="${cr.id}">${s.rename}</button>
+                  ${credentials.length > 1 ? html`<button class="action-btn danger" data-operation="delete" data-target="${cr.id}">${s.delete}</button>` : ""}
                 </div>
               </li>
             `)}
           </ul>
           <div class="form-group">
-            <label class="form-label" for="credential-name"><span>重命名或新 Passkey 名称</span></label>
-            <div class="input-wrapper"><input id="credential-name" class="text-input" value="我的 Passkey" maxlength="80"></div>
+            <label class="form-label" for="credential-name"><span>${s.keyNameLabel}</span></label>
+            <div class="input-wrapper"><input id="credential-name" class="text-input" value="${s.keyNameDefault}" maxlength="80"></div>
           </div>
           <button class="pill-btn secondary full-width" data-operation="add">
             ${raw(KEY_ICON_SVG)}
-            <span>添加新 Passkey</span>
+            <span>${s.addKeyBtn}</span>
           </button>
           <button id="register-add" class="pill-btn primary full-width" hidden style="margin-top:8px;">
             ${raw(FINGERPRINT_ICON_SVG)}
-            <span>注册新 Passkey</span>
+            <span>${s.addKeyBtn}</span>
           </button>
         ` : html`
           <div class="security-notice">
             ${raw(INFO_ICON_SVG)}
-            <div>尚未绑定任何 Passkey。绑定硬件安全密钥或生物识别以保护您的账户。</div>
+            <div>${s.noKeysNotice}</div>
           </div>
           <div class="form-group">
-            <label class="form-label" for="credential-name"><span>首个 Passkey 名称</span></label>
-            <div class="input-wrapper"><input id="credential-name" class="text-input" value="我的 Passkey" maxlength="80"></div>
+            <label class="form-label" for="credential-name"><span>${s.keyNameLabel}</span></label>
+            <div class="input-wrapper"><input id="credential-name" class="text-input" value="${s.keyNameDefault}" maxlength="80"></div>
           </div>
           <button class="pill-btn primary full-width" data-operation="register">
             ${raw(FINGERPRINT_ICON_SVG)}
-            <span>注册首个 Passkey</span>
+            <span>${s.registerFirstKeyBtn}</span>
           </button>
         `}
       </div>
     `}
     <p id="status" role="status" aria-live="polite"></p>
-    <div class="action-hint">浏览器会话 15 分钟有效 · 验证 challenge 最长 2 分钟${proposal ? " · 订单批准提案 5 分钟有效" : ""}</div>
+    <div class="action-hint">${s.sessionExpiryHint}</div>
     <div class="auth-footer">
-      <a href="/security">凭据管理</a>
+      <a href="/security">${s.keyManagement}</a>
       <span class="footer-dot">·</span>
-      <a href="/security/recover">全部 Passkey 丢失：通过独立 GitHub OAuth 恢复</a>
+      <a href="/security/recover">${s.lostKeyRecovery}</a>
       <span class="footer-dot">·</span>
-      <span>Charles Schwab MCP</span>
+      <span>${c.brandTitle}</span>
     </div>
     <div class="security-disclaimer">
-      本功能防御 MCP 令牌或客户端失陷，不承诺抵抗 Worker、批准设备或 GitHub 恢复账户被控制。
+      ${s.disclaimer}
     </div>
     <script id="page-data" type="application/json">${raw(data)}</script>
-    <script>${raw(SCRIPT)}</script>
+    <script>
+const i18n = ${raw(JSON.stringify(getSecurityClientI18n(lang)))};
+${raw(SCRIPT)}
+    </script>
   </main>
+  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
   ${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;
@@ -875,8 +894,14 @@ export function renderClientAuthorizationPage(
     digest: string;
   },
   credentials: { id: string; name: string }[],
-  isOriginalSession: boolean
+  isOriginalSession: boolean,
+  langCandidate?: SupportedLang
 ) {
+  const lang = resolveLang(langCandidate);
+  const dict = getDictionary(lang);
+  const s = dict.security;
+  const c = dict.common;
+
   const data = JSON.stringify({
     authorizationId: clientAuth.id,
     status: clientAuth.status,
@@ -885,12 +910,12 @@ export function renderClientAuthorizationPage(
   }).replaceAll("<", "\\u003c");
 
   return html`<!doctype html>
-<html lang="zh-CN">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf" content="${session.csrf}">
-  <title>客户端授权核准 · Schwab MCP</title>
+  <title>${s.clientAuthTitle}</title>
   ${FAVICON_LINK}
   ${PWA_HEAD_TAGS}
   <style>${raw(SECURITY_STYLES)}</style>
@@ -901,9 +926,12 @@ export function renderClientAuthorizationPage(
     <div class="brand-header" style="display:flex;align-items:center;justify-content:space-between;width:100%;">
       <div style="display:flex;align-items:center;gap:12px;">
         ${raw(BRAND_LOGO_SVG)}
-        <span class="brand-title">SCHWAB MCP</span>
+        <span class="brand-title">${c.brandTitle}</span>
       </div>
-      <a href="/dashboard" class="action-btn" style="text-decoration:none;padding:8px 14px;font-size:13px;width:auto;">&larr; 返回控制面板</a>
+      <div style="display:flex;align-items:center;gap:10px;">
+        ${raw(renderLangDropdown(lang))}
+        <a href="/dashboard" class="action-btn" style="text-decoration:none;padding:8px 14px;font-size:13px;width:auto;">&larr; ${c.backToDashboard}</a>
+      </div>
     </div>
 
     <div class="telemetry-bar-top" style="width:100%;margin-bottom:12px;">
@@ -917,79 +945,83 @@ export function renderClientAuthorizationPage(
       </div>
     </div>
 
-    <h1 class="page-title">${isOriginalSession && clientAuth.status === "PENDING" ? "等待 Passkey 硬件核准" : "客户端访问权限申请"}</h1>
-    <p class="page-subtitle">${isOriginalSession && clientAuth.status === "PENDING" ? "请在已绑定的 iPhone PWA 或其他已登录设备上使用 Passkey 批准此请求，或在下方使用本机 Passkey。" : "请仔细核对客户端信息与权限设置，使用绑定的 Passkey 核准本次授权。"}</p>
+    <h1 class="page-title">${isOriginalSession && clientAuth.status === "PENDING" ? s.clientAuthAwaitingHeading : s.clientAuthHeading}</h1>
+    <p class="page-subtitle">${isOriginalSession && clientAuth.status === "PENDING" ? s.clientAuthAwaitingSubtitle : s.clientAuthSubtitle}</p>
 
     <div class="auth-card" style="width:100%;max-width:580px;">
       <div class="info-row">
-        <span class="info-label">申请客户端</span>
+        <span class="info-label">${s.requestingClient}</span>
         <span class="info-value"><strong>${clientAuth.clientName}</strong> <span class="tag-badge mono" style="font-size:10px">${clientAuth.clientId}</span></span>
       </div>
       <div class="info-row">
-        <span class="info-label">权限等级</span>
-        <span class="info-value"><span class="tag-badge ${clientAuth.permissionLevel === "full_access" ? "green" : ""}">${clientAuth.permissionLevel === "full_access" ? "完整访问 FULL ACCESS" : "只读权限 READ ONLY"}</span></span>
+        <span class="info-label">${s.permissionLevel}</span>
+        <span class="info-value"><span class="tag-badge ${clientAuth.permissionLevel === "full_access" ? "green" : ""}">${clientAuth.permissionLevel === "full_access" ? s.fullAccessTag : s.readOnlyTag}</span></span>
       </div>
       <div class="info-row">
         <span class="info-label">Advanced Security</span>
-        <span class="info-value">${clientAuth.advancedSecurity ? "开启（每笔交易强制 Passkey 批准）" : "关闭"}</span>
+        <span class="info-value">${clientAuth.advancedSecurity ? s.advancedSecurityOn : s.advancedSecurityOff}</span>
       </div>
       <div class="info-row">
-        <span class="info-label">回调地址</span>
+        <span class="info-label">${s.redirectUri}</span>
         <span class="info-value mono" style="font-size:11px">${clientAuth.redirectUri}</span>
       </div>
       <div class="info-row">
-        <span class="info-label">状态</span>
+        <span class="info-label">${c.status}</span>
         <span class="info-value"><span id="auth-status-badge" class="tag-badge ${clientAuth.status === "APPROVED" || clientAuth.status === "COMPLETED" ? "green" : ""}">${clientAuth.status}</span></span>
       </div>
       <div class="info-row">
-        <span class="info-label">截止时间</span>
+        <span class="info-label">${s.expiresAt}</span>
         <span class="info-value timestamp">${new Date(clientAuth.expiresAt).toLocaleTimeString()}</span>
       </div>
       <div class="info-row">
-        <span class="info-label">请求摘要 (Digest)</span>
+        <span class="info-label">${s.digest}</span>
         <div class="uri-box mono">${clientAuth.digest}</div>
       </div>
 
       <div class="card-divider"></div>
 
-      <div id="status" class="action-hint" role="status" aria-live="polite">${isOriginalSession && clientAuth.status === "PENDING" ? "正在等待 Passkey 硬件核准中…（每 2 秒同步状态）" : ""}</div>
+      <div id="status" class="action-hint" role="status" aria-live="polite">${isOriginalSession && clientAuth.status === "PENDING" ? s.statusAwaiting : ""}</div>
 
       ${clientAuth.status === "PENDING" ? html`
         <div id="action-buttons-container" style="display:flex;flex-direction:column;gap:12px;margin-top:14px;">
           <div class="form-group" style="${credentials.length ? "display:none;" : ""}">
-            <label class="form-label" for="credential-name"><span>新 Passkey 名称</span></label>
-            <div class="input-wrapper"><input id="credential-name" class="text-input" value="我的 Passkey" maxlength="80"></div>
+            <label class="form-label" for="credential-name"><span>${s.newPasskeyName}</span></label>
+            <div class="input-wrapper"><input id="credential-name" class="text-input" value="${s.keyNameDefault}" maxlength="80"></div>
           </div>
           <button id="stage-auth-btn" class="pill-btn primary full-width" data-action="stage-client-auth">
             ${raw(FINGERPRINT_ICON_SVG)}
-            <span>${credentials.length ? "使用 Passkey 批准此请求" : "注册首个 Passkey 并批准"}</span>
+            <span>${credentials.length ? s.approveRequestBtn : s.registerAndApproveBtn}</span>
           </button>
           <button id="submit-auth-btn" class="pill-btn primary full-width" style="display:none;background:var(--primary);color:#003824;">
             ${raw(FINGERPRINT_ICON_SVG)}
-            <span>调起系统硬件验证</span>
+            <span>${s.invokeHardwareBtn}</span>
           </button>
-          <button id="cancel-auth-btn" class="pill-btn danger full-width" data-action="cancel-client-auth">取消本次申请</button>
+          <button id="cancel-auth-btn" class="pill-btn danger full-width" data-action="cancel-client-auth">${s.cancelRequestBtn}</button>
         </div>
       ` : clientAuth.status === "APPROVED" ? html`
         <div class="security-notice green" style="margin-top:14px;">
-          &bull; 已通过 Passkey 批准核验。发起端设备将自动完成授权流程并签发凭据。
+          &bull; ${s.approvedNotice}
         </div>
       ` : html`
         <div class="security-notice" style="margin-top:14px;">
-          &bull; 授权请求当前状态: ${clientAuth.status}
+          &bull; ${c.status}: ${clientAuth.status}
         </div>
       `}
     </div>
 
     <div class="auth-footer" style="margin-top:20px;">
-      <a href="/security">凭据管理</a>
+      <a href="/security">${s.keyManagement}</a>
       <span class="footer-dot">·</span>
-      <a href="/dashboard">返回控制面板</a>
+      <a href="/dashboard">${c.backToDashboard}</a>
     </div>
 
     <script id="page-data" type="application/json">${raw(data)}</script>
-    <script>${raw(SCRIPT)}</script>
+    <script>
+const i18n = ${raw(JSON.stringify(getSecurityClientI18n(lang)))};
+${raw(SCRIPT)}
+    </script>
   </main>
+  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
   ${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;

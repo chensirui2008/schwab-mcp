@@ -11,6 +11,7 @@ import type { AppEnv } from "./env";
 import { tradingEnabled, vaultStub } from "./env";
 import { AUTHORIZATION_VERSION, isPermissionLevel, READ_SCOPE } from "./oauth-access";
 import type { AuthorizationProps, PermissionLevel } from "./oauth-access";
+import { getRequestLang, type SupportedLang } from "./i18n";
 import { z } from "zod";
 import {
   clientIdSchema, dashboardPolicyInputSchema, isJsonContentType, parseAuditQuery, permissionSchema,
@@ -296,7 +297,7 @@ const app = new Hono<{ Bindings: AppEnv }>();
 app.use("*", async (c, next) => {
   await next();
   // Apply to the final response, including early errors built with Response.json().
-  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard")) {
+  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard") || c.req.path === "/auth/schwab/complete") {
     c.header("Cache-Control", "no-store");
     c.header("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
     c.header("X-Frame-Options", "DENY");
@@ -319,6 +320,12 @@ async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: bo
   deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
   return c.redirect(githubAuthorizationUrl(c.env, origin, state));
 }
+function applyLangCookie(c: Context, lang: SupportedLang) {
+  if (c.req.query("lang")) {
+    setCookie(c, "schwab_lang", lang, { path: "/", maxAge: 31536000, sameSite: "Lax" });
+  }
+}
+
 app.get("/security/recover", c => beginSecurityLogin(c, true));
 app.get("/security", renderSecurity);
 app.get("/security/approvals/:proposalId", renderSecurity);
@@ -326,6 +333,8 @@ app.get("/security/approvals/:proposalId/complete", renderSecurity);
 app.get("/security/authorizations/:id", async c => {
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
   if (new URL(c.req.url).origin !== origin) return c.text("Invalid origin", 400);
+  const lang = getRequestLang(c);
+  applyLangCookie(c, lang);
   const authorizationId = c.req.param("id");
   const sessionId = getCookie(c, SECURITY_COOKIE);
   if (!sessionId) return beginSecurityLogin(c, false, `/security/authorizations/${authorizationId}`);
@@ -344,7 +353,7 @@ app.get("/security/authorizations/:id", async c => {
     }
     return c.text("授权请求不存在或已过期，请在发起端重新发起。", 404);
   }
-  return c.html(renderClientAuthorizationPage(sessionState.session, details.authorization, details.credentials, details.isOriginalSession));
+  return c.html(renderClientAuthorizationPage(sessionState.session, details.authorization, details.credentials, details.isOriginalSession, lang));
 });
 app.get("/security/api/authorization-status/:id", async c => {
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
@@ -445,6 +454,8 @@ app.post("/security/api/authorization-resume", async c => {
 });
 async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
   if (new URL(c.req.url).origin !== new URL(c.env.SCHWAB_REDIRECT_URI).origin) return c.text("Invalid origin", 400);
+  const lang = getRequestLang(c);
+  applyLangCookie(c, lang);
   const sessionId = getCookie(c, SECURITY_COOKIE);
   let state: { session: BrowserSession; credentials: { id: string; name: string }[] };
   try {
@@ -457,12 +468,12 @@ async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
       const proposal = await securityCall<Parameters<typeof renderSecurityPage>[2]>(c.env, "/proposal", { sessionId, proposalId });
       if (c.req.path.endsWith("/complete")) {
         if (!proposal || !["EXECUTED", "ACTIVE"].includes(proposal.status)) return c.text("授权尚未成功完成，请返回客户端查询状态。", 409);
-        return c.html(renderPasskeyAuthorizedPage());
+        return c.html(renderPasskeyAuthorizedPage(lang));
       }
-      return await c.html(renderSecurityPage(state.session, state.credentials, proposal));
+      return await c.html(renderSecurityPage(state.session, state.credentials, proposal, lang));
     } catch { return c.text("提案不可用，请返回客户端查询状态。", 403); }
   }
-  return c.html(renderSecurityPage(state.session, state.credentials));
+  return c.html(renderSecurityPage(state.session, state.credentials, undefined, lang));
 }
 app.post("/security/api/:action", async c => {
   const action = c.req.param("action");
@@ -592,10 +603,12 @@ async function requireDashboardClient(env: AppEnv, clientId: string): Promise<Cl
 app.get("/dashboard/login", c => beginSecurityLogin(c, false, "/dashboard"));
 app.get("/dashboard", async c => {
   if (!validDashboardOrigin(c)) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
+  const lang = getRequestLang(c);
+  applyLangCookie(c, lang);
   try {
     const state = await getDashboardSession(c);
     if (!state) return await beginSecurityLogin(c, false, "/dashboard");
-    return await c.html(renderDashboardPage({ session: state.session, appVersion: c.env.APP_VERSION, allowedUserId: c.env.ALLOWED_GITHUB_USER_ID }));
+    return await c.html(renderDashboardPage({ session: state.session, appVersion: c.env.APP_VERSION, allowedUserId: c.env.ALLOWED_GITHUB_USER_ID, lang }));
   } catch {
     return browserError("UPSTREAM_UNAVAILABLE", "Unable to load dashboard session", 503);
   }
@@ -603,6 +616,8 @@ app.get("/dashboard", async c => {
 app.get("/dashboard/notifications/:id", async c => {
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
   if (new URL(c.req.url).origin !== origin) return c.text("Invalid origin", 400);
+  const lang = getRequestLang(c);
+  applyLangCookie(c, lang);
   const id = c.req.param("id");
   const state = await getDashboardSession(c);
   if (!state) return await beginSecurityLogin(c, false, `/dashboard/notifications/${id}`);
@@ -611,6 +626,7 @@ app.get("/dashboard/notifications/:id", async c => {
     appVersion: c.env.APP_VERSION,
     allowedUserId: c.env.ALLOWED_GITHUB_USER_ID,
     highlightNotificationId: id,
+    lang,
   }));
 });
 app.get("/dashboard/api/session", c => dashboardRequest(c, state => c.json({ credentials: state.credentials })));
@@ -847,6 +863,8 @@ app.get("/authorize", async (c) => {
       !hasS256Pkce({ codeChallenge: params.get("code_challenge") ?? undefined, codeChallengeMethod: params.get("code_challenge_method") ?? undefined })) {
     return invalidPkceResponse();
   }
+  const lang = getRequestLang(c);
+  applyLangCookie(c, lang);
   const authRequest = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
   const client = await c.env.OAUTH_PROVIDER.lookupClient(authRequest.clientId);
   if (!client) return c.text("Invalid OAuth client", 400);
@@ -857,7 +875,7 @@ app.get("/authorize", async (c) => {
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   const clientName = client.clientName ?? client.clientId;
   const policy = await securityCall<ClientPolicy>(c.env, "/policy", { clientId: authRequest.clientId });
-  return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state, advancedSecurity: policy.advancedSecurity }));
+  return c.html(renderAuthorizePage({ clientName, redirectUri: authRequest.redirectUri, state, advancedSecurity: policy.advancedSecurity, lang, authorizationQuery: params.toString() }));
 });
 
 app.post("/authorize/approve", async (c) => {
@@ -882,7 +900,8 @@ app.post("/authorize/approve", async (c) => {
   if (advancedSecurity && permissionLevel !== "full_access") return c.text("Advanced Security requires full access", 400);
   const githubState = await saveState(c.env, "github", { ...payload, permissionLevel, advancedSecurity });
   setCookie(c, FLOW_COOKIE, githubState, FLOW_COOKIE_OPTIONS);
-  return c.html(renderGitHubContinuePage(githubAuthorizationUrl(c.env, payload.origin, githubState)));
+  const lang = getRequestLang(c);
+  return c.html(renderGitHubContinuePage(githubAuthorizationUrl(c.env, payload.origin, githubState), lang));
 });
 
 app.get("/auth/schwab/connect", async (c) => {
@@ -990,11 +1009,18 @@ app.get("/auth/schwab/callback", async (c) => {
     });
     if (!saved.ok) throw new Error("Schwab token response was invalid");
     deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
-    return c.html(renderSchwabConnectedPage());
+    return c.redirect(`/auth/schwab/complete?lang=${getRequestLang(c)}`, 303);
   } catch (error) {
     console.error(JSON.stringify({ event: "schwab_oauth_failed", errorType: error instanceof Error ? error.name : "UnknownError" }));
     return c.text("Schwab authorization failed", 400);
   }
+});
+
+// Repeatable presentation only: never re-exchange a code when refreshing or changing language.
+app.get("/auth/schwab/complete", c => {
+  const lang = getRequestLang(c);
+  applyLangCookie(c, lang);
+  return c.html(renderSchwabConnectedPage(lang));
 });
 
 export { app as AuthHandler };
