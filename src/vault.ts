@@ -1067,12 +1067,11 @@ export class SchwabVault extends DurableObject<AppEnv> {
         },
         body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken }),
       });
-    } catch (error) {
+    } catch {
       logEvent("schwab_token_refresh", {
         requestId,
         status: "network_error",
         durationMs: Date.now() - started,
-        message: error instanceof Error ? error.message : "Unknown error",
       });
       throw new Error("UPSTREAM_UNAVAILABLE");
     }
@@ -1993,8 +1992,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
         let result: unknown;
         try {
           result = await upstream.json();
-        } catch (error) {
-          logEvent("schwab_response_invalid", { requestId: input.requestId, tool: input.tool, message: error instanceof Error ? error.message : "Invalid JSON" });
+        } catch {
+          logEvent("schwab_response_invalid", { requestId: input.requestId, tool: input.tool });
           return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab returned an invalid response", requestId: input.requestId, attempts }, 502);
         }
         return jsonResponse({ result, attempts, refreshExpiresAt: token.refreshExpiresAt });
