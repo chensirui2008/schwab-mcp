@@ -39,14 +39,30 @@ interface DashboardBrowser {
   csrf: string;
 }
 
+function mockLimiter(): RateLimit {
+  return {
+    limit() {
+      return Promise.resolve({ success: true });
+    },
+  };
+}
+
 function setup() {
   const appEnv = { ...env } as unknown as AppEnv;
+  appEnv.BROWSER_AUTH_RATE_LIMITER = mockLimiter();
+  appEnv.ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER = mockLimiter();
   appEnv.OAUTH_PROVIDER = getOAuthApi(providerOptions, appEnv);
   return appEnv;
 }
 async function dispatch(request: Request, appEnv: AppEnv) {
+  let req = request;
+  if (!req.headers.has("CF-Connecting-IP")) {
+    const headers = new Headers(req.headers);
+    headers.set("CF-Connecting-IP", "192.0.2.10");
+    req = new Request(req, { headers });
+  }
   const ctx = createExecutionContext();
-  const response = await worker.fetch(request, appEnv, ctx);
+  const response = await worker.fetch(req, appEnv, ctx);
   // Streamable HTTP can finish its tool handler after response headers arrive.
   // Consume the finite response before draining audits registered by that send.
   const body = response.body === null ? null : await response.arrayBuffer();

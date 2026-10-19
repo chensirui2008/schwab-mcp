@@ -1,18 +1,35 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import type { AppEnv } from "../src/env";
 
 const host = "https://schwab-mcp.siruichen461.workers.dev";
 const gate = "__Host-schwab-acceptance=test-only-key";
-function config(): AppEnv { return { ...env, ACCEPTANCE_KEY: "test-only-key" } as unknown as AppEnv; }
+function mockLimiter(): RateLimit {
+  return {
+    limit() {
+      return Promise.resolve({ success: true });
+    },
+  };
+}
+function config(): AppEnv {
+  return {
+    ...env,
+    ACCEPTANCE_KEY: "test-only-key",
+    BROWSER_AUTH_RATE_LIMITER: mockLimiter(),
+    ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER: mockLimiter(),
+  } as unknown as AppEnv;
+}
 async function call(path: string, init: RequestInit = {}, appEnv = config()) {
+  const headers = new Headers(init.headers);
+  if (!headers.has("CF-Connecting-IP")) headers.set("CF-Connecting-IP", "192.0.2.10");
   const ctx = createExecutionContext();
-  const response = await worker.fetch(new Request(host + path, init), appEnv, ctx);
+  const response = await worker.fetch(new Request(host + path, { ...init, headers }), appEnv, ctx);
   await waitOnExecutionContext(ctx);
   return response;
 }
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("same-Worker cloud acceptance isolation", () => {
   it("is disabled without the optional secret and gates every main-origin route", async () => {
     const disabled = config(); delete disabled.ACCEPTANCE_KEY;

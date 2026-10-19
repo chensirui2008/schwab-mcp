@@ -7,6 +7,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { BRAND_LOGO_SVG, renderAuthorizePage, renderGitHubContinuePage, renderPasskeyAuthorizedPage, renderSchwabConnectedPage } from "./auth-ui";
 import type { ErrorCode, PublicError } from "./types";
+import { logEvent } from "./log";
 import type { AppEnv } from "./env";
 import { tradingEnabled, vaultStub } from "./env";
 import { AUTHORIZATION_VERSION, isPermissionLevel, READ_SCOPE } from "./oauth-access";
@@ -177,8 +178,42 @@ async function beginSchwabAuthorization(env: AppEnv, origin: string): Promise<{ 
 class SecurityCallError extends Error {
   constructor(public error: PublicError) { super(error.message); }
 }
-function browserError(code: ErrorCode, message: string, status: number): Response {
-  return Response.json({ error: { code, message, requestId: crypto.randomUUID() } }, { status });
+function browserError(code: ErrorCode, message: string, status: number, requestId = crypto.randomUUID()): Response {
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+  });
+  if (status === 429) headers.set("Retry-After", "60");
+  return Response.json({ error: { code, message, requestId } }, { status, headers });
+}
+
+async function checkBrowserAuthRateLimit(c: Context<{ Bindings: AppEnv }>): Promise<Response | null> {
+  const rawIp = c.req.header("CF-Connecting-IP");
+  const ip = typeof rawIp === "string" ? rawIp.trim() : "";
+  const limiter = c.env.BROWSER_AUTH_RATE_LIMITER;
+
+  if (!ip || !limiter) {
+    const requestId = crypto.randomUUID();
+    logEvent("browser_auth_limiter_unavailable", { requestId, code: "UPSTREAM_UNAVAILABLE" });
+    return browserError("UPSTREAM_UNAVAILABLE", "Authorization admission is unavailable; retry later", 503, requestId);
+  }
+
+  try {
+    const outcome = await limiter.limit({ key: `schwab-mcp:browser-auth:${ip}` });
+    if (!outcome.success) {
+      const requestId = crypto.randomUUID();
+      logEvent("browser_auth_rate_limited", { requestId, code: "RATE_LIMITED" });
+      return browserError("RATE_LIMITED", "Too many authorization attempts; retry later", 429, requestId);
+    }
+    return null;
+  } catch {
+    const requestId = crypto.randomUUID();
+    logEvent("browser_auth_limiter_unavailable", { requestId, code: "UPSTREAM_UNAVAILABLE" });
+    return browserError("UPSTREAM_UNAVAILABLE", "Authorization admission is unavailable; retry later", 503, requestId);
+  }
 }
 
 async function securityCall<T>(env: AppEnv, path: string, input: unknown): Promise<T> {
@@ -315,6 +350,8 @@ app.get("/favicon.svg", c => c.body(BRAND_LOGO_SVG, 200, {
 async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: boolean, returnTo = "/security") {
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
   if (new URL(c.req.url).origin !== origin) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
+  const rateLimitResponse = await checkBrowserAuthRateLimit(c);
+  if (rateLimitResponse) return rateLimitResponse;
   const state = await saveState(c.env, "github", { action: recovery ? "security_recover" : "security_login", origin, returnTo } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
@@ -863,6 +900,8 @@ app.get("/authorize", async (c) => {
       !hasS256Pkce({ codeChallenge: params.get("code_challenge") ?? undefined, codeChallengeMethod: params.get("code_challenge_method") ?? undefined })) {
     return invalidPkceResponse();
   }
+  const rateLimitResponse = await checkBrowserAuthRateLimit(c);
+  if (rateLimitResponse) return rateLimitResponse;
   const lang = getRequestLang(c);
   applyLangCookie(c, lang);
   const authRequest = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
@@ -879,6 +918,8 @@ app.get("/authorize", async (c) => {
 });
 
 app.post("/authorize/approve", async (c) => {
+  const rateLimitResponse = await checkBrowserAuthRateLimit(c);
+  if (rateLimitResponse) return rateLimitResponse;
   const form = await c.req.parseBody();
   const state = form.state;
   if (typeof state !== "string" || getCookie(c, FLOW_COOKIE) !== state) return c.text("Invalid consent state", 400);
@@ -905,6 +946,8 @@ app.post("/authorize/approve", async (c) => {
 });
 
 app.get("/auth/schwab/connect", async (c) => {
+  const rateLimitResponse = await checkBrowserAuthRateLimit(c);
+  if (rateLimitResponse) return rateLimitResponse;
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
   const state = await saveState(c.env, "github", { action: "schwab_connect", origin } satisfies GitHubStatePayload);
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);

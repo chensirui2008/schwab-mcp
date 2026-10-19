@@ -24,16 +24,32 @@ const legacyOptions: OAuthProviderOptions<AppEnv> = {
   scopesSupported: [READ_SCOPE],
 };
 
+function mockLimiter(): RateLimit {
+  return {
+    limit() {
+      return Promise.resolve({ success: true });
+    },
+  };
+}
+
 function setup() {
   const appEnv = { ...env } as unknown as AppEnv;
+  appEnv.BROWSER_AUTH_RATE_LIMITER = mockLimiter();
+  appEnv.ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER = mockLimiter();
   const helpers = getOAuthApi(legacyOptions, appEnv);
   appEnv.OAUTH_PROVIDER = helpers;
   return { appEnv, helpers };
 }
 
 async function dispatch(request: Request, appEnv: AppEnv, provider = worker) {
+  let req = request;
+  if (!req.headers.has("CF-Connecting-IP")) {
+    const headers = new Headers(req.headers);
+    headers.set("CF-Connecting-IP", "192.0.2.10");
+    req = new Request(req, { headers });
+  }
   const ctx = createExecutionContext();
-  const response = await provider.fetch(request, appEnv, ctx);
+  const response = await provider.fetch(req, appEnv, ctx);
   await waitOnExecutionContext(ctx);
   return response;
 }

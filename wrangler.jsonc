@@ -50,6 +50,24 @@
       }
     ]
   },
+  "ratelimits": [
+    {
+      "name": "BROWSER_AUTH_RATE_LIMITER",
+      "namespace_id": "2026101901",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    },
+    {
+      "name": "ACCEPTANCE_BROWSER_AUTH_RATE_LIMITER",
+      "namespace_id": "2026101902",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    }
+  ],
   "migrations": [
     {
       "tag": "v1",
