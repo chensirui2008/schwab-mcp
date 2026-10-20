@@ -185,6 +185,7 @@ function browserError(code: ErrorCode, message: string, status: number, requestI
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
   });
   if (status === 429) headers.set("Retry-After", "60");
   return Response.json({ error: { code, message, requestId } }, { status, headers });
@@ -338,6 +339,7 @@ app.use("*", async (c, next) => {
     c.header("X-Frame-Options", "DENY");
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
+    c.header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
   }
 });
 

@@ -44,6 +44,7 @@ const DASHBOARD_STYLES = `
   --radius-full: 9999px;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.6), 0 2px 8px -1px rgba(0, 0, 0, 0.4);
+  accent-color: var(--primary);
 }
 
 * {
@@ -119,6 +120,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 [hidden] {
   display: none !important;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):user-invalid,
+select:user-invalid {
+  border-color: var(--error) !important;
+  background-color: rgba(255, 180, 171, 0.08) !important;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):user-valid:focus,
+select:user-valid:focus {
+  border-color: var(--line-focus);
 }
 
 h1, h2, h3, p {
@@ -836,11 +848,41 @@ dialog {
   max-width: 480px;
   width: 90vw;
   box-shadow: 0 0 32px rgba(0, 0, 0, 0.8), 0 0 16px rgba(78, 222, 163, 0.2);
+  opacity: 0;
+  transform: scale(0.96);
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 0.2s;
+  transition-timing-function: ease-out;
+  transition-behavior: allow-discrete;
+}
+
+dialog[open] {
+  opacity: 1;
+  transform: scale(1);
+
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.96);
+  }
 }
 
 dialog::backdrop {
+  background: rgba(6, 10, 16, 0);
+  backdrop-filter: blur(0px);
+  transition-property: background, backdrop-filter, display, overlay;
+  transition-duration: 0.2s;
+  transition-timing-function: ease-out;
+  transition-behavior: allow-discrete;
+}
+
+dialog[open]::backdrop {
   background: rgba(6, 10, 16, 0.85);
   backdrop-filter: blur(4px);
+
+  @starting-style {
+    background: rgba(6, 10, 16, 0);
+    backdrop-filter: blur(0px);
+  }
 }
 
 dialog h2 {
@@ -1131,6 +1173,11 @@ dialog .actions {
   * {
     animation: none !important;
     transition: none !important;
+  }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
   }
 }
 `;
@@ -1707,6 +1754,19 @@ function cancelCeremony() { pending = null; dialog.close(); message('已取消 P
 $('ceremony-cancel').addEventListener('click',() => { if (!busy) cancelCeremony(); });
 dialog.addEventListener('cancel',event => { event.preventDefault(); if (!busy) cancelCeremony(); });
 dialog.addEventListener('close',() => { if (returnFocus?.isConnected) returnFocus.focus(); });
+if (!('closedBy' in dialog)) {
+  dialog.addEventListener('click', event => {
+    if (event.target !== dialog || !dialog.getBoundingClientRect) return;
+    const rect = dialog.getBoundingClientRect();
+    const isInside = (
+      rect.top <= event.clientY &&
+      event.clientY <= rect.top + rect.height &&
+      rect.left <= event.clientX &&
+      event.clientX <= rect.left + rect.width
+    );
+    if (!isInside && !busy) cancelCeremony();
+  });
+}
 $('add-passkey-form').addEventListener('submit',event => {
   event.preventDefault();
   run(async () => {
@@ -1841,11 +1901,18 @@ $('audit-prev-btn').addEventListener('click',() => run(async () => { auditOffset
 $('audit-next-btn').addEventListener('click',() => run(async () => { if (auditOffset + auditLimit < auditTotal) { auditOffset += auditLimit; await loadAudit(); } }));
 const tabs = [...document.querySelectorAll('[role="tab"]')];
 function selectTab(tab) {
-  tabs.forEach(item => {
-    const selected = item === tab;
-    item.setAttribute('aria-selected',String(selected)); item.tabIndex = selected ? 0 : -1;
-    $(item.getAttribute('aria-controls')).hidden = !selected;
-  });
+  const apply = () => {
+    tabs.forEach(item => {
+      const selected = item === tab;
+      item.setAttribute('aria-selected',String(selected)); item.tabIndex = selected ? 0 : -1;
+      $(item.getAttribute('aria-controls')).hidden = !selected;
+    });
+  };
+  if (document.startViewTransition && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    document.startViewTransition(apply);
+  } else {
+    apply();
+  }
 }
 tabs.forEach((tab,index) => {
   tab.addEventListener('click',() => selectTab(tab));
@@ -2205,7 +2272,7 @@ ${raw(BACKGROUND_SVG)}
     </div>
   </footer>
 </div>
-<dialog id="passkey-dialog" aria-labelledby="ceremony-title" aria-describedby="ceremony-description ceremony-state">
+<dialog id="passkey-dialog" closedby="any" aria-labelledby="ceremony-title" aria-describedby="ceremony-description ceremony-state">
   <h2 id="ceremony-title">${d.dialogTitle}</h2><p id="ceremony-description"></p><p id="ceremony-state" role="status" aria-live="polite"></p>
   <div class="actions"><button id="ceremony-cancel" class="button" data-action type="button">${d.dialogCancel}</button><button id="ceremony-submit" class="button primary" data-action type="button">${d.dialogConfirm}</button></div>
 </dialog>
