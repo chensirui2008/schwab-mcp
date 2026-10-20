@@ -1752,14 +1752,7 @@ $('ceremony-submit').addEventListener('click', () => run(async () => {
   try {
     const response = await ceremony(current.challenge);
     $('ceremony-state').textContent = '正在校验签名并提交，请勿重复操作…';
-    try {
-      await current.verify(response);
-    } catch (verifyErr) {
-      if (response?.id && typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
-        try { await PublicKeyCredential.signalUnknownCredential({ rpId: location.hostname, credentialId: response.id }); } catch {}
-      }
-      throw verifyErr;
-    }
+    await current.verify(response);
     if (!pending) {
       dialog.close();
       await refreshAll();

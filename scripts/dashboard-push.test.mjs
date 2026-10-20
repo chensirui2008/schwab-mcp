@@ -14,7 +14,7 @@ const startup = 'run(async () => { await refreshAll(); await loadHighlightedNoti
 assert.ok(script.includes(startup));
 const isolatedScript = script.replace(startup, 'globalThis.loadPushSettings = loadPushSettings;');
 
-function setup({ permission = 'default', active = false, subscribed = false, permissionApi = true } = {}) {
+function setup({ permission = 'default', active = false, subscribed = false, permissionApi = true, scriptSuffix = '' } = {}) {
   const elements = new Map();
   function element() {
     return { dataset: {}, value: '', textContent: '', events: {}, children: [], addEventListener(type, handler) { this.events[type] = handler; }, setAttribute() {}, append(...children) { this.children.push(...children); this.lastChild = children.at(-1); }, replaceChildren(...children) { this.children = children; } };
@@ -48,9 +48,29 @@ function setup({ permission = 'default', active = false, subscribed = false, per
       return { ok: true, status: 200, json: async () => data };
     },
   };
-  runInNewContext(isolatedScript, context);
+  runInNewContext(isolatedScript.replace('globalThis.loadPushSettings = loadPushSettings;', 'globalThis.loadPushSettings = loadPushSettings;' + scriptSuffix), context);
   return { context, get, state, timers, notification, permissionStatus, window, document, calls };
 }
+
+test('dashboard verification failure preserves the passkey and reports uncertain completion', async () => {
+  for (const registration of [false, true]) {
+    const ui = setup({ scriptSuffix: `pending = {
+      challenge: {registration: ${registration}},
+      deadline: Date.now() + 60000,
+      verify: async () => { throw new Error('service unavailable'); }
+    }; ceremony = async () => ({id: 'valid-passkey'});` });
+    let deleted = false;
+    ui.context.PublicKeyCredential = { signalUnknownCredential: async () => { deleted = true; } };
+    ui.context.location = { hostname: 'localhost' };
+    let closed = false;
+    ui.get('passkey-dialog').close = () => { closed = true; };
+    await ui.get('ceremony-submit').events.click();
+    assert.equal(deleted, false, 'failed verification must not delete a valid passkey');
+    assert.equal(closed, true);
+    assert.match(ui.get('global-msg').textContent, /service unavailable.*请刷新核对服务器状态/);
+    assert.equal(ui.get('ceremony-submit').disabled, false);
+  }
+});
 
 test('allowed browser permission is distinct from an active push subscription', async () => {
   const ui = setup({ permission: 'granted' });

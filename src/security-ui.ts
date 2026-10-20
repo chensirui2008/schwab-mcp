@@ -65,15 +65,7 @@ async function act(operation, target) {
     const name = document.querySelector('#credential-name')?.value || 'Passkey';
     const v = await api('options', {operation,target,name,proposalId:data.proposalId,resetConfirmation:document.querySelector('#reset-confirmation')?.value});
     const response = await ceremony(v);
-    let result;
-    try {
-      result = await api('verify', {challengeId:v.challengeId,response});
-    } catch (verifyErr) {
-      if (response?.id && typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
-        try { await PublicKeyCredential.signalUnknownCredential({ rpId: location.hostname, credentialId: response.id }); } catch {}
-      }
-      throw verifyErr;
-    }
+    const result = await api('verify', {challengeId:v.challengeId,response});
     if (result.redirectTo) { location.assign(result.redirectTo); return; }
     if (result.recovered) { location.assign('/security'); return; }
     if (result.registrationTicket) {
@@ -106,14 +98,7 @@ document.querySelector('#register-add')?.addEventListener('click', async e => {
   try {
     const v = await api('add-options', {ticket:e.currentTarget.dataset.ticket,name:document.querySelector('#credential-name')?.value || 'Passkey'});
     const response = await ceremony(v);
-    try {
-      await api('add-verify', {challengeId:v.challengeId,response});
-    } catch (verifyErr) {
-      if (response?.id && typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
-        try { await PublicKeyCredential.signalUnknownCredential({ rpId: location.hostname, credentialId: response.id }); } catch {}
-      }
-      throw verifyErr;
-    }
+    await api('add-verify', {challengeId:v.challengeId,response});
     location.reload();
   } catch(e) { if (status) status.textContent = e.message; } finally {busy = false;}
 });

@@ -1,5 +1,12 @@
 # Advanced Security 验证与发布前验收
 
+## 2026-10-20 验证失败时保留 Passkey
+
+- 仪表盘和安全页不再因 `verify` / `add-verify` 的异常调用 `signalUnknownCredential`；网络中断或服务端错误不能证明凭据不存在，也不能据此通知认证器删除凭据。
+- 保留原有错误提示和操作解锁逻辑。仪表盘仍提示核对服务器状态，避免提交结果不确定时盲目重试。
+- 回归命令：`node --test scripts/passkey-acceptance.test.mjs scripts/dashboard-push.test.mjs`。覆盖管理、添加凭据及仪表盘验证失败路径；安全页额外覆盖网络失败、服务端错误及恢复后的重试。
+- 此回归执行实际渲染出的客户端脚本，使用模拟认证器和请求；不代表 Safari / 手机真实 Passkey 或生产端到端验收。
+
 PR #4 原始记录对应当时的本地实现；以下原始自动化结果保留为历史证据。2026-10-16 的部署复核和真实 Safari 验收见下一节。本轮未部署、未更改生产总开关及 bindings，未提交任何真实 Schwab 交易。
 
 

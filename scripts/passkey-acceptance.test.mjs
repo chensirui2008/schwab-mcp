@@ -37,6 +37,46 @@ test('unsupported browser disables every operation', () => {
   assert.match(status.textContent, /不支持 WebAuthn/);
   assert.equal(buttons[0].disabled, true);
 });
+
+test('verification failures preserve passkeys and allow retry on management and registration paths', async () => {
+  for (const registration of [false, true]) {
+    for (const offline of [false, true]) {
+      const status = { textContent: '' };
+      const button = { disabled: false, dataset: { ticket: 'ticket' }, addEventListener(_type, handler) { this.click = handler; } };
+      let deleted = false;
+      let failed = true;
+      let reloads = 0;
+      const key = { signalUnknownCredential: async () => { deleted = true; } };
+      const context = {
+        document: {
+          querySelectorAll: selector => selector === 'button' ? [button] : [],
+          querySelector: selector => ({ '#status': status, '#register-add': button, 'meta[name="csrf"]': { content: 'test' }, '#page-data': { textContent: '{}' } })[selector],
+        },
+        window: { PublicKeyCredential: key }, PublicKeyCredential: key,
+        navigator: { credentials: {} },
+        location: { hostname: 'localhost', reload() { reloads++; } },
+        fetch: async path => {
+          if (path.endsWith('verify') && failed) {
+            if (offline) throw new Error('offline');
+            return { ok: false, json: async () => ({ error: { message: 'service unavailable' } }) };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+      };
+      runInNewContext(script, context);
+      runInNewContext('ceremony = async () => ({id: "valid-passkey"})', context);
+      const invoke = () => registration ? button.click({ currentTarget: button }) : runInNewContext('act("rename", "last")', context);
+      await invoke();
+      assert.equal(deleted, false, 'a verification error must not delete the authenticator credential');
+      assert.equal(status.textContent, offline ? 'offline' : 'service unavailable');
+      assert.equal(reloads, 0);
+      assert.equal(button.disabled, false);
+      failed = false;
+      await invoke();
+      assert.equal(reloads, 1, 'the same credential can be retried');
+    }
+  }
+});
 test('approval redirects only completed results and preserves errors', async () => {
   for (const result of [
     { status: 'EXECUTED' }, { result: { status: 'ACTIVE' } }, { status: 'ACTIVE' },
