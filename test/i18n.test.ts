@@ -6,6 +6,7 @@ import {
   getDictionary,
   getRequestLang,
   getSecurityClientI18n,
+  LANG_DROPDOWN_SCRIPT,
   renderLangDropdown,
   resolveLang,
 } from "../src/i18n";
@@ -166,6 +167,9 @@ describe("i18n dictionaries and helpers", () => {
     const secClientEn = getSecurityClientI18n("en-US");
     expect(Object.keys(secClientEn).length).toBeGreaterThan(10);
     expect(secClientEn.orderApprovalTitle).toBe("Order Passkey Hardware Approval");
+
+    expect(LANG_DROPDOWN_SCRIPT).toContain("lang-dropdown");
+    expect(LANG_DROPDOWN_SCRIPT).toContain("Escape");
   });
 });
 

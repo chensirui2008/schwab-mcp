@@ -1,5 +1,5 @@
 import { html, raw } from "hono/html";
-import { getDictionary, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
+import { getDictionary, LANG_DROPDOWN_SCRIPT, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
 
 export const FAVICON_LINK = raw('<link rel="icon" type="image/svg+xml" href="/favicon.svg">');
 export const PWA_HEAD_TAGS = raw(`
@@ -126,6 +126,13 @@ export const COMMON_STYLES = `
     --code-border: #1e2d42;
     --code-text: #7bd0ff;
     --radius: 8px;
+    accent-color: var(--brand-emerald);
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):user-invalid,
+  select:user-invalid {
+    border-color: var(--brand-rose) !important;
+    background-color: rgba(255, 180, 171, 0.08) !important;
   }
 
   * {
@@ -813,7 +820,7 @@ export function renderAuthorizePage(props: AuthorizePageProps) {
       <span>${t.footerBrand}</span>
     </div>
   </div>
-  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
+  ${raw(LANG_DROPDOWN_SCRIPT)}
 </body>
 </html>`;
 }
@@ -908,7 +915,7 @@ function renderCompletionPage(passkey: boolean, langCandidate?: SupportedLang): 
       <span>${t.completionFooter}</span>
     </div>
   </div>
-  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
+  ${raw(LANG_DROPDOWN_SCRIPT)}
 </body>
 </html>`;
 }

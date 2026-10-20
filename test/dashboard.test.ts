@@ -134,6 +134,7 @@ async function login(appEnv: AppEnv) {
   expect(page.headers.get("X-Frame-Options")).toBe("DENY");
   expect(page.headers.get("X-Content-Type-Options")).toBe("nosniff");
   expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
+  expect(page.headers.get("Permissions-Policy")).toBe("camera=(), microphone=(), geolocation=(), payment=()");
   const html = await page.text();
   expect(html).toContain('name="session-expires" content="');
   const csrf = html.match(/name="csrf" content="([^"]+)"/)?.[1] ?? "";

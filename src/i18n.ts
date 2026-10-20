@@ -1182,3 +1182,8 @@ export function renderLangSwitcher(currentLang: SupportedLang): string {
   return renderLangDropdown(currentLang);
 }
 
+/**
+ * Shared client script for closing language dropdowns on outside click or Escape key.
+ */
+export const LANG_DROPDOWN_SCRIPT = `<script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});document.addEventListener('keydown',e=>{if(e.key==='Escape'){const d=document.querySelector('.lang-dropdown[open]');if(d){d.removeAttribute('open');d.querySelector('summary')?.focus();}}});</script>`;
+
