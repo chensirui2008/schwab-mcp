@@ -2,7 +2,7 @@ import { html, raw } from "hono/html";
 import type { BrowserSession, ClientAuthorizationStatus } from "./security-store";
 import type { PermissionLevel } from "./oauth-access";
 import { BACKGROUND_SVG, BRAND_LOGO_SVG, COMMON_STYLES, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
-import { formatString, getDictionary, getSecurityClientI18n, type I18nDictionary, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
+import { formatString, getDictionary, getSecurityClientI18n, type I18nDictionary, LANG_DROPDOWN_SCRIPT, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
 
 // Native WebAuthn only; no framework, CDN or browser bearer token.
 const SCRIPT = `
@@ -19,14 +19,29 @@ async function api(path, body) {
   return v;
 }
 async function ceremony(v) {
-  const o = v.options;
-  o.challenge = dec(o.challenge);
+  let o;
   if (v.registration) {
-    o.user.id = dec(o.user.id);
-    o.excludeCredentials = (o.excludeCredentials || []).map(c => ({...c,id:dec(c.id)}));
-  } else o.allowCredentials = (o.allowCredentials || []).map(c => ({...c,id:dec(c.id)}));
+    if (typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.parseCreationOptionsFromJSON === 'function') {
+      try { o = PublicKeyCredential.parseCreationOptionsFromJSON(v.options); } catch {}
+    }
+    if (!o) {
+      o = {...v.options, challenge: dec(v.options.challenge), user: {...v.options.user, id: dec(v.options.user.id)}};
+      o.excludeCredentials = (v.options.excludeCredentials || []).map(c => ({...c, id: dec(c.id)}));
+    }
+  } else {
+    if (typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.parseRequestOptionsFromJSON === 'function') {
+      try { o = PublicKeyCredential.parseRequestOptionsFromJSON(v.options); } catch {}
+    }
+    if (!o) {
+      o = {...v.options, challenge: dec(v.options.challenge)};
+      o.allowCredentials = (v.options.allowCredentials || []).map(c => ({...c, id: dec(c.id)}));
+    }
+  }
   const c = await navigator.credentials[v.registration ? 'create' : 'get']({publicKey:o});
   if (!c) throw new Error(t('scriptCancelledOrTimeout', '验证已取消，订单保持未批准。'));
+  if (typeof c.toJSON === 'function') {
+    return c.toJSON();
+  }
   const response = {clientDataJSON:enc(c.response.clientDataJSON)};
   if (v.registration) {
     response.attestationObject = enc(c.response.attestationObject);
@@ -36,7 +51,8 @@ async function ceremony(v) {
     response.signature = enc(c.response.signature);
     if (c.response.userHandle) response.userHandle = enc(c.response.userHandle);
   }
-  return {id:c.id,rawId:enc(c.rawId),type:c.type,response,clientExtensionResults:c.getClientExtensionResults(),authenticatorAttachment:c.authenticatorAttachment};
+  const ext = c.getClientExtensionResults ? c.getClientExtensionResults() : {};
+  return {id:c.id,rawId:enc(c.rawId),type:c.type,response,clientExtensionResults:ext,authenticatorAttachment:c.authenticatorAttachment};
 }
 let busy = false;
 async function act(operation, target) {
@@ -49,7 +65,15 @@ async function act(operation, target) {
     const name = document.querySelector('#credential-name')?.value || 'Passkey';
     const v = await api('options', {operation,target,name,proposalId:data.proposalId,resetConfirmation:document.querySelector('#reset-confirmation')?.value});
     const response = await ceremony(v);
-    const result = await api('verify', {challengeId:v.challengeId,response});
+    let result;
+    try {
+      result = await api('verify', {challengeId:v.challengeId,response});
+    } catch (verifyErr) {
+      if (response?.id && typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
+        try { await PublicKeyCredential.signalUnknownCredential({ rpId: location.hostname, credentialId: response.id }); } catch {}
+      }
+      throw verifyErr;
+    }
     if (result.redirectTo) { location.assign(result.redirectTo); return; }
     if (result.recovered) { location.assign('/security'); return; }
     if (result.registrationTicket) {
@@ -82,7 +106,14 @@ document.querySelector('#register-add')?.addEventListener('click', async e => {
   try {
     const v = await api('add-options', {ticket:e.currentTarget.dataset.ticket,name:document.querySelector('#credential-name')?.value || 'Passkey'});
     const response = await ceremony(v);
-    await api('add-verify', {challengeId:v.challengeId,response});
+    try {
+      await api('add-verify', {challengeId:v.challengeId,response});
+    } catch (verifyErr) {
+      if (response?.id && typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
+        try { await PublicKeyCredential.signalUnknownCredential({ rpId: location.hostname, credentialId: response.id }); } catch {}
+      }
+      throw verifyErr;
+    }
     location.reload();
   } catch(e) { if (status) status.textContent = e.message; } finally {busy = false;}
 });
@@ -873,7 +904,7 @@ const i18n = ${raw(JSON.stringify(getSecurityClientI18n(lang)))};
 ${raw(SCRIPT)}
     </script>
   </main>
-  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
+  ${raw(LANG_DROPDOWN_SCRIPT)}
   ${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;
@@ -1021,7 +1052,7 @@ const i18n = ${raw(JSON.stringify(getSecurityClientI18n(lang)))};
 ${raw(SCRIPT)}
     </script>
   </main>
-  <script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
+  ${raw(LANG_DROPDOWN_SCRIPT)}
   ${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;

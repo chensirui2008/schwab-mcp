@@ -1,7 +1,7 @@
 import { html, raw } from "hono/html";
 import type { BrowserSession } from "./security-store";
 import { BACKGROUND_SVG, BRAND_LOGO_SVG, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
-import { formatString, getDashboardClientI18n, getDictionary, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
+import { formatString, getDashboardClientI18n, getDictionary, LANG_DROPDOWN_SCRIPT, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
 
 export interface DashboardPageProps {
   session: BrowserSession;
@@ -1695,14 +1695,30 @@ const dec = value => {
   return Uint8Array.from(atob(normalized + '='.repeat((4 - normalized.length % 4) % 4)),char => char.charCodeAt(0));
 };
 async function ceremony(challenge) {
-  const options = {...challenge.options,challenge:dec(challenge.options.challenge)};
+  let options;
   if (challenge.registration) {
-    options.user = {...options.user,id:dec(options.user.id)};
-    options.excludeCredentials = (options.excludeCredentials || []).map(value => ({...value,id:dec(value.id)}));
-  } else options.allowCredentials = (options.allowCredentials || []).map(value => ({...value,id:dec(value.id)}));
+    if (typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.parseCreationOptionsFromJSON === 'function') {
+      try { options = PublicKeyCredential.parseCreationOptionsFromJSON(challenge.options); } catch {}
+    }
+    if (!options) {
+      options = {...challenge.options,challenge:dec(challenge.options.challenge),user:{...challenge.options.user,id:dec(challenge.options.user.id)}};
+      options.excludeCredentials = (challenge.options.excludeCredentials || []).map(value => ({...value,id:dec(value.id)}));
+    }
+  } else {
+    if (typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.parseRequestOptionsFromJSON === 'function') {
+      try { options = PublicKeyCredential.parseRequestOptionsFromJSON(challenge.options); } catch {}
+    }
+    if (!options) {
+      options = {...challenge.options,challenge:dec(challenge.options.challenge)};
+      options.allowCredentials = (challenge.options.allowCredentials || []).map(value => ({...value,id:dec(value.id)}));
+    }
+  }
   // This call runs synchronously from the dedicated dialog button, before any network await.
   const credential = await navigator.credentials[challenge.registration ? 'create' : 'get']({publicKey:options});
   if (!credential) throw new DOMException('Passkey 操作已取消。','NotAllowedError');
+  if (typeof credential.toJSON === 'function') {
+    return credential.toJSON();
+  }
   const response = {clientDataJSON:enc(credential.response.clientDataJSON)};
   if (challenge.registration) {
     response.attestationObject = enc(credential.response.attestationObject);
@@ -1736,7 +1752,14 @@ $('ceremony-submit').addEventListener('click', () => run(async () => {
   try {
     const response = await ceremony(current.challenge);
     $('ceremony-state').textContent = '正在校验签名并提交，请勿重复操作…';
-    await current.verify(response);
+    try {
+      await current.verify(response);
+    } catch (verifyErr) {
+      if (response?.id && typeof PublicKeyCredential !== 'undefined' && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
+        try { await PublicKeyCredential.signalUnknownCredential({ rpId: location.hostname, credentialId: response.id }); } catch {}
+      }
+      throw verifyErr;
+    }
     if (!pending) {
       dialog.close();
       await refreshAll();
@@ -2280,7 +2303,7 @@ ${raw(BACKGROUND_SVG)}
 globalThis.__I18N__ = ${raw(JSON.stringify(getDashboardClientI18n(lang)))};
 ${raw(DASHBOARD_SCRIPT)}
 </script>
-<script>document.addEventListener('click',e=>{if(!e.target.closest('.lang-dropdown'))document.querySelectorAll('.lang-dropdown[open]').forEach(d=>d.removeAttribute('open'));});</script>
+${raw(LANG_DROPDOWN_SCRIPT)}
 ${PWA_SERVICE_WORKER_SCRIPT}
 </body>
 </html>`;
