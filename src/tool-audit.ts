@@ -14,6 +14,7 @@ const TOOL_NAMES: Readonly<Record<string, true>> = {
   place_order_direct: true, cancel_order: true, list_delayed_trades: true, cancel_delayed_trade: true,
 };
 const PUBLIC_ERROR_CODES: Readonly<Record<ErrorCode, true>> = {
+  ACCOUNT_ACCESS_DENIED: true,
   SECURITY_VERIFICATION_FAILED: true, SECURITY_POLICY_CHANGED: true, BROWSER_AUTH_REQUIRED: true,
   AUTH_REQUIRED: true, REAUTHORIZATION_REQUIRED: true, INVALID_ARGUMENT: true, RATE_LIMITED: true,
   SCHWAB_REJECTED: true, UPSTREAM_UNAVAILABLE: true, CONFIRMATION_INVALID: true,

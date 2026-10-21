@@ -147,12 +147,20 @@ Available to all authenticated clients. Schwab queries use HTTP `GET`; deploymen
 | `get_market_hours` | Market trading schedules | `markets` (`equity`, `option`, `bond`, etc.), `date` (`YYYY-MM-DD`) |
 | `get_movers` | Market gainers/losers/actives | `index` (`$DJI`, `$COMPX`, `$SPX`), `sort`, `frequency` |
 | `search_instruments` | Search tickers or fundamental definitions | `symbol`, `projection` |
-| `list_accounts` | List account hash identifiers (real numbers stripped) | None |
+| `list_accounts` | List authorized account hashes (real numbers stripped) | None |
 | `get_account` | Balances and positions for an account hash | `accountHash`, `includePositions` |
-| `get_orders` | Execution history across accounts | `fromEnteredTime`, `toEnteredTime` (ISO-8601), `status` |
+| `get_orders` | Execution history across authorized accounts | `fromEnteredTime`, `toEnteredTime` (ISO-8601), `status` |
 | `get_order` | Execution details for a specific order | `accountHash`, `orderId` |
 | `get_transactions` | Account cash flow and trade transactions | `accountHash`, `startDate`, `endDate` (`YYYY-MM-DD`), `types`, `symbol` |
-| `get_user_preferences` | User profile context and trade permissions | None |
+| `get_user_preferences` | Sanitized preferences for authorized accounts | None |
+
+### Per-client account consent
+
+After GitHub owner verification, select one or more linked accounts to expose to this MCP client, or leave every account unchecked for market data only. The browser shows masked account numbers and hashes; previous selections are preselected on reauthorization. Newly linked Schwab accounts are never added automatically. If Schwab is disconnected, connect it and restart MCP authorization to select accounts; an empty selection remains available.
+
+The Durable Object enforces each client's account allowlist for balances, positions, orders, transactions and trading, including guessed hashes and frozen proposals. `list_accounts` returns only authorized hashes. `get_orders` queries authorized accounts individually, sorts results by entered time descending and applies a global `maxResults`. `get_user_preferences` returns only selected-account hashes, primary-account flags and account types; streamer and unrelated fields are excluded. Unselected account access returns `ACCOUNT_ACCESS_DENIED`. Empty scopes return empty account/order/preference lists without fetching private data; market queries still require an active Schwab connection.
+
+Reauthorization revokes the client's old grants before committing the new account scope. Removing an account pauses that client's active delayed tasks for the account as `PAUSED`; records remain available for that client to inspect and cancel. Existing tasks without explicit account consent are also paused during migration. Adding an account back never resumes paused tasks automatically: create and approve a new task. Other account data stays inaccessible. No new bindings or secrets are required. Real browser/account selection and real-device Passkey checks remain manual acceptance before release; automated tests use simulated Schwab responses only.
 
 ### Trading Control Tools (10 Tools)
 
@@ -176,7 +184,7 @@ Available to all authenticated clients. Schwab queries use HTTP `GET`; deploymen
 
 ## Advanced Security: optional Passkey approval
 
-Choose **Full access** and check **Advanced Security** on the OAuth consent page. New clients default to off; reauthorization preselects the last saved choice. This setting applies to each client independently: other full-access clients that leave it off retain ordinary confirmation and session direct trading. Existing grants without the new fields remain ordinary; `AUTHORIZATION_VERSION` stays unchanged.
+Choose **Full access** and check **Advanced Security** on the OAuth consent page. New clients default to off; reauthorization preselects the last saved choice. This setting applies to each client independently: other full-access clients that leave it off retain ordinary confirmation and session direct trading. The account-consent upgrade below requires all older grants to reconnect; grants issued under the current policy retain their security mode.
 
 After GitHub numeric owner verification, enabling requires registration of the first Passkey, or verification with an existing owner Passkey. Disabling also requires an existing Passkey. All old grants must be successfully revoked before the new client policy and grant are issued. Policy versions prevent stale tokens from writing under an old policy.
 
@@ -306,7 +314,7 @@ npm run deploy
 ```
 
 > [!NOTE]
-> MCP authorization uses `AUTHORIZATION_VERSION = "client-permissions-v1"`. Updating this version invalidates active grants, requiring clients to re-authenticate and pick permissions. Schwab account bindings and pending delayed trades remain intact.
+> MCP authorization uses `AUTHORIZATION_VERSION = "client-accounts-v2"`. Older access tokens, refresh tokens and unexchanged codes are invalid. Reconnect each client, verify the GitHub owner, then select accounts. Schwab credentials remain connected. Older tasks without explicit account consent are retained as `PAUSED`.
 
 The S256 PKCE update keeps this authorization version unchanged: existing valid access and refresh tokens retain their permissions, including grants issued without PKCE. Authorization codes issued before this update must restart authorization; pending consent or GitHub callback flows without valid S256 parameters are also rejected. Reauthorizing the same client still revokes its previous grants before issuing a replacement.
 

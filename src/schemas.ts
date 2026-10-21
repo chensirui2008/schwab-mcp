@@ -147,6 +147,6 @@ export const toolSchemas = {
     userInstruction: z.string().trim().min(1).max(4000),
   }).strict(),
   cancelOrder: z.object({ accountHash, orderId: z.number().int().positive(), userInstruction: z.string().trim().min(1).max(4000) }),
-  listDelayedTrades: z.object({ status: z.enum(["ACTIVE", "EXECUTING", "EXECUTED", "FAILED", "EXECUTION_UNCERTAIN", "CANCELLED", "EXPIRED"]).optional() }),
+  listDelayedTrades: z.object({ status: z.enum(["ACTIVE", "PAUSED", "EXECUTING", "EXECUTED", "FAILED", "EXECUTION_UNCERTAIN", "CANCELLED", "EXPIRED"]).optional() }),
   cancelDelayedTrade: z.object({ taskId: uuid, userInstruction: z.string().trim().min(1).max(4000) }),
 } as const;

@@ -238,6 +238,8 @@ describe("SchwabVault unified alarm recovery", () => {
         "a".repeat(32), JSON.stringify({ type: "TIME", operator: "AFTER", at: new Date(now + 120_000).toISOString() }),
         now + 30_000, now + 60_000, now, now,
       );
+      state.storage.sql.exec("UPDATE delayed_trade SET client_id = 'recovery-client' WHERE id = 'recover-task'");
+      state.storage.sql.exec("INSERT INTO client_accounts (client_id, hashes) VALUES (?, ?)", "recovery-client", JSON.stringify(["a".repeat(32)]));
       await state.storage.deleteAlarm();
     });
     await evictDurableObject(vault);

@@ -89,6 +89,25 @@ function authorizationParams(request: AuthRequest): URLSearchParams {
   });
 }
 
+async function selectAccounts(response: Response, appEnv: AppEnv, hashes: string[] = []) {
+  if (response.status !== 200) return response;
+  const text = await response.clone().text();
+  if (!text.includes('action="/authorize/accounts"')) return response;
+  const state = text.match(/name="state" value="([^"]+)"/)?.[1] ?? "";
+  const cookie = response.headers.get("set-cookie")?.match(/(?:^|, )(__Host-schwab-oauth=[^;,]+)/)?.[1] ?? "";
+  const form = new URLSearchParams({ state });
+  for (const hash of hashes) form.append("accountHash", hash);
+  const selected = await dispatch(new Request(`${origin}/authorize/accounts`, { method: "POST", headers: { Origin: origin, Cookie: cookie }, body: form }), appEnv);
+  if (selected.status !== 200) return selected;
+  const target = (await selected.clone().text()).match(/id="client-continue" href="([^"]+)"/)?.[1]?.replaceAll("&amp;", "&");
+  if (!target) return selected;
+  // Model the browser's document navigation after the same-origin form completes.
+  expect(selected.headers.get("location")).toBeNull();
+  expect(selected.headers.get("Content-Security-Policy")).toContain("form-action 'self'");
+  const headers = new Headers(selected.headers); headers.set("location", target);
+  return new Response(null, { status: 302, headers });
+}
+
 function tokenRequest(values: Record<string, string>) {
   return new Request(`${origin}/oauth/token`, { method: "POST", body: new URLSearchParams(values) });
 }
@@ -125,7 +144,7 @@ function mcpRequest(accessToken: string, method: string, params: unknown = {}) {
 }
 
 function currentProps(appEnv: AppEnv, permissionLevel: PermissionLevel) {
-  return { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" };
+  return { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" };
 }
 
 afterEach(() => {
@@ -353,7 +372,7 @@ describe("S256 PKCE protocol", () => {
         delete request.codeChallenge;
         delete request.codeChallengeMethod;
       }
-      const props = { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, authorizationVersion: AUTHORIZATION_VERSION };
+      const props = { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION };
       const code = await grant(appEnv, request, props);
       const tokens = await exchange(appEnv, request, code, new OAuthProvider(legacyOptions));
       const access = await dispatch(mcpRequest(tokens.access_token, "tools/list"), appEnv);
@@ -379,7 +398,7 @@ describe("S256 PKCE protocol", () => {
       delete request.codeChallenge;
       delete request.codeChallengeMethod;
     }
-    const props = { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel: "full_access", authorizationVersion: AUTHORIZATION_VERSION };
+    const props = { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel: "full_access", allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION };
     const code = await grant(appEnv, request, props);
     const response = await dispatch(tokenRequest({
       grant_type: "authorization_code", client_id: request.clientId, code, redirect_uri: redirectUri, pkceMethod: "S256",
@@ -409,7 +428,7 @@ describe("S256 PKCE protocol", () => {
     const saved = await vaultStub(appEnv).fetch("https://vault/state", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ state, kind, expiresAt: Date.now() + 600_000, payload: {
-        action: "mcp_authorize", origin, authRequest: request, authorizationVersion: AUTHORIZATION_VERSION, permissionLevel: "read_only",
+        action: "mcp_authorize", origin, authRequest: request, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION, permissionLevel: "read_only",
       } }),
     });
     expect(saved.ok).toBe(true);
@@ -450,16 +469,19 @@ describe("browser permission consent", () => {
     return { cookie, state };
   }
 
-  async function authorize(appEnv: AppEnv, request: AuthRequest, permissionLevel: PermissionLevel) {
+  async function authorize(appEnv: AppEnv, request: AuthRequest, permissionLevel: PermissionLevel, hashes: string[] | null = []) {
     const { cookie, state } = await consent(appEnv, request);
     const approved = await dispatch(new Request(`${origin}/authorize/approve`, {
       method: "POST", headers: { Cookie: cookie }, body: new URLSearchParams({ state, permissionLevel }),
     }), appEnv);
     const githubState = (await githubContinueUrl(approved)).searchParams.get("state") ?? "";
     const githubCookie = approved.headers.get("set-cookie")?.split(";")[0] ?? "";
-    vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(Response.json({ access_token: "test-github-token" }))
-      .mockResolvedValueOnce(Response.json({ id: Number(appEnv.ALLOWED_GITHUB_USER_ID), login: "owner", name: null })));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = (input instanceof Request ? input.url : String(input));
+      if (url.includes("github.com/login/oauth/access_token")) return Response.json({ access_token: "test-github-token" });
+      if (url.includes("api.github.com/user")) return Response.json({ id: Number(appEnv.ALLOWED_GITHUB_USER_ID), login: "owner", name: null });
+      return Response.json([{ accountNumber: "123456789", hashValue: "a".repeat(32) }, { accountNumber: "987654321", hashValue: "b".repeat(32) }]);
+    }));
     const callback = await dispatch(new Request(`${origin}/auth/github/callback?state=${githubState}&code=test-code`, {
       headers: { Cookie: githubCookie },
     }), appEnv);
@@ -467,8 +489,55 @@ describe("browser permission consent", () => {
     expect((await dispatch(new Request(`${origin}/authorize/approve`, {
       method: "POST", headers: { Cookie: cookie }, body: new URLSearchParams({ state, permissionLevel: "full_access" }),
     }), appEnv)).status).toBe(400);
-    return callback;
+    return hashes === null ? callback : selectAccounts(callback, appEnv, hashes);
   }
+
+  it("protects account consent with owner state, origin, browser binding, body limit and one-time consumption", async () => {
+    const { appEnv, helpers } = setup();
+    const request = await authRequest(helpers);
+    const page = await authorize(appEnv, request, "read_only", null);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("Cache-Control")).toBe("no-store");
+    expect(page.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+    const html = await page.text();
+    expect(html).not.toContain("123456789");
+    expect(html).toContain("••••6789");
+    const state = html.match(/name="state" value="([^"]+)"/)?.[1] ?? "";
+    const cookie = page.headers.get("set-cookie")?.match(/(?:^|, )(__Host-schwab-oauth=[^;,]+)/)?.[1] ?? "";
+    const post = (body: URLSearchParams, headers: Record<string, string> = {}) => dispatch(new Request(`${origin}/authorize/accounts`, { method: "POST", headers: { Origin: origin, Cookie: cookie, ...headers }, body }), appEnv);
+    expect((await post(new URLSearchParams({ state }), { Origin: "https://evil.example" })).status).toBe(403);
+    expect((await post(new URLSearchParams({ state }), { Cookie: "" })).status).toBe(400);
+    expect((await post(new URLSearchParams({ state, extra: "x".repeat(65536) }))).status).toBe(413);
+    const success = await post(new URLSearchParams({ state }));
+    expect(success.status).toBe(200);
+    expect(await success.text()).toContain('id="client-continue"');
+    expect((await post(new URLSearchParams({ state }))).status).toBe(400);
+  });
+
+  it("persists explicitly selected accounts in the encrypted grant and replaces them on reauthorization", async () => {
+    const { appEnv, helpers } = setup();
+    const request = await authRequest(helpers);
+    const hash = "a".repeat(32);
+    const selected = await authorize(appEnv, request, "read_only", [hash, "b".repeat(32)]);
+    expect(selected.status).toBe(302);
+    const tokens = await exchange(appEnv, request, new URL(selected.headers.get("location") ?? "").searchParams.get("code") ?? "");
+    expect((await helpers.unwrapToken<AuthorizationProps>(tokens.access_token))?.grant.props.allowedAccountHashes).toEqual([hash, "b".repeat(32)]);
+    const replaced = await authorize(appEnv, request, "read_only", []);
+    expect(replaced.status).toBe(302);
+    expect((await dispatch(mcpRequest(tokens.access_token, "tools/list"), appEnv)).status).toBe(401);
+    const renewed = await exchange(appEnv, request, new URL(replaced.headers.get("location") ?? "").searchParams.get("code") ?? "");
+    expect((await helpers.unwrapToken<AuthorizationProps>(renewed.access_token))?.grant.props.allowedAccountHashes).toEqual([]);
+    const accounts = await dispatch(mcpRequest(renewed.access_token, "tools/call", { name: "list_accounts", arguments: {} }), appEnv);
+    expect(await accounts.text()).toContain('"data":[]');
+  });
+
+  it.each([["c".repeat(32)], ["a".repeat(32), "a".repeat(32)]])("rejects unavailable or duplicate account selections without issuing grants: %j", async (...hashes) => {
+    const { appEnv, helpers } = setup();
+    const request = await authRequest(helpers);
+    const complete = vi.spyOn(helpers, "completeAuthorization");
+    expect((await authorize(appEnv, request, "read_only", hashes)).status).toBe(400);
+    expect(complete).not.toHaveBeenCalled();
+  });
 
   it.each(["read_only", "full_access"] as const)("carries %s through owner verification into the grant", async (permissionLevel) => {
     const { appEnv, helpers } = setup();
@@ -484,7 +553,7 @@ describe("browser permission consent", () => {
     const code = new URL(callback.headers.get("location") ?? "").searchParams.get("code") ?? "";
     const tokens = await exchange(appEnv, request, code);
     const decoded = await helpers.unwrapToken<AuthorizationProps>(tokens.access_token);
-    expect(decoded?.grant.props).toMatchObject({ permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" });
+    expect(decoded?.grant.props).toMatchObject({ permissionLevel, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" });
     const refreshed = await dispatch(tokenRequest({
       grant_type: "refresh_token", client_id: clientId, refresh_token: tokens.refresh_token,
     }), appEnv);
@@ -662,10 +731,13 @@ describe("Advanced Security OAuth and browser boundaries", () => {
   async function callback(appEnv: AppEnv, selected: Response) {
     const location = await githubContinueUrl(selected);
     const state = location.searchParams.get("state") ?? "";
-    vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(Response.json({ access_token: "github-security-test" }))
-      .mockResolvedValueOnce(Response.json({ id: Number(appEnv.ALLOWED_GITHUB_USER_ID), login: "owner", name: null })));
-    return dispatch(new Request(`${origin}/auth/github/callback?state=${state}&code=test-code`, { headers: { Cookie: cookie(selected, "__Host-schwab-oauth") } }), appEnv);
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = (input instanceof Request ? input.url : String(input));
+      if (url.includes("github.com/login/oauth/access_token")) return Response.json({ access_token: "test-github-token" });
+      if (url.includes("api.github.com/user")) return Response.json({ id: Number(appEnv.ALLOWED_GITHUB_USER_ID), login: "owner", name: null });
+      return Response.json([{ accountNumber: "123456789", hashValue: "a".repeat(32) }, { accountNumber: "987654321", hashValue: "b".repeat(32) }]);
+    }));
+    return selectAccounts(await dispatch(new Request(`${origin}/auth/github/callback?state=${state}&code=test-code`, { headers: { Cookie: cookie(selected, "__Host-schwab-oauth") } }), appEnv), appEnv);
   }
   async function browser(appEnv: AppEnv, securityCookie: string) {
     const page = await dispatch(new Request(`${origin}/security`, { headers: { Cookie: securityCookie } }), appEnv);
@@ -779,7 +851,7 @@ describe("Advanced Security OAuth and browser boundaries", () => {
     const code = new URL(completed.redirectTo).searchParams.get("code") ?? "";
     const tokens = await exchange(appEnv, request, code);
     const props = (await helpers.unwrapToken<AuthorizationProps>(tokens.access_token))?.grant.props;
-    expect(props).toMatchObject({ advancedSecurity: true, clientId: request.clientId, securityPolicyVersion: 1, authorizationVersion: AUTHORIZATION_VERSION });
+    expect(props).toMatchObject({ advancedSecurity: true, clientId: request.clientId, securityPolicyVersion: 1, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION });
     const list = await (await dispatch(mcpRequest(tokens.access_token, "tools/list"), appEnv)).text();
     expect(list).toContain('"name":"get_trade_proposal"');
     for (const name of ["confirm_trade", "enable_session_direct_trading", "place_order_direct"]) {

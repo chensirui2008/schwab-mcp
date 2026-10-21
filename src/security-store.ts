@@ -6,6 +6,7 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON, WebAuthnCred
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { AppEnv } from "./env";
 import type { PermissionLevel } from "./oauth-access";
+import { accountSelectionSchema } from "./account-access";
 import { AUTHORIZATION_VERSION } from "./oauth-access";
 import { canonicalJson, randomToken, sha256 } from "./trading";
 import { authenticationResponseSchema, registrationResponseSchema } from "./security-validation";
@@ -29,6 +30,7 @@ export interface PendingAuthorization {
   advancedSecurity: boolean;
   username: string;
   policyVersion: number;
+  allowedAccountHashes?: string[] | undefined;
 }
 export type ClientAuthorizationStatus =
   | "PENDING"
@@ -95,7 +97,7 @@ interface Challenge {
   authorizationDigest?: string;
 }
 export class SecurityError extends Error {
-  constructor(public code: "SECURITY_VERIFICATION_FAILED" | "SECURITY_POLICY_CHANGED" | "BROWSER_AUTH_REQUIRED" = "SECURITY_VERIFICATION_FAILED") {
+  constructor(public code: "SECURITY_VERIFICATION_FAILED" | "SECURITY_POLICY_CHANGED" | "BROWSER_AUTH_REQUIRED" | "ACCOUNT_ACCESS_DENIED" = "SECURITY_VERIFICATION_FAILED") {
     super(code);
   }
 }
@@ -143,6 +145,7 @@ export class SecurityStore {
           AND json_extract(payload, '$.status') = 'FINISHING'
           AND json_extract(payload, '$.finishingId') IS NOT NULL;
     `);
+    storage.sql.exec("CREATE TABLE IF NOT EXISTS client_accounts (client_id TEXT PRIMARY KEY, hashes TEXT NOT NULL)");
     const clientColumns = new Set(storage.sql.exec<{ name: string }>("PRAGMA table_info(client_security)").toArray().map(row => row.name));
     for (const [name, definition] of Object.entries({
       // Legacy policies had no permission authority. Seed their permission once
@@ -160,6 +163,32 @@ export class SecurityStore {
         policy_version: "INTEGER NOT NULL DEFAULT 0",
       })) if (!columns.has(name)) storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
+    storage.sql.exec(`UPDATE delayed_trade SET status = 'PAUSED', updated_at = ?
+      WHERE status = 'ACTIVE' AND NOT EXISTS (
+        SELECT 1 FROM client_accounts, json_each(client_accounts.hashes)
+        WHERE client_accounts.client_id = delayed_trade.client_id AND json_each.value = delayed_trade.account_hash
+      )`, Date.now());
+  }
+  accounts(clientId: string): string[] {
+    const row = this.storage.sql.exec<{ hashes: string }>("SELECT hashes FROM client_accounts WHERE client_id = ?", clientId).toArray()[0];
+    return row ? accountSelectionSchema.parse(JSON.parse(row.hashes) as unknown) : [];
+  }
+  setAccounts(clientId: string, hashes: string[]): void {
+    const selected = accountSelectionSchema.parse(hashes);
+    this.storage.sql.exec("INSERT INTO client_accounts (client_id, hashes) VALUES (?, ?) ON CONFLICT(client_id) DO UPDATE SET hashes = excluded.hashes", clientId, JSON.stringify(selected));
+    this.storage.sql.exec(
+      "UPDATE delayed_trade SET status = 'PAUSED', updated_at = ? WHERE client_id = ? AND status = 'ACTIVE' AND account_hash NOT IN (SELECT value FROM json_each(?))",
+      Date.now(), clientId, JSON.stringify(selected),
+    );
+  }
+  assertAccount(clientId: string, hash: string): void {
+    if (!this.accounts(clientId).includes(hash)) throw new SecurityError("ACCOUNT_ACCESS_DENIED");
+  }
+  assertReadIdentity(identity: ClientIdentity): void {
+    const row = this.storage.sql.exec<{ permission_initialized: number }>("SELECT permission_initialized FROM client_security WHERE client_id = ?", identity.clientId).toArray()[0];
+    if (row?.permission_initialized !== 1) throw new SecurityError("SECURITY_POLICY_CHANGED");
+    const policy = this.policy(identity.clientId);
+    if (policy.revoked || policy.version !== identity.securityPolicyVersion || policy.advancedSecurity !== identity.advancedSecurity) throw new SecurityError("SECURITY_POLICY_CHANGED");
   }
   version(): number { return this.storage.sql.exec<{ version: number }>("SELECT version FROM owner_security WHERE id = 1").one().version; }
   policy(clientId: string): ClientPolicy {
@@ -526,6 +555,7 @@ export class SecurityStore {
       permissionLevel: intent.permissionLevel,
       advancedSecurity: intent.advancedSecurity,
       policyVersion: intent.policyVersion,
+      allowedAccountHashes: intent.allowedAccountHashes ?? [],
       redirectUri: intent.authRequest.redirectUri,
       codeChallenge: intent.authRequest.codeChallenge ?? null,
       origin,
@@ -826,6 +856,7 @@ export class SecurityStore {
       }
 
       const updatedPolicy = this.updatePolicy(clientId, { permissionLevel, advancedSecurity }, expectedVersion);
+      this.setAccounts(clientId, auth.intent.allowedAccountHashes ?? []);
       auth.committedPolicyVersion = updatedPolicy.version;
 
       const otherRows = this.storage.sql.exec<{ state: string; payload: string }>(

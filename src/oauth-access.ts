@@ -1,12 +1,13 @@
 import { GrantType, OAuthError } from "@cloudflare/workers-oauth-provider";
 import type { AppEnv } from "./env";
 import { vaultStub } from "./env";
+import { accountSelectionSchema } from "./account-access";
 import type { ClientPolicy } from "./security-store";
 
 export const READ_SCOPE = "schwab.read";
 
 // Bump only when all MCP clients must complete fresh browser consent.
-export const AUTHORIZATION_VERSION = "client-permissions-v1";
+export const AUTHORIZATION_VERSION = "client-accounts-v2";
 
 export type PermissionLevel = "read_only" | "full_access";
 
@@ -17,6 +18,7 @@ export interface AuthorizationProps {
   authorizationVersion: typeof AUTHORIZATION_VERSION;
   // Optional for existing access/refresh tokens; required for new code exchanges.
   pkceMethod?: "S256";
+  allowedAccountHashes: string[];
   clientId?: string;
   advancedSecurity?: boolean;
   securityPolicyVersion?: number;
@@ -32,6 +34,7 @@ export function isCurrentAuthorization(value: unknown): value is AuthorizationPr
   const advancedSecurity: unknown = Reflect.get(value, "advancedSecurity");
   const version: unknown = Reflect.get(value, "securityPolicyVersion");
   return Reflect.get(value, "authorizationVersion") === AUTHORIZATION_VERSION &&
+    accountSelectionSchema.safeParse(Reflect.get(value, "allowedAccountHashes")).success &&
     isPermissionLevel(Reflect.get(value, "permissionLevel")) &&
     typeof Reflect.get(value, "userId") === "string" &&
     typeof Reflect.get(value, "username") === "string" &&

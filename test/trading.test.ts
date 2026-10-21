@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppEnv } from "../src/env";
 
@@ -19,6 +19,7 @@ function requestUrl(input: RequestInfo | URL | undefined): string {
 async function authorizeClient(vault: DurableObjectStub): Promise<void> {
   const response = await vault.fetch("https://vault/client/policy?clientId=test-legacy&ensure=true&permissionLevel=full_access&advancedSecurity=false&version=0");
   expect(response.status).toBe(200);
+  await runInDurableObject(vault, (_instance, state) => { state.storage.sql.exec("INSERT OR REPLACE INTO client_accounts (client_id, hashes) VALUES (?, ?)", "test-legacy", JSON.stringify(["a".repeat(32)])); });
 }
 
 async function saveToken(vault: DurableObjectStub): Promise<void> {

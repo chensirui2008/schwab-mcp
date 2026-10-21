@@ -15,13 +15,14 @@ const input = {
   userInstruction: "Buy one AAPL share",
 };
 const plain: ClientIdentity = { clientId: "plain", advancedSecurity: false, securityPolicyVersion: 0 };
-const pending: PendingAuthorization = { authRequest: { clientId: "enhanced", redirectUri: "https://client.example/callback", responseType: "code", scope: ["schwab.read"], state: "test", codeChallenge: "a".repeat(43), codeChallengeMethod: "S256" }, permissionLevel: "full_access", advancedSecurity: true, username: "owner", policyVersion: 0 };
+const pending: PendingAuthorization = { authRequest: { clientId: "enhanced", redirectUri: "https://client.example/callback", responseType: "code", scope: ["schwab.read"], state: "test", codeChallenge: "a".repeat(43), codeChallengeMethod: "S256" }, permissionLevel: "full_access", advancedSecurity: true, username: "owner", policyVersion: 0, allowedAccountHashes: [input.accountHash] };
 async function setup() {
   const appEnv = env as unknown as AppEnv;
   const vault = appEnv.SCHWAB_VAULT.get(appEnv.SCHWAB_VAULT.idFromName(crypto.randomUUID()));
   const post = (path: string, data: unknown) => vault.fetch(`https://vault${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
   const ordinaryPolicy = await vault.fetch("https://vault/client/policy?clientId=plain&ensure=true&permissionLevel=full_access&advancedSecurity=false&version=0");
   expect(ordinaryPolicy.status).toBe(200);
+  await runInDurableObject(vault, (_instance, state) => { state.storage.sql.exec("INSERT OR REPLACE INTO client_accounts (client_id, hashes) VALUES (?, ?)", "plain", JSON.stringify([input.accountHash])); });
   const beginRes = await post("/security/authorization/begin", { intent: pending, clientName: "enhanced", currentAdvanced: false });
   const begin = await beginRes.json<{ sessionId: string; authorizationId: string }>();
   const sessionRes = await post("/security/session", { sessionId: begin.sessionId });
