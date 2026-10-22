@@ -908,7 +908,8 @@ function renderCompletionPage(passkey: boolean, langCandidate?: SupportedLang): 
     </div>
 
     <div class="action-form">
-      <button type="button" class="pill-btn" onclick="window.close()">
+      ${passkey ? `<a class="pill-btn" href="/dashboard">${c.backToDashboard}</a>` : ""}
+      <button type="button" class="pill-btn${passkey ? " secondary" : ""}"${passkey ? ' style="margin-top:12px"' : ""} onclick="window.close()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="20 6 9 17 4 12"/>
         </svg>
