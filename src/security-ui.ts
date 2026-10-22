@@ -92,6 +92,21 @@ async function act(operation, target) {
 }
 
 document.querySelectorAll('[data-operation]').forEach(b => b.addEventListener('click', () => act(b.dataset.operation, b.dataset.target)));
+document.querySelector('#reject-order')?.addEventListener('click', async () => {
+  if (busy) return;
+  busy = true;
+  const enabledButtons = [...document.querySelectorAll('button')].filter(b => !b.disabled);
+  enabledButtons.forEach(b => b.disabled = true);
+  try {
+    const result = await api('reject-proposal', {proposalId:data.proposalId});
+    location.assign(result.redirectTo);
+  } catch(e) {
+    if (status) status.textContent = e.message;
+  } finally {
+    busy = false;
+    enabledButtons.forEach(b => b.disabled = false);
+  }
+});
 document.querySelector('#register-add')?.addEventListener('click', async e => {
   if (busy) return;
   busy = true;
@@ -200,7 +215,7 @@ if (data && data.authorizationId) {
 
 if (!window.PublicKeyCredential || !navigator.credentials) {
   if (status) status.textContent = t('scriptUnsupported', '此浏览器不支持 WebAuthn。请在支持 Passkey 的外部浏览器中打开；操作保持未批准。');
-  document.querySelectorAll('button').forEach(b => b.disabled = true);
+  document.querySelectorAll('button').forEach(b => { if (b.id !== 'reject-order') b.disabled = true; });
 }
 `;
 const FINGERPRINT_ICON_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 0-8.5 15.3"/><path d="M20.5 17.3A10 10 0 0 0 12 2"/><path d="M12 6a6 6 0 0 0-6 6c0 3.3 1.7 6.2 4.3 7.8"/><path d="M14 19.8A6 6 0 0 0 18 12a6 6 0 0 0-3-5.2"/><path d="M12 10a2 2 0 0 0-2 2c0 2 1 3.5 2 4.5"/></svg>`;
@@ -215,6 +230,14 @@ const INFO_ICON_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="non
 
 const SECURITY_STYLES = `
 ${COMMON_STYLES}
+
+#reject-order {
+  margin-top: 8px;
+  background: #be123c;
+  border-color: #fb7185;
+  color: #fff;
+}
+#reject-order:hover { background: #9f1239; }
 
 main {
   position: relative;
@@ -742,6 +765,7 @@ export function renderSecurityPage(
                   ${raw(FINGERPRINT_ICON_SVG)}
                   <span>${s.invokeHardwareBtn}</span>
                 </button>
+                <button id="reject-order" class="pill-btn full-width">${s.rejectOrderBtn}</button>
               </div>
               <div class="action-hint">${s.approveHint}</div>
             ` : html`

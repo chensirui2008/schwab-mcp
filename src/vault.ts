@@ -671,6 +671,21 @@ export class SchwabVault extends DurableObject<AppEnv> {
       if (!proposal || proposal.approval_method !== "passkey") throw new SecurityError();
       return jsonResponse(this.proposalView(proposal));
     }
+    if (path === "/security/reject-proposal") {
+      const raw = z.object({ ...browser, proposalId: id }).strict().parse(input);
+      this.security.dashboardSession(raw.sessionId, raw.csrf);
+      const proposal = this.proposal(raw.proposalId);
+      if (!proposal || proposal.approval_method !== "passkey") throw new SecurityError();
+      if (proposal.status !== "CANCELLED") {
+        const cancelled = this.ctx.storage.sql.exec<{ id: string }>(
+          "UPDATE trade_proposal SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
+          Date.now(), proposal.id,
+        ).toArray()[0];
+        if (!cancelled) throw new SecurityError();
+        this.audit("passkey_trade_rejected", proposal.id, crypto.randomUUID(), "CANCELLED", proposal.intent_digest);
+      }
+      return jsonResponse({ status: "CANCELLED", redirectTo: "/dashboard" });
+    }
     if (path === "/security/options") {
       const raw = z.object({ ...browser, operation: z.enum(["register", "recover", "add", "delete", "rename", "approve"]), target: id.optional(), name: z.string().min(1).max(80).optional(), resetConfirmation: z.string().optional(), proposalId: id.optional() }).strict().parse(input);
       const binding = raw.operation === "approve" ? this.approvalBinding(raw.proposalId ?? "") : undefined;
