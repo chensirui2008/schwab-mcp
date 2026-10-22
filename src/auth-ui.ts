@@ -941,6 +941,8 @@ export function renderAccountSelectionPage(props: {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Keep Origin on native same-origin form POSTs; suppress cross-origin referrers. -->
+  <meta name="referrer" content="same-origin">
   ${FAVICON_LINK}
   <title>${zh ? "选择授权账户" : "Select accounts"}</title>
   <style>${COMMON_STYLES}</style>
