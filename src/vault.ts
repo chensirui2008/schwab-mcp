@@ -1,3 +1,5 @@
+import { redact } from "./redaction";
+import { accountChoices, linkedAccounts, orderEnteredTime, scopedPreferences } from "./account-access";
 import { DurableObject } from "cloudflare:workers";
 import type { AppEnv } from "./env";
 import { tradingEnabled } from "./env";
@@ -59,6 +61,7 @@ interface ProposalRow {
 }
 
 interface DelayedTradeRow {
+  client_id: string | null;
   [key: string]: string | number | null;
   id: string;
   version: number;
@@ -291,7 +294,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
     catch (error) {
       const requestId = crypto.randomUUID();
-      if (error instanceof SecurityError) return publicError({ code: error.code, message: "Security policy changed or verification failed", requestId }, 403);
+      if (error instanceof SecurityError) return publicError({ code: error.code, message: error.code === "ACCOUNT_ACCESS_DENIED" ? "Account access is not authorized for this client" : "Security policy changed or verification failed", requestId }, 403);
       if (error instanceof NotificationError) {
         const status = error.status ?? (
           error.code === "RATE_LIMITED" ? 429
@@ -331,10 +334,25 @@ export class SchwabVault extends DurableObject<AppEnv> {
         const raw: unknown = await request.clone().json();
         const identity = this.identity(raw && typeof raw === "object" ? field(raw, "identity") : undefined);
         this.security.assertIdentity(identity);
+        const input = raw && typeof raw === "object" ? field(raw, "input") : undefined;
+        if (input && typeof input === "object") {
+          const hash = field(input, "accountHash");
+          if (typeof hash === "string") this.security.assertAccount(identity.clientId, hash);
+          for (const key of ["proposalId", "taskId", "replacesTaskId"]) {
+            const entityId = field(input, key);
+            if (typeof entityId !== "string") continue;
+            const table = key === "proposalId" ? "trade_proposal" : "delayed_trade";
+            const entity = this.ctx.storage.sql.exec<{ account_hash: string; client_id: string | null }>(`SELECT account_hash, client_id FROM ${table} WHERE id = ?`, entityId).toArray()[0];
+            if (entity) {
+              const ownPausedTask = key === "taskId" && ["/trade/cancel-delayed", "/trade/list-delayed"].includes(url.pathname) && entity.client_id === identity.clientId;
+              if (!ownPausedTask) this.security.assertAccount(identity.clientId, entity.account_hash);
+            }
+          }
+        }
         if (identity.advancedSecurity && ["/trade/confirm", "/trade/session/enable", "/trade/place-direct"].includes(url.pathname)) throw new SecurityError();
       } catch (error) {
         const code = error instanceof SecurityError ? error.code : "SECURITY_VERIFICATION_FAILED";
-        return publicError({ code, message: "Client trading policy is invalid; reconnect if changed", requestId: crypto.randomUUID() }, 403);
+        return publicError({ code, message: code === "ACCOUNT_ACCESS_DENIED" ? "Account access is not authorized for this client" : "Client trading policy is invalid; reconnect if changed", requestId: crypto.randomUUID() }, 403);
       }
     }
     if (request.method === "POST" && url.pathname === "/trade/proposal") {
@@ -492,6 +510,24 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const input = await readBoundedJson(request);
     const id = z.string().min(1).max(2048);
     const browser = { sessionId: id, csrf: id };
+    if (path === "/security/account-policy") {
+      const raw = z.object({ sessionId: id, clientId: clientIdSchema }).strict().parse(input);
+      const session = this.security.session(raw.sessionId);
+      if (session.recovery || session.pendingAuthorizationId) throw new SecurityError();
+      return jsonResponse({ hashes: this.security.accounts(raw.clientId) });
+    }
+    if (path === "/security/accounts") {
+      const raw = z.object({ sessionId: id }).strict().parse(input);
+      const session = this.security.session(raw.sessionId);
+      if (session.recovery || session.pendingAuthorizationId) throw new SecurityError();
+      const response = await this.requestSchwab({ base: "trader", path: "/accounts/accountNumbers", requestId: crypto.randomUUID(), tool: "browser_account_selection" }, "GET", undefined, undefined, accountChoices);
+      const envelope = await response.json<{ result?: unknown; error?: PublicError }>();
+      if (!response.ok) {
+        if (envelope.error?.code === "AUTH_REQUIRED" || envelope.error?.code === "REAUTHORIZATION_REQUIRED") return jsonResponse({ accounts: [], connected: false });
+        return jsonResponse(envelope, response.status);
+      }
+      return jsonResponse({ accounts: envelope.result, connected: true });
+    }
     if (path === "/security/policy") {
       const raw = z.object({ clientId: clientIdSchema }).strict().parse(input);
       return jsonResponse(this.security.policy(raw.clientId));
@@ -540,6 +576,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
           clientId: auth.intent.authRequest.clientId,
           permissionLevel: auth.intent.permissionLevel,
           advancedSecurity: auth.intent.advancedSecurity,
+          allowedAccountHashes: auth.intent.allowedAccountHashes ?? [],
           redirectUri: auth.intent.authRequest.redirectUri,
           status: auth.status,
           createdAt: auth.createdAt,
@@ -1366,6 +1403,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const confirmationText = `确认交易 ${proposalId.slice(0, 8)} ${intentDigest.slice(0, 12)}`;
     const expiresAt = now + CONFIRMATION_TTL_MS;
     this.security.assertIdentity(identity);
+    this.security.assertAccount(identity.clientId, input.accountHash);
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
         `INSERT INTO trade_proposal
@@ -1457,6 +1495,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
   }
 
   private async activateDelayedTrade(proposal: ProposalRow, requestId: string): Promise<Response> {
+    this.security.assertAccount(proposal.client_id ?? "", proposal.account_hash);
     if (proposal.condition_json === null || proposal.valid_until === null) {
       return publicError({ code: "TRADE_STATE_CONFLICT", message: "Delayed proposal is incomplete", requestId }, 409);
     }
@@ -1577,14 +1616,14 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const instructionDigest = await sha256(parsed.data.userInstruction);
     this.security.assertIdentity(this.identity(field(raw as object, "identity")));
     const cancelled = this.ctx.storage.sql.exec<{ id: string }>(
-      "UPDATE delayed_trade SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'ACTIVE' RETURNING id",
+      "UPDATE delayed_trade SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status IN ('ACTIVE', 'PAUSED') RETURNING id",
       Date.now(),
       parsed.data.taskId,
     ).toArray()[0];
     if (!cancelled) {
       const exists = this.ctx.storage.sql.exec<{ status: string }>("SELECT status FROM delayed_trade WHERE id = ?", parsed.data.taskId).toArray()[0];
       return exists
-        ? publicError({ code: "TRADE_STATE_CONFLICT", message: "Only an active delayed trade can be cancelled", requestId }, 409)
+        ? publicError({ code: "TRADE_STATE_CONFLICT", message: "Only an active or paused delayed trade can be cancelled", requestId }, 409)
         : publicError({ code: "TRADE_NOT_FOUND", message: "Delayed trade was not found", requestId }, 404);
     }
     this.audit("delayed_trade_cancelled", parsed.data.taskId, requestId, "CANCELLED", undefined, instructionDigest);
@@ -1597,10 +1636,13 @@ export class SchwabVault extends DurableObject<AppEnv> {
     const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
     const parsed = toolSchemas.listDelayedTrades.safeParse(raw !== null && typeof raw === "object" ? field(raw, "input") : undefined);
     if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid delayed-trade query", requestId }, 400);
-    this.security.assertIdentity(this.identity(field(raw as object, "identity")));
+    const identity = this.identity(field(raw as object, "identity"));
+    this.security.assertIdentity(identity);
+    const scope = "(account_hash IN (SELECT value FROM json_each(?)) OR (status = 'PAUSED' AND client_id = ?))";
+    const bindings = [JSON.stringify(this.security.accounts(identity.clientId)), identity.clientId];
     const rows = parsed.data.status === undefined
-      ? this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade ORDER BY updated_at DESC LIMIT 100").toArray()
-      : this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade WHERE status = ? ORDER BY updated_at DESC LIMIT 100", parsed.data.status).toArray();
+      ? this.ctx.storage.sql.exec<DelayedTradeRow>(`SELECT * FROM delayed_trade WHERE ${scope} ORDER BY updated_at DESC LIMIT 100`, ...bindings).toArray()
+      : this.ctx.storage.sql.exec<DelayedTradeRow>(`SELECT * FROM delayed_trade WHERE ${scope} AND status = ? ORDER BY updated_at DESC LIMIT 100`, ...bindings, parsed.data.status).toArray();
     return jsonResponse({
       result: rows.map((row) => ({
         taskId: row.id,
@@ -1819,8 +1861,15 @@ export class SchwabVault extends DurableObject<AppEnv> {
     }
   }
 
+  private taskAccountAllowed(task: DelayedTradeRow): boolean {
+    if (task.client_id && this.security.accounts(task.client_id).includes(task.account_hash) && !this.security.policy(task.client_id).revoked) return true;
+    this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = 'PAUSED', updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Date.now(), task.id);
+    return false;
+  }
+
   private async processDelayedTrade(task: DelayedTradeRow): Promise<void> {
     const requestId = crypto.randomUUID();
+    if (!this.taskAccountAllowed(task)) return;
     let condition: TradeCondition;
     try {
       const parsed = tradeConditionSchema.safeParse(JSON.parse(task.condition_json) as unknown);
@@ -1868,7 +1917,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
       this.ctx.storage.sql.exec("UPDATE delayed_trade SET next_check_at = ?, outcome_json = NULL, updated_at = ? WHERE id = ? AND status = 'ACTIVE'", Math.min(Date.now() + task.poll_interval_seconds * 1000, task.valid_until), Date.now(), task.id);
       return;
     }
-    if (!tradingEnabled(this.env)) return;
+    if (!tradingEnabled(this.env) || !this.taskAccountAllowed(task)) return;
     const executionNow = Date.now();
     const claimed = this.ctx.storage.sql.exec<{ id: string }>(
       "UPDATE delayed_trade SET status = 'EXECUTING', execution_request_id = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE' AND valid_until > ? RETURNING id",
@@ -1882,18 +1931,18 @@ export class SchwabVault extends DurableObject<AppEnv> {
       return;
     }
     this.audit("delayed_trade_execution_started", task.id, requestId, "EXECUTING", task.intent_digest);
-    const response = await this.executeMutation(task.action, task.account_hash, task.order_id, JSON.parse(task.order_json) as { [key: string]: JsonValue }, requestId, "delayed_trade_execute");
+    const response = await this.executeMutation(task.action, task.account_hash, task.order_id, JSON.parse(task.order_json) as { [key: string]: JsonValue }, requestId, "delayed_trade_execute", { clientId: task.client_id ?? "", advancedSecurity: this.security.policy(task.client_id ?? "").advancedSecurity, securityPolicyVersion: this.security.policy(task.client_id ?? "").version });
     const payload: unknown = await response.json();
     const error = payload !== null && typeof payload === "object" ? field(payload, "error") : undefined;
     const errorCode = error !== null && typeof error === "object" ? field(error, "code") : undefined;
-    const status = response.ok ? "EXECUTED" : errorCode === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : "FAILED";
+    const status = response.ok ? "EXECUTED" : errorCode === "EXECUTION_UNCERTAIN" ? "EXECUTION_UNCERTAIN" : errorCode === "ACCOUNT_ACCESS_DENIED" || errorCode === "SECURITY_POLICY_CHANGED" ? "PAUSED" : "FAILED";
     this.ctx.storage.sql.exec("UPDATE delayed_trade SET status = ?, outcome_json = ?, updated_at = ? WHERE id = ? AND status = 'EXECUTING'", status, JSON.stringify(payload), Date.now(), task.id);
     this.audit("delayed_trade_execution_finished", task.id, requestId, status, task.intent_digest);
     const delayedSummary = status === "EXECUTED"
       ? "延迟交易条件已触发并被 Schwab 接受"
       : status === "EXECUTION_UNCERTAIN"
       ? "延迟交易条件触发后执行不确定，请先查询状态"
-      : "延迟交易执行失败";
+      : status === "PAUSED" ? "延迟任务因账户授权或策略变更已暂停" : "延迟交易执行失败";
     this.notifications.recordEvent({
       dedupeKey: `delayed_trade:${task.id}:${String(task.version)}:${status}`,
       type: "TRADE_RESULT",
@@ -1995,7 +2044,50 @@ export class SchwabVault extends DurableObject<AppEnv> {
     if (!isVaultRequest(input)) {
       return publicError({ code: "INVALID_ARGUMENT", message: "Invalid Schwab request", requestId: crypto.randomUUID() }, 400);
     }
-    return this.requestSchwab(input);
+    if (input.base === "market") return this.requestSchwab(input);
+    const identity = this.identity(input.identity);
+    this.security.assertReadIdentity(identity);
+    const allowed = this.security.accounts(identity.clientId);
+    if (input.path === "/accounts/accountNumbers") {
+      if (!allowed.length) return jsonResponse({ result: [] });
+      const response = await this.requestSchwab(input, "GET", undefined, identity, accountChoices);
+      if (!response.ok) return response;
+      const envelope = await response.json<{ result: { hashValue: string }[]; refreshExpiresAt?: number }>();
+      const choices = envelope.result;
+      this.security.assertReadIdentity(identity);
+      return jsonResponse({ ...envelope, result: choices.filter(account => this.security.accounts(identity.clientId).includes(account.hashValue)).map(({ hashValue }) => ({ hashValue })) });
+    }
+    if (input.path === "/orders") {
+      const orders: unknown[] = [];
+      let refreshExpiresAt: number | undefined;
+      for (const hash of allowed) {
+        const response = await this.requestSchwab({ ...input, path: `/accounts/${hash}/orders` }, "GET", undefined, identity, value => {
+          if (!Array.isArray(value)) throw new Error("Invalid account orders response");
+          const orders: unknown[] = value;
+          for (const order of orders) orderEnteredTime(order);
+          return orders;
+        });
+        if (!response.ok) return response;
+        const envelope = await response.json<{ result: unknown; refreshExpiresAt?: number }>();
+        if (!Array.isArray(envelope.result)) throw new Error("Invalid account orders response");
+        orders.push(...(envelope.result as unknown[]));
+        refreshExpiresAt = envelope.refreshExpiresAt;
+      }
+      this.security.assertReadIdentity(identity);
+      orders.sort((a, b) => orderEnteredTime(b) - orderEnteredTime(a));
+      const limit = input.query?.maxResults ? Number(input.query.maxResults) : orders.length;
+      return jsonResponse({ result: orders.slice(0, limit), ...(refreshExpiresAt === undefined ? {} : { refreshExpiresAt }) });
+    }
+    if (input.path === "/userPreference") {
+      if (!allowed.length) return jsonResponse({ result: { accounts: [] } });
+      let accounts: ReturnType<typeof linkedAccounts> = [];
+      const linked = await this.requestSchwab({ ...input, path: "/accounts/accountNumbers", query: {} }, "GET", undefined, identity, value => { accounts = linkedAccounts(value); return null; });
+      if (!linked.ok) return linked;
+      return this.requestSchwab(input, "GET", undefined, identity, value => scopedPreferences(value, accounts, this.security.accounts(identity.clientId)));
+    }
+    if (!/^\/accounts\/[A-Za-z0-9_-]+(?:\/orders(?:\/\d+)?|\/transactions)?$/.test(input.path)) throw new SecurityError("ACCOUNT_ACCESS_DENIED");
+    this.security.assertAccount(identity.clientId, input.path.split("/")[2] ?? "");
+    return this.requestSchwab(input, "GET", undefined, identity);
   }
 
   private async requestSchwab(
@@ -2003,6 +2095,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
     body?: { [key: string]: JsonValue },
     identity?: ClientIdentity,
+    transform?: (value: unknown) => unknown,
   ): Promise<Response> {
     if (!input.path.startsWith("/") || input.path.startsWith("//") || input.path.includes("..")) {
       return publicError({ code: "INVALID_ARGUMENT", message: "Invalid Schwab API path", requestId: input.requestId }, 400);
@@ -2034,8 +2127,13 @@ export class SchwabVault extends DurableObject<AppEnv> {
       // Refresh and upstream retries yield to concurrent dashboard changes.
       // Recheck immediately before every mutation, without another await.
       if (identity) {
-        try { this.security.assertIdentity(identity); }
-        catch { return publicError({ code: "SECURITY_POLICY_CHANGED", message: "Client policy changed before execution", requestId: input.requestId }, 403); }
+        try {
+          if (method === "GET") this.security.assertReadIdentity(identity);
+          else this.security.assertIdentity(identity);
+          const hash = /^\/accounts\/([^/]+)/.exec(input.path)?.[1];
+          if (hash && hash !== "accountNumbers") this.security.assertAccount(identity.clientId, hash);
+        }
+        catch (error) { return publicError({ code: error instanceof SecurityError ? error.code : "SECURITY_POLICY_CHANGED", message: "Client policy changed or account access denied before execution", requestId: input.requestId }, 403); }
       }
 
       const started = Date.now();
@@ -2087,9 +2185,16 @@ export class SchwabVault extends DurableObject<AppEnv> {
         let result: unknown;
         try {
           result = await upstream.json();
+          if (transform) result = transform(result);
+          result = redact(result);
         } catch {
           logEvent("schwab_response_invalid", { requestId: input.requestId, tool: input.tool });
           return publicError({ code: "UPSTREAM_UNAVAILABLE", message: "Schwab returned an invalid response", requestId: input.requestId, attempts }, 502);
+        }
+        if (identity) {
+          this.security.assertReadIdentity(identity);
+          const hash = /^\/accounts\/([^/]+)/.exec(input.path)?.[1];
+          if (hash && hash !== "accountNumbers") this.security.assertAccount(identity.clientId, hash);
         }
         return jsonResponse({ result, attempts, refreshExpiresAt: token.refreshExpiresAt });
       }

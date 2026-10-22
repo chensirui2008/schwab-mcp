@@ -1,4 +1,5 @@
 export type ErrorCode =
+  | "ACCOUNT_ACCESS_DENIED"
   | "SECURITY_VERIFICATION_FAILED"
   | "SECURITY_POLICY_CHANGED"
   | "BROWSER_AUTH_REQUIRED"
@@ -55,6 +56,7 @@ export interface TokenRecord {
 }
 
 export interface VaultRequest {
+  identity?: import("./security-store").ClientIdentity;
   base: "market" | "trader";
   path: string;
   query?: Record<string, string>;

@@ -1298,8 +1298,8 @@ describe("Protected owner email test endpoint", () => {
     const challenge = encodeBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
     const authorization = await appEnv.OAUTH_PROVIDER.completeAuthorization({
       request: { responseType: "code", clientId: client.clientId, redirectUri, scope: [READ_SCOPE], state: "test", codeChallenge: challenge, codeChallengeMethod: "S256" },
-      userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE], metadata: { permissionLevel: "read_only", advancedSecurity: false, authorizationVersion: AUTHORIZATION_VERSION },
-      props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel: "read_only", authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" },
+      userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE], metadata: { permissionLevel: "read_only", advancedSecurity: false, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION },
+      props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel: "read_only", allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" },
     });
     const tokenResponse = await dispatch(new Request(`${origin}/oauth/token`, {
       method: "POST", body: new URLSearchParams({ grant_type: "authorization_code", client_id: client.clientId, code: new URL(authorization.redirectTo).searchParams.get("code") ?? "", redirect_uri: redirectUri, code_verifier: verifier }),
@@ -1441,6 +1441,7 @@ describe("Owner email business producers", () => {
     const vault = env.SCHWAB_VAULT.get(env.SCHWAB_VAULT.newUniqueId());
     const identity = { clientId: "email-trade-client", advancedSecurity: false, securityPolicyVersion: 0 };
     expect((await vault.fetch("https://vault/client/policy?clientId=email-trade-client&ensure=true&permissionLevel=full_access&advancedSecurity=false&version=0")).status).toBe(200);
+    await runInDurableObject(vault, (_instance, state) => { state.storage.sql.exec("INSERT OR REPLACE INTO client_accounts (client_id, hashes) VALUES (?, ?)", "email-trade-client", JSON.stringify(["a".repeat(32)])); });
     await saveEmailToken(vault);
     const binding = emailBinding();
     binding.send.mockRejectedValue({ code: "E_RECIPIENT_NOT_ALLOWED", message: "service refusal" });

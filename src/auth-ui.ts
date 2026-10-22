@@ -36,6 +36,12 @@ export interface AuthorizePageProps {
 
 // Finish the same-origin form navigation before starting GitHub OAuth. A 302
 // directly from the form POST remains subject to the form-action 'self' CSP.
+export function renderClientContinuePage(url: string, langCandidate?: SupportedLang) {
+  const lang = resolveLang(langCandidate);
+  const zh = lang !== "en-US";
+  return html`<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FAVICON_LINK}<title>${zh ? "返回客户端" : "Return to client"}</title><style>${COMMON_STYLES}</style></head><body><main class="main-wrapper"><p class="page-subtitle">${zh ? "账户授权已完成，正在返回客户端。" : "Account authorization complete. Returning to the client."}</p><a class="pill-btn" id="client-continue" href="${url}">${zh ? "继续返回客户端" : "Continue to client"}</a></main><script>location.replace(document.getElementById('client-continue').href);</script></body></html>`;
+}
+
 export function renderGitHubContinuePage(url: string, langCandidate?: SupportedLang) {
   const lang = resolveLang(langCandidate);
   const dict = getDictionary(lang);
@@ -916,6 +922,54 @@ function renderCompletionPage(passkey: boolean, langCandidate?: SupportedLang): 
     </div>
   </div>
   ${raw(LANG_DROPDOWN_SCRIPT)}
+</body>
+</html>`;
+}
+
+export function renderAccountSelectionPage(props: {
+  state: string;
+  clientName: string;
+  accounts: { hashValue: string; label: string }[];
+  selected: string[];
+  connected: boolean;
+  lang?: SupportedLang;
+}) {
+  const lang = resolveLang(props.lang);
+  const zh = lang !== "en-US";
+  return html`<!doctype html>
+<html lang="${lang}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${FAVICON_LINK}
+  <title>${zh ? "选择授权账户" : "Select accounts"}</title>
+  <style>${COMMON_STYLES}</style>
+</head>
+<body>
+  ${raw(BACKGROUND_SVG)}
+  <main class="main-wrapper">
+    <div class="brand-header">${raw(BRAND_LOGO_SVG)}<span class="brand-title">Schwab MCP</span></div>
+    <h1 class="page-title">${zh ? "选择开放的账户" : "Select accounts to share"}</h1>
+    <p class="page-subtitle">${props.clientName}</p>
+    <form class="auth-card" action="/authorize/accounts" method="post" style="width:100%">
+      <input type="hidden" name="state" value="${props.state}">
+      <fieldset class="permission-options">
+        <legend>${zh ? "此客户端可访问的账户" : "Accounts available to this client"}</legend>
+        <p class="policy-desc">${zh ? "可选择多个账户。不选择账户时仅开放行情。新增账户需重新授权。" : "Select any accounts. Leave all unchecked for market data only. New accounts require fresh consent."}</p>
+        ${props.accounts.map(account => html`
+          <label class="permission-option">
+            <input type="checkbox" name="accountHash" value="${account.hashValue}" ${props.selected.includes(account.hashValue) ? "checked" : ""}>
+            <span style="min-width:0;overflow-wrap:anywhere">${account.label}<br><small class="policy-desc">${account.hashValue}</small></span>
+          </label>
+        `)}
+      </fieldset>
+      ${props.connected ? "" : html`
+        <p class="policy-desc">${zh ? "Schwab 尚未连接或需重新连接；当前只能授权行情访问。" : "Reconnect Schwab to select accounts. Market data consent remains available."}</p>
+        <p><a href="/auth/schwab/connect">${zh ? "连接 Schwab（完成后重新发起 MCP 授权）" : "Connect Schwab, then restart MCP authorization"}</a></p>
+      `}
+      <div class="action-form"><button type="submit" class="pill-btn">${zh ? "确认账户并继续授权" : "Confirm accounts and continue"}</button></div>
+    </form>
+  </main>
 </body>
 </html>`;
 }

@@ -141,6 +141,6 @@ export async function acceptanceFetch(request: Request, env: AppEnv, ctx: Execut
   }
   if (url.pathname === ROOT + "/complete") return page(`<pre>${await env.ACCEPTANCE_KV.get("report:" + run) ?? "No report"}</pre><a href="${ROOT}/">返回</a>`);
   // No direct registration, token, MCP or Schwab API proxy is exposed to the test browser.
-  if (!/^\/__test\/(authorize(?:\/approve)?|auth\/github\/callback|security(?:\/api\/(?:options|verify))?)$/.test(url.pathname)) return page("Test route blocked", 403);
+  if (!/^\/__test\/(authorize(?:\/(?:approve|accounts))?|auth\/github\/callback|security(?:\/api\/(?:options|verify))?)$/.test(url.pathname)) return page("Test route blocked", 403);
   return dispatch(request, test, ctx);
 }

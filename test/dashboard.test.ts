@@ -82,8 +82,8 @@ async function authorize(appEnv: AppEnv, permissionLevel: PermissionLevel = "ful
   const codeChallenge = encode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const { redirectTo } = await appEnv.OAUTH_PROVIDER.completeAuthorization({
     request: { responseType: "code", clientId, redirectUri, scope: [READ_SCOPE], state: "dashboard-test", codeChallenge, codeChallengeMethod: "S256" },
-    userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE], metadata: { permissionLevel, advancedSecurity: false, authorizationVersion: AUTHORIZATION_VERSION }, revokeExistingGrants: false,
-    props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" },
+    userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE], metadata: { permissionLevel, advancedSecurity: false, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION }, revokeExistingGrants: false,
+    props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel, allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" },
   });
   const response = await dispatch(tokenRequest({ grant_type: "authorization_code", client_id: clientId, code: new URL(redirectTo).searchParams.get("code") ?? "", redirect_uri: redirectUri, code_verifier: verifier }), appEnv);
   expect(response.status).toBe(200);
@@ -310,7 +310,7 @@ describe("Dashboard client policies and live OAuth enforcement", () => {
   it("still rejects malformed permission metadata on a current grant", async () => {
     const appEnv = setup(); await authorize(appEnv); const ui = await login(appEnv);
     const page = await appEnv.OAUTH_PROVIDER.listUserGrants(appEnv.ALLOWED_GITHUB_USER_ID);
-    vi.spyOn(appEnv.OAUTH_PROVIDER, "listUserGrants").mockResolvedValue({ items: page.items.map(grant => ({ ...grant, metadata: { authorizationVersion: AUTHORIZATION_VERSION } })) });
+    vi.spyOn(appEnv.OAUTH_PROVIDER, "listUserGrants").mockResolvedValue({ items: page.items.map(grant => ({ ...grant, metadata: { allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION } })) });
     for (const path of ["overview", "clients"]) {
       const response = await ui.get(path);
       expect(response.status).toBe(503);
@@ -650,6 +650,7 @@ describe("Dashboard persisted tool invocation audit", () => {
 
   it("audits real get_quotes and list_accounts executions with mocked Schwab, safe parameters, counts and last invocation", async () => {
     const appEnv = setup(); const client = await authorize(appEnv); const ui = await login(appEnv); await connectSchwab(appEnv);
+    await runInDurableObject(vaultStub(appEnv), (_instance, state) => { state.storage.sql.exec("INSERT OR REPLACE INTO client_accounts (client_id, hashes) VALUES (?, ?)", client.clientId, JSON.stringify(["a".repeat(32)])); });
     const upstream = vi.fn((input: RequestInfo | URL) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname.endsWith("/quotes")) return Response.json({ AAPL: { quote: { lastPrice: 123 } } });
@@ -676,6 +677,7 @@ describe("Dashboard persisted tool invocation audit", () => {
 
   it("records invalid-input and upstream errors without leaking arbitrary trade content, secrets or account identifiers", async () => {
     const appEnv = setup(); const client = await authorize(appEnv); const ui = await login(appEnv); await connectSchwab(appEnv);
+    await runInDurableObject(vaultStub(appEnv), (_instance, state) => { state.storage.sql.exec("INSERT OR REPLACE INTO client_accounts (client_id, hashes) VALUES (?, ?)", client.clientId, JSON.stringify(["a".repeat(32)])); });
     const upstream = vi.fn(() => Response.json({ message: "account 123456789 secret-value" }, { status: 403 })); vi.stubGlobal("fetch", upstream);
     const invalid = await tool(appEnv, client.tokens, "get_quotes", { symbols: [], access_token: "secret-value", accountNumber: "123456789" });
     expect(await invalid.text()).toContain("error");

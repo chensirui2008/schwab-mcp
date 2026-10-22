@@ -104,17 +104,22 @@ describe("same-Worker cloud acceptance isolation", () => {
     expect(provider).toBeTruthy();
     const mock = await browserCall(provider ?? "");
     expect(mock.status).toBe(302);
-    const callback = await browserCall(mock.headers.get("Location") ?? "");
-    expect(callback.status).toBe(302);
-    expect(callback.headers.get("Location")).toContain("/__test/client/callback?");
-    const client = await browserCall(callback.headers.get("Location") ?? "");
+    const accountPage = await browserCall(mock.headers.get("Location") ?? "");
+    expect(accountPage.status).toBe(200);
+    const accountState = (await accountPage.text()).match(/name="state" value="([^"]+)"/)?.[1] ?? "";
+    const callback = await browserCall("/__test/authorize/accounts", { method: "POST", headers: { Origin: host }, body: new URLSearchParams({ state: accountState }) });
+    expect(callback.status).toBe(200);
+    expect(callback.headers.get("Location")).toBeNull();
+    const target = (await callback.text()).match(/id="client-continue" href="([^"]+)"/)?.[1]?.replaceAll("&amp;", "&") ?? "";
+    expect(target).toContain("/__test/client/callback?");
+    const client = await browserCall(target);
     expect(client.status).toBe(303);
     const complete = await browserCall(client.headers.get("Location") ?? "");
     expect(complete.status).toBe(200);
     expect(await complete.text()).toContain('"tokenExchange":200,"mcpStatus":200');
-    expect(acceptanceLimit).toHaveBeenCalledTimes(2);
+    expect(acceptanceLimit).toHaveBeenCalledTimes(3);
     expect(acceptanceLimit.mock.calls.map(([input]) => input.key)).toEqual([
-      "schwab-mcp:browser-auth:192.0.2.10", "schwab-mcp:browser-auth:192.0.2.10",
+      "schwab-mcp:browser-auth:192.0.2.10", "schwab-mcp:browser-auth:192.0.2.10", "schwab-mcp:browser-auth:192.0.2.10",
     ]);
     // Exercise the actual isolated DO's notification creation and dispatcher, not a source assertion.
     const run = jar.get("__Host-schwab-test-run");

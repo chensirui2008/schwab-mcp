@@ -901,6 +901,7 @@ export function renderClientAuthorizationPage(
     id: string;
     clientName: string;
     clientId: string;
+    allowedAccountHashes?: string[];
     permissionLevel: PermissionLevel;
     advancedSecurity: boolean;
     redirectUri: string;
@@ -980,6 +981,10 @@ export function renderClientAuthorizationPage(
       <div class="info-row">
         <span class="info-label">${s.redirectUri}</span>
         <span class="info-value mono" style="font-size:11px">${clientAuth.redirectUri}</span>
+      </div>
+      <div class="info-row column">
+        <span class="info-label">${lang === "en-US" ? "Authorized accounts" : "授权账户"}</span>
+        <span class="info-value mono" style="overflow-wrap:anywhere">${(clientAuth.allowedAccountHashes ?? []).join(", ") || (lang === "en-US" ? "Market data only" : "仅行情")}</span>
       </div>
       <div class="info-row">
         <span class="info-label">${c.status}</span>

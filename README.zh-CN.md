@@ -170,6 +170,14 @@ flowchart TD
 ---
 ---
 
+## 每个客户端独立选择账户
+
+完成 GitHub owner 身份验证后，授权页显示账号末四位与账户 hash，可多选或不选。不选时仅开放行情数据；重新授权会预选上次的账户，新连接的 Schwab 账户不会自动授权。Schwab 未连接时可以先授予空账户范围；若要选择账户，先连接 Schwab，再重新发起 MCP 授权。
+
+账户白名单在 Durable Object 服务端强制执行，覆盖余额、持仓、订单、流水、即时交易、冻结提案及延迟任务，猜测未授权 hash 也无法绕过。`list_accounts` 仅返回已授权 hash；`get_orders` 逐个查询已授权账户，按委托时间倒序汇总并应用全局 `maxResults`；`get_user_preferences` 只返回已授权账户的 hash、主账户标志及类型，不返回 streamer 等其他字段。未授权账户请求返回 `ACCOUNT_ACCESS_DENIED`。空账户范围的账户、订单及偏好列表直接返回空，不查询私人数据；行情仍需有效的 Schwab 连接。
+
+升级到 `client-accounts-v2` 后，全部旧 MCP access/refresh token 和未兑换 code 失效，须重新连接并选账户。重新授权先撤销此客户端的全部旧 grant，再提交新账户范围。移除账户后，该客户端在该账户上已激活的延迟任务进入 `PAUSED` 并保留，客户端仍可查看、取消自己暂停的任务，其余账户数据不可访问。缺少显式账户授权的旧任务迁移时亦暂停；再次勾选账户不会自动恢复，必须重新创建并批准任务。Schwab 凭据保留，无新增 binding 或 Secret。自动测试全部模拟 Schwab 请求；真实浏览器账户选择与实体设备 Passkey 仍需发布前人工验收。
+
 ## 工具清单与参数规格
 
 普通完整访问客户端注册 **25 个 MCP 工具**；增强完整访问客户端注册 **22 个**，只读客户端注册 **15 个**，输入约束严格以 `src/schemas.ts` 的 Zod 校验为准。
@@ -189,12 +197,12 @@ flowchart TD
 | `get_market_hours` | 查询指定市场指定日期的交易开放时间 | `markets`: 市场类型数组 (可选 `equity`, `option`, `bond`, `future`, `forex`，1~5 项)；<br>`date`: 可选 `YYYY-MM-DD` 格式。 |
 | `get_movers` | 获取主要指数或市场的涨跌幅榜异动标的 | `index`: `$DJI` \| `$COMPX` \| `$SPX` \| `NYSE` \| `NASDAQ` \| `OTCBB` 等；<br>`sort`: `VOLUME` \| `TRADES` \| `PERCENT_CHANGE_UP` \| `PERCENT_CHANGE_DOWN`；<br>`frequency`: 聚合频率 (`0`, `1`, `5`, `10`, `30`, `60`)。 |
 | `search_instruments` | 模糊搜索标的代码或证券基本面定义 | `symbol`: 标的代码关键字；<br>`projection`: `symbol-search` \| `symbol-regex` \| `desc-search` \| `desc-regex` \| `search` \| `fundamental`。 |
-| `list_accounts` | 获取绑定的账户哈希列表 (自动剔除真实账号) | 无参数。仅返回 Schwab 专用 `hashValue` 列表。 |
+| `list_accounts` | 获取已授权的账户哈希列表 (自动剔除真实账号) | 无参数。仅返回 Schwab 专用 `hashValue` 列表。 |
 | `get_account` | 获取指定哈希账户的实时余额与持仓信息 | `accountHash`: 16~256 字符的账户哈希值；<br>`includePositions`: 可选布尔值，是否包含当前持仓详情。 |
-| `get_orders` | 获取跨关联账户的订单执行记录 | `fromEnteredTime`: ISO-8601 带时区时间戳 (例如 `2026-09-01T00:00:00Z`)；<br>`toEnteredTime`: ISO-8601 带时区时间戳；<br>`maxResults`: 可选整数，最大 3000；<br>`status`: 可选订单状态过滤。 |
+| `get_orders` | 获取已授权账户的订单执行记录 | `fromEnteredTime`: ISO-8601 带时区时间戳 (例如 `2026-09-01T00:00:00Z`)；<br>`toEnteredTime`: ISO-8601 带时区时间戳；<br>`maxResults`: 可选整数，最大 3000；<br>`status`: 可选订单状态过滤。 |
 | `get_order` | 查询单笔订单的最新执行明细 | `accountHash`: 账户哈希；<br>`orderId`: 正整数订单编号。 |
 | `get_transactions` | 查询指定账户的历史资金流水与交割明细 | `accountHash`: 账户哈希；<br>`startDate` / `endDate`: `YYYY-MM-DD` 日期；请求 Schwab 时自动转换为覆盖完整起止日的 UTC ISO-8601 时间范围；<br>`types`: 可选交易类型；<br>`symbol`: 可选标的代码过滤。 |
-| `get_user_preferences` | 获取账户上下文偏好设置与交易权限 | 无参数。 |
+| `get_user_preferences` | 获取已授权账户的脱敏偏好设置 | 无参数。 |
 
 ### 2. 交易控制工具 (10 个)
 
@@ -218,7 +226,7 @@ flowchart TD
 
 ## Advanced Security：可选的 Passkey 订单批准
 
-在 OAuth 授权页选择**完整访问**后，可勾选 **Advanced Security**。新客户端默认关闭，重新授权默认保持该客户端上次保存的选择。设置按客户端生效，其他未开启的完整访问客户端仍沿用普通确认及 session 直下策略。缺少新字段的旧授权保持普通行为，不更新 `AUTHORIZATION_VERSION`。
+在 OAuth 授权页选择**完整访问**后，可勾选 **Advanced Security**。新客户端默认关闭，重新授权默认保持该客户端上次保存的选择。设置按客户端生效，其他未开启的完整访问客户端仍沿用普通确认及 session 直下策略。账户权限升级将要求所有旧授权重新连接；当前政策下的重新授权继续保留此客户端的安全模式。
 
 通过 GitHub numeric owner 校验后，首次开启须注册首个 Passkey；已有凭据时须验证已有 Passkey。关闭也须已有 Passkey 验证。只有成功撤销此客户端全部旧 grant 后，才提交新客户端策略并签发授权；DO 同时核对可信客户端身份和策略版本，阻止旧 token 按旧模式写入。
 
@@ -455,9 +463,9 @@ npm run deploy
 部署完成后，Worker 会生成分配的子域名，例如：
 `https://<your-worker-name>.<your-subdomain>.workers.dev`
 
-**0.2.0 权限政策首次升级与重新授权**：此版本启用 `AUTHORIZATION_VERSION = "client-permissions-v1"`。从此前权限政策升级时，旧政策的 MCP access token、refresh token 和未兑换的 authorization code 都失效：访问 `/mcp` 返回 HTTP 401 `invalid_token`，旧 code 或 refresh token 换票返回 HTTP 400 `invalid_grant`。每个客户端必须重新打开授权页，选择权限并完成 GitHub 身份校验；旧 grant 不会在刷新时自动升级。已注册的客户端可复用原 client ID，无需删除 KV。Schwab 账户绑定、已有延迟交易任务及交易确认规则保持不变，无需重新绑定 Schwab。
+**账户权限政策升级与重新授权**：此版本启用 `AUTHORIZATION_VERSION = "client-accounts-v2"`。从此前权限政策升级时，旧政策的 MCP access token、refresh token 和未兑换的 authorization code 都失效：访问 `/mcp` 返回 HTTP 401 `invalid_token`，旧 code 或 refresh token 换票返回 HTTP 400 `invalid_grant`。每个客户端必须重新打开授权页，选择权限、完成 GitHub 身份校验并选择开放账户；旧 grant 不会在刷新时自动升级。已注册的客户端可复用原 client ID，无需删除 KV。无需重新绑定 Schwab；缺少显式账户授权的旧延迟任务保留并暂停。
 
-**S256 PKCE 更新的兼容策略**：本次不修改 `AUTHORIZATION_VERSION`。当前版本有效的 access token 和 refresh token 继续可用并保留原权限，包括此前未使用 PKCE 的登录；升级前已签发但尚未兑换的 authorization code 返回 HTTP 400 `invalid_grant`，需要重新开始授权。缺少有效 S256 参数的待处理 consent 或 GitHub callback 同样拒绝继续。主动重新授权同一客户端时，仍按原规则先撤销该客户端旧 grant，再签发新授权。
+**此前 S256 PKCE 单独更新的兼容策略（本次账户权限升级会使旧授权失效）**：该次更新不修改 `AUTHORIZATION_VERSION`。当前版本有效的 access token 和 refresh token 继续可用并保留原权限，包括此前未使用 PKCE 的登录；升级前已签发但尚未兑换的 authorization code 返回 HTTP 400 `invalid_grant`，需要重新开始授权。缺少有效 S256 参数的待处理 consent 或 GitHub callback 同样拒绝继续。主动重新授权同一客户端时，仍按原规则先撤销该客户端旧 grant，再签发新授权。
 
 之后需要再次全量过期 MCP 授权时，修改 `src/oauth-access.ts` 中的 `AUTHORIZATION_VERSION` 后部署；普通 `APP_VERSION` 更新不会自动作废当前授权。对同一客户端重新授权以修改权限时，服务先显式撤销该客户端的旧 grant 和 token，全部撤销成功后才签发新授权；其他客户端的授权不受影响。若查询或撤销旧授权失败，返回 HTTP 503 `temporarily_unavailable` 和可关联的 `requestId`，不会签发新授权；权限修改尚未完成，旧授权可能仍有效，需要重新发起授权流程。
 
@@ -525,7 +533,7 @@ https://<your-worker-domain>/mcp
   }
 }
 ```
-首次连接时，客户端会自动打开系统浏览器。请为当前客户端选择**只读**或**完整访问**，然后登录 GitHub 确认拥有者身份。修改某个客户端的权限时，重新发起该客户端的授权流程。
+首次连接时，客户端会自动打开系统浏览器。请为当前客户端选择**只读**或**完整访问**，然后登录 GitHub 确认拥有者身份，并选择允许当前客户端访问的账户（可多选或不选）。修改某个客户端的权限时，重新发起该客户端的授权流程。
 
 ### 2. Cursor / VS Code / Codex 接入
 

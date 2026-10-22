@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { accountSelectionSchema } from "./account-access";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import type { BrowserSession, PendingAuthorization } from "./security-store";
 
@@ -16,6 +17,7 @@ export const pendingAuthorizationSchema = z.object({
     codeChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/), codeChallengeMethod: z.literal("S256"),
     resource: z.union([z.string(), z.array(z.string())]).optional(),
   }),
+  allowedAccountHashes: accountSelectionSchema.optional(),
   permissionLevel: permissionSchema, advancedSecurity: z.boolean(), username: z.string(), policyVersion: versionSchema,
 }).transform(({ authRequest, ...pending }): PendingAuthorization => {
   const { resource, ...request } = authRequest;

@@ -65,6 +65,7 @@ function toolError(error: PublicError, env: AppEnv) {
 
 async function execute(
   env: AppEnv,
+  identity: ClientIdentity,
   tool: string,
   base: VaultRequest["base"],
   path: string,
@@ -77,7 +78,7 @@ async function execute(
     response = await vaultStub(env).fetch("https://vault/request", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ base, path, query, requestId, tool } satisfies VaultRequest),
+      body: JSON.stringify({ base, path, query, requestId, tool, identity } satisfies VaultRequest),
     });
   } catch {
     console.error(JSON.stringify({ event: "schwab_vault_unavailable", requestId, tool }));
@@ -236,7 +237,7 @@ export function createServer(
       const query: Record<string, string> = { symbols: symbols.join(",") };
       optional(query, "fields", fields?.join(","));
       optional(query, "indicative", indicative);
-      return execute(env, "get_quotes", "market", "/quotes", query);
+      return execute(env, identity, "get_quotes", "market", "/quotes", query);
     },
   );
 
@@ -258,7 +259,7 @@ export function createServer(
       optional(query, "endDate", args.endDate);
       optional(query, "needExtendedHoursData", args.needExtendedHoursData);
       optional(query, "needPreviousClose", args.needPreviousClose);
-      return execute(env, "get_price_history", "market", "/pricehistory", query);
+      return execute(env, identity, "get_price_history", "market", "/pricehistory", query);
     },
   );
 
@@ -278,14 +279,14 @@ export function createServer(
       optional(query, "toDate", args.toDate);
       optional(query, "expMonth", args.expMonth);
       optional(query, "optionType", args.optionType);
-      return execute(env, "get_option_chain", "market", "/chains", query);
+      return execute(env, identity, "get_option_chain", "market", "/chains", query);
     },
   );
 
   server.registerTool(
     "get_option_expiration_chain",
     { description: "List option expiration dates for an underlying", inputSchema: toolSchemas.symbol },
-    async ({ symbol: value }) => execute(env, "get_option_expiration_chain", "market", "/expirationchain", { symbol: value }),
+    async ({ symbol: value }) => execute(env, identity, "get_option_expiration_chain", "market", "/expirationchain", { symbol: value }),
   );
 
   server.registerTool(
@@ -297,7 +298,7 @@ export function createServer(
     async ({ markets, date }) => {
       const query: Record<string, string> = { markets: markets.join(",") };
       optional(query, "date", date);
-      return execute(env, "get_market_hours", "market", "/markets", query);
+      return execute(env, identity, "get_market_hours", "market", "/markets", query);
     },
   );
 
@@ -311,7 +312,7 @@ export function createServer(
       const query: Record<string, string> = {};
       optional(query, "sort", sort);
       optional(query, "frequency", frequency);
-      return execute(env, "get_movers", "market", `/movers/${encodeURIComponent(index)}`, query);
+      return execute(env, identity, "get_movers", "market", `/movers/${encodeURIComponent(index)}`, query);
     },
   );
 
@@ -321,13 +322,13 @@ export function createServer(
       description: "Search instruments by symbol or description",
       inputSchema: toolSchemas.searchInstruments,
     },
-    async ({ symbol: value, projection }) => execute(env, "search_instruments", "market", "/instruments", { symbol: value, projection }),
+    async ({ symbol: value, projection }) => execute(env, identity, "search_instruments", "market", "/instruments", { symbol: value, projection }),
   );
 
   server.registerTool(
     "list_accounts",
-    { description: "List linked accounts using Schwab hashes only", inputSchema: toolSchemas.empty },
-    async () => execute(env, "list_accounts", "trader", "/accounts/accountNumbers", {}, accountHashes),
+    { description: "List only accounts authorized for this MCP client, using Schwab hashes only", inputSchema: toolSchemas.empty },
+    async () => execute(env, identity, "list_accounts", "trader", "/accounts/accountNumbers", {}, accountHashes),
   );
 
   server.registerTool(
@@ -339,21 +340,21 @@ export function createServer(
     async ({ accountHash: hash, includePositions }) => {
       const query: Record<string, string> = {};
       if (includePositions) query.fields = "positions";
-      return execute(env, "get_account", "trader", `/accounts/${encodeURIComponent(hash)}`, query);
+      return execute(env, identity, "get_account", "trader", `/accounts/${encodeURIComponent(hash)}`, query);
     },
   );
 
   server.registerTool(
     "get_orders",
     {
-      description: "Get orders across linked accounts for an explicit time range",
+      description: "Get orders across accounts authorized for this MCP client for an explicit time range",
       inputSchema: toolSchemas.getOrders,
     },
     async ({ fromEnteredTime, toEnteredTime, maxResults, status }) => {
       const query: Record<string, string> = { fromEnteredTime, toEnteredTime };
       optional(query, "maxResults", maxResults);
       optional(query, "status", status);
-      return execute(env, "get_orders", "trader", "/orders", query);
+      return execute(env, identity, "get_orders", "trader", "/orders", query);
     },
   );
 
@@ -363,7 +364,7 @@ export function createServer(
       description: "Get one order by hashed account and order ID",
       inputSchema: toolSchemas.getOrder,
     },
-    async ({ accountHash: hash, orderId }) => execute(env, "get_order", "trader", `/accounts/${encodeURIComponent(hash)}/orders/${String(orderId)}`),
+    async ({ accountHash: hash, orderId }) => execute(env, identity, "get_order", "trader", `/accounts/${encodeURIComponent(hash)}/orders/${String(orderId)}`),
   );
 
   server.registerTool(
@@ -376,14 +377,14 @@ export function createServer(
       const query: Record<string, string> = transactionDateRange(startDate, endDate);
       optional(query, "types", types);
       optional(query, "symbol", transactionSymbol);
-      return execute(env, "get_transactions", "trader", `/accounts/${encodeURIComponent(hash)}/transactions`, query);
+      return execute(env, identity, "get_transactions", "trader", `/accounts/${encodeURIComponent(hash)}/transactions`, query);
     },
   );
 
   server.registerTool(
     "get_user_preferences",
-    { description: "Get Schwab user preferences required for account context", inputSchema: toolSchemas.empty },
-    async () => execute(env, "get_user_preferences", "trader", "/userPreference"),
+    { description: "Get sanitized preferences for authorized accounts only; excludes streamer credentials", inputSchema: toolSchemas.empty },
+    async () => execute(env, identity, "get_user_preferences", "trader", "/userPreference"),
   );
 
   const tradeAction = (tool: string, path: string, input: unknown) => executeVaultAction(env, tool, path, input, redact, identity);

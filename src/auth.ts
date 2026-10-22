@@ -1,3 +1,5 @@
+import { accountSelectionSchema } from "./account-access";
+import { renderAccountSelectionPage, renderClientContinuePage } from "./auth-ui";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import type { Context } from "hono";
 import { renderClientAuthorizationPage, renderSecurityPage } from "./security-ui";
@@ -289,6 +291,7 @@ async function finishAuthorization(
         permissionLevel: intent.permissionLevel,
         authorizationVersion: AUTHORIZATION_VERSION,
         pkceMethod: "S256",
+        allowedAccountHashes: intent.allowedAccountHashes ?? [],
         clientId: intent.authRequest.clientId,
         advancedSecurity: policy.advancedSecurity,
         securityPolicyVersion: policy.version,
@@ -333,7 +336,7 @@ const app = new Hono<{ Bindings: AppEnv }>();
 app.use("*", async (c, next) => {
   await next();
   // Apply to the final response, including early errors built with Response.json().
-  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard") || c.req.path === "/auth/schwab/complete") {
+  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard") || c.req.path === "/auth/schwab/complete" || c.req.path === "/auth/github/callback") {
     c.header("Cache-Control", "no-store");
     c.header("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
     c.header("X-Frame-Options", "DENY");
@@ -965,6 +968,71 @@ app.get("/auth/schwab/connect", async (c) => {
   return c.redirect(githubAuthorizationUrl(c.env, origin, state));
 });
 
+async function completeSelectedAuthorization(c: Context<{ Bindings: AppEnv }>, pending: PendingAuthorization, clientName: string, policy: ClientPolicy) {
+  const begin = await securityCall<{
+    sessionId: string;
+    authorizationId: string;
+    requiresPasskey: boolean;
+    status: "PENDING" | "APPROVED";
+  }>(c.env, "/authorization/begin", { intent: pending, clientName, currentAdvanced: policy.advancedSecurity });
+  deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
+  if (begin.requiresPasskey) {
+    setCookie(c, SECURITY_COOKIE, begin.sessionId, { ...FLOW_COOKIE_OPTIONS, maxAge: 900 });
+    return c.redirect(`/security/authorizations/${begin.authorizationId}`);
+  }
+  const claim = await securityCall<{
+    intent: PendingAuthorization;
+    finishingId: string;
+    commitTicket: string;
+    clientName: string;
+  }>(c.env, "/authorization/claim", { authorizationId: begin.authorizationId, sessionId: begin.sessionId });
+  const finishResult = await finishAuthorization(c.env, {
+    authorizationId: begin.authorizationId,
+    originalSessionId: begin.sessionId,
+    finishingId: claim.finishingId,
+    commitTicket: claim.commitTicket,
+    intent: claim.intent,
+    clientName: claim.clientName,
+  });
+  if (finishResult instanceof Response) return finishResult;
+  return c.html(renderClientContinuePage(finishResult.redirectTo, getRequestLang(c)));
+}
+
+app.post("/authorize/accounts", async c => {
+  const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;
+  if (new URL(c.req.url).origin !== origin || c.req.header("Origin") !== origin) return c.text("Invalid origin", 403);
+  const rateLimitResponse = await checkBrowserAuthRateLimit(c);
+  if (rateLimitResponse) return rateLimitResponse;
+  if (!c.req.header("Content-Type")?.startsWith("application/x-www-form-urlencoded")) return c.text("Invalid content type", 400);
+  const reader = c.req.raw.body?.getReader();
+  if (!reader) return c.text("Missing consent form", 400);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > 65536) { await reader.cancel(); return c.text("Request too large", 413); }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  const form = new URLSearchParams(new TextDecoder().decode(bytes));
+  const state = form.get("state");
+  if (!state || form.getAll("state").length !== 1 || getCookie(c, FLOW_COOKIE) !== state) return c.text("Invalid consent state", 400);
+  const selection = accountSelectionSchema.safeParse(form.getAll("accountHash"));
+  if (!selection.success) return c.text("Invalid account selection", 400);
+  try {
+    const saved = await consumeState<{ pending: PendingAuthorization; policy: ClientPolicy; clientName: string; available: string[]; sessionId: string; authorizationVersion: string }>(c.env, state, "account_consent");
+    if (saved.authorizationVersion !== AUTHORIZATION_VERSION || selection.data.some(hash => !saved.available.includes(hash))) return c.text("Invalid account selection", 400);
+    await securityCall(c.env, "/session", { sessionId: saved.sessionId });
+    return await completeSelectedAuthorization(c, { ...saved.pending, allowedAccountHashes: selection.data }, saved.clientName, saved.policy);
+  } catch {
+    return c.text("Account authorization expired or unavailable; restart authorization", 400);
+  }
+});
+
 app.get("/auth/github/callback", async (c) => {
   const state = c.req.query("state");
   const code = c.req.query("code");
@@ -1002,33 +1070,12 @@ app.get("/auth/github/callback", async (c) => {
       username: user.login,
       policyVersion: policy.version,
     };
-    const begin = await securityCall<{
-      sessionId: string;
-      authorizationId: string;
-      requiresPasskey: boolean;
-      status: "PENDING" | "APPROVED";
-    }>(c.env, "/authorization/begin", { intent: pending, clientName, currentAdvanced: policy.advancedSecurity });
-    deleteCookie(c, FLOW_COOKIE, { path: "/", secure: true });
-    if (begin.requiresPasskey) {
-      setCookie(c, SECURITY_COOKIE, begin.sessionId, { ...FLOW_COOKIE_OPTIONS, maxAge: 900 });
-      return c.redirect(`/security/authorizations/${begin.authorizationId}`);
-    }
-    const claim = await securityCall<{
-      intent: PendingAuthorization;
-      finishingId: string;
-      commitTicket: string;
-      clientName: string;
-    }>(c.env, "/authorization/claim", { authorizationId: begin.authorizationId, sessionId: begin.sessionId });
-    const finishResult = await finishAuthorization(c.env, {
-      authorizationId: begin.authorizationId,
-      originalSessionId: begin.sessionId,
-      finishingId: claim.finishingId,
-      commitTicket: claim.commitTicket,
-      intent: claim.intent,
-      clientName: claim.clientName,
-    });
-    if (finishResult instanceof Response) return finishResult;
-    return c.redirect(finishResult.redirectTo);
+    const created = await securityCall<{ sessionId: string }>(c.env, "/session/create", {});
+    const choices = await securityCall<{ accounts: { hashValue: string; label: string }[]; connected: boolean }>(c.env, "/accounts", { sessionId: created.sessionId });
+    const selected = await securityCall<{ hashes: string[] }>(c.env, "/account-policy", { sessionId: created.sessionId, clientId: pending.authRequest.clientId });
+    const selectionState = await saveState(c.env, "account_consent", { pending, clientName, policy, available: choices.accounts.map(account => account.hashValue), sessionId: created.sessionId, authorizationVersion: AUTHORIZATION_VERSION });
+    setCookie(c, FLOW_COOKIE, selectionState, FLOW_COOKIE_OPTIONS);
+    return await c.html(renderAccountSelectionPage({ state: selectionState, clientName, accounts: choices.accounts, selected: selected.hashes, connected: choices.connected, lang: getRequestLang(c) }));
   } catch (error) {
     console.error(JSON.stringify({ event: "github_oauth_failed", errorType: error instanceof Error ? error.name : "UnknownError" }));
     return c.text("GitHub authorization failed", 400);

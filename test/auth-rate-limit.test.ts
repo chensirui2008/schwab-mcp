@@ -244,7 +244,7 @@ describe("browser authorization admission", () => {
     const flow = await authorization(appEnv);
     const granted = await appEnv.OAUTH_PROVIDER.completeAuthorization({
       request: flow.request, userId: appEnv.ALLOWED_GITHUB_USER_ID, scope: [READ_SCOPE], metadata: {},
-      props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel: "read_only", authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" },
+      props: { userId: appEnv.ALLOWED_GITHUB_USER_ID, username: "owner", permissionLevel: "read_only", allowedAccountHashes: [], authorizationVersion: AUTHORIZATION_VERSION, pkceMethod: "S256" },
     });
     admission.limit.mockResolvedValue({ success: false });
     const upstream = vi.fn(() => Promise.reject(new Error("Unexpected upstream request")));
