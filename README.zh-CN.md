@@ -614,7 +614,7 @@ await fetch('/dashboard/api/email/test', {
 
 ### 实时结构化日志监控
 
-生产环境保留白名单字段的应用事件日志；自动 Invocation Logs 和 Traces 关闭，避免完整回调 URL/query 被自动采集。Source map 随 Worker 上传，不进入 public。可通过 Wrangler 查看事件：
+生产环境保留白名单字段的应用事件日志；自动 Invocation Logs 继续关闭。[Workers Tracing](https://developers.cloudflare.com/workers/observability/traces/) 已在配置中开启，默认采样率 `1`（100%）；`observability.redact_query_string: true` 从自动采集的日志和追踪请求 URL 中移除查询串，避免采集 OAuth 回调 code。追踪只使用平台操作元数据，不添加消息或工具载荷记录。SQL 追踪包含查询文本及绑定参数数量，因此敏感值必须使用绑定参数，不能拼接进 SQL 文本。本项目是 MCP 工具服务，没有本地 agent 循环或模型调用；agent 回合和会话回放需要在外部 agent 客户端接入。部署后应发起被采样的请求，并在 Workers Observability 检查追踪和回调 URL 脱敏。Source map 随 Worker 上传，不进入 public。可通过 Wrangler 查看事件：
 
 ```bash
 npx wrangler tail schwab-mcp --format json

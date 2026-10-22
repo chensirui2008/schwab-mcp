@@ -84,6 +84,7 @@
   ],
   "upload_source_maps": true,
   "observability": {
+    "redact_query_string": true,
     "logs": {
       "enabled": true,
       "head_sampling_rate": 1,
@@ -91,7 +92,7 @@
       "persist": true
     },
     "traces": {
-      "enabled": false
+      "enabled": true
     }
   },
   "build": {
