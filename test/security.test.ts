@@ -114,7 +114,9 @@ describe("Passkey trading", () => {
     expect(completed.status).toBe(200);
     expect(completed.headers.get("Cache-Control")).toBe("no-store");
     expect(completed.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
-    expect(await completed.text()).toContain("授权完成，可以关闭页面");
+    const completionHtml = await completed.text();
+    expect(completionHtml).toContain("授权完成");
+    expect(completionHtml).toContain('<a class="pill-btn" href="/dashboard">返回控制面板</a>');
     const repeated = await t.browser("/verify", { challengeId: options.challengeId, response });
     expect(repeated.status).toBe(200);
     expect(await repeated.json()).toMatchObject({ status: "EXECUTED" });
@@ -166,7 +168,7 @@ describe("Passkey trading", () => {
     const options = await t.approveOptions(delayed.proposalId);
     const active = await (await t.browser("/verify", { challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) })).json<{ result: { taskId: string } }>();
     expect(active.result.taskId).toBeTypeOf("string");
-    expect(await (await completionPage(t, delayed.proposalId)).text()).toContain("授权完成，可以关闭页面");
+    expect(await (await completionPage(t, delayed.proposalId)).text()).toContain('<a class="pill-btn" href="/dashboard">返回控制面板</a>');
     expect(fetchMock).not.toHaveBeenCalled();
     const edit = await t.prepare({ executionMode: "DELAYED", replacesTaskId: active.result.taskId, condition: { type: "TIME", operator: "AFTER", at: new Date(Date.now() + 60_000).toISOString() }, validUntil: new Date(Date.now() + 120_000).toISOString() }, plain);
     expect(edit.approvalMethod).toBe("passkey");
