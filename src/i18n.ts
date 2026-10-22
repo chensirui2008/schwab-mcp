@@ -145,6 +145,7 @@ export interface I18nDictionary {
     tamperProofTitle: string;
     tamperProofDesc: string;
     approveSubmitBtn: string;
+    rejectOrderBtn: string;
     invokeHardwareBtn: string;
     approveHint: string;
     executionOutcome: string;
@@ -496,6 +497,7 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     tamperProofTitle: "零对话降级与防篡改",
     tamperProofDesc: "建单、改单及策略变更需经浏览器生物识别核验，防御客户端凭据失陷。",
     approveSubmitBtn: "⚡ 批准并提交 (Approve via Passkey)",
+    rejectOrderBtn: "拒绝订单",
     invokeHardwareBtn: "调起系统硬件验证",
     approveHint: "验证成功后服务器立即提交即时订单或激活延迟任务。无对话确认降级。",
     executionOutcome: "执行结果",
@@ -847,6 +849,7 @@ const DICTIONARY_EN_US: I18nDictionary = {
     tamperProofTitle: "Tamper-Proof Verification",
     tamperProofDesc: "Orders and policy changes require browser WebAuthn verification to prevent credential theft.",
     approveSubmitBtn: "⚡ Approve via Passkey",
+    rejectOrderBtn: "Reject order",
     invokeHardwareBtn: "Verify with Authenticator",
     approveHint: "The order is submitted immediately upon verification. No conversational downgrade permitted.",
     executionOutcome: "Execution Outcome",

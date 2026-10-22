@@ -62,6 +62,51 @@ async function completionPage(t: Awaited<ReturnType<typeof setup>>, proposalId: 
 }
 
 describe("Passkey trading", () => {
+  it("rejects a pending draft, blocks outstanding approval challenges and returns to dashboard", async () => {
+    const t = await setup();
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const proposal = await t.prepare();
+    const options = await t.approveOptions(proposal.proposalId);
+    const view = await (await t.browser("/proposal", { proposalId: proposal.proposalId })).json<Parameters<typeof renderSecurityPage>[2]>();
+    const page = (await renderSecurityPage(t.created.session, [], view)).toString();
+    expect(page).toContain('<button id="reject-order" class="pill-btn full-width">拒绝订单</button>');
+    expect(page.indexOf('id="reject-order"')).toBeGreaterThan(page.indexOf('id="approve"'));
+    const origin = new URL(t.appEnv.SCHWAB_REDIRECT_URI).origin;
+    const reject = (headers: Record<string, string> = {}, body: unknown = { proposalId: proposal.proposalId }) => AuthHandler.request(`${origin}/security/api/reject-proposal`, {
+      method: "POST", headers: { Cookie: `__Host-schwab-security=${t.created.sessionId}`, Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": t.created.session.csrf, ...headers }, body: JSON.stringify(body),
+    }, { ...t.appEnv, SCHWAB_VAULT: { idFromName: () => t.vault.id, get: () => t.vault } as unknown as DurableObjectNamespace });
+    for (const headers of [{ Origin: "https://evil.example" }, { "X-CSRF-Token": "wrong" }, { Cookie: "" }]) {
+      expect((await reject(headers)).status).toBe(403);
+    }
+    const rejected = await reject();
+    expect(rejected.status).toBe(200);
+    expect(await rejected.json()).toEqual({ status: "CANCELLED", redirectTo: "/dashboard" });
+    expect((await reject()).status).toBe(200);
+    const verify = await t.browser("/verify", { challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) });
+    expect(verify.status).toBe(403);
+    expect((await t.browser("/options", { operation: "approve", proposalId: proposal.proposalId })).status).toBe(403);
+    const cancelled = await (await t.browser("/proposal", { proposalId: proposal.proposalId })).json<Parameters<typeof renderSecurityPage>[2]>();
+    expect(cancelled?.status).toBe("CANCELLED");
+    expect((await renderSecurityPage(t.created.session, [], cancelled)).toString()).not.toContain('id="reject-order"');
+    const ordinary = await t.prepare({}, plain);
+    expect((await reject({}, { proposalId: ordinary.proposalId })).status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not reject an already activated delayed task or let a recovery session reject drafts", async () => {
+    const t = await setup();
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const proposal = await t.prepare({ executionMode: "DELAYED", condition: { type: "TIME", operator: "AFTER", at: new Date(Date.now() + 60_000).toISOString() }, validUntil: new Date(Date.now() + 120_000).toISOString() });
+    const recovery = await (await t.post("/security/session/create", { recovery: true })).json<{ sessionId: string; session: BrowserSession }>();
+    expect((await t.post("/security/reject-proposal", { sessionId: recovery.sessionId, csrf: recovery.session.csrf, proposalId: proposal.proposalId })).status).toBe(403);
+    const options = await t.approveOptions(proposal.proposalId);
+    expect((await t.browser("/verify", { challengeId: options.challengeId, response: await t.key.authenticate(options.options.challenge) })).status).toBe(200);
+    expect((await t.browser("/reject-proposal", { proposalId: proposal.proposalId })).status).toBe(403);
+    const status = await (await t.browser("/proposal", { proposalId: proposal.proposalId })).json<{ status: string }>();
+    expect(status.status).toBe("ACTIVE");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("shows frozen replacement target and polling interval in proposal status and browser approval", async () => {
     const t = await setup();
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);

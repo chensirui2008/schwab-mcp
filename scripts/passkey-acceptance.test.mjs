@@ -38,6 +38,47 @@ test('unsupported browser disables every operation', () => {
   assert.equal(buttons[0].disabled, true);
 });
 
+test('rejecting a draft works without WebAuthn and redirects only after successful cancellation', async () => {
+  for (const fails of [false, true]) {
+    const reject = { id: 'reject-order', disabled: false, addEventListener(_type, handler) { this.click = handler; } };
+    const approve = { id: 'approve', disabled: false };
+    const status = { textContent: '' };
+    const redirects = [];
+    const calls = [];
+    let finish;
+    const context = {
+      document: {
+        querySelectorAll: selector => selector === 'button' ? [approve, reject] : [],
+        querySelector: selector => ({ '#reject-order': reject, '#status': status, 'meta[name="csrf"]': { content: 'test' }, '#page-data': { textContent: '{"proposalId":"draft"}' } })[selector],
+      },
+      window: {}, navigator: {},
+      location: { assign: path => redirects.push(path) },
+      fetch: async (path, options) => {
+        calls.push({ path, options });
+        await new Promise(resolve => { finish = resolve; });
+        return { ok: !fails, json: async () => fails ? { error: { message: 'Unable to cancel' } } : { status: 'CANCELLED', redirectTo: '/dashboard' } };
+      },
+    };
+    runInNewContext(script, context);
+    assert.equal(approve.disabled, true);
+    assert.equal(reject.disabled, false);
+    const pending = reject.click();
+    assert.equal(reject.disabled, true);
+    await reject.click();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(redirects, []);
+    finish();
+    await pending;
+    assert.equal(calls[0].path, '/security/api/reject-proposal');
+    assert.equal(calls[0].options.headers['X-CSRF-Token'], 'test');
+    assert.deepEqual(JSON.parse(calls[0].options.body), { proposalId: 'draft' });
+    assert.deepEqual(redirects, fails ? [] : ['/dashboard']);
+    if (fails) assert.equal(status.textContent, 'Unable to cancel');
+    assert.equal(reject.disabled, false);
+    assert.equal(approve.disabled, true);
+  }
+});
+
 test('verification failures preserve passkeys and allow retry on management and registration paths', async () => {
   for (const registration of [false, true]) {
     for (const offline of [false, true]) {

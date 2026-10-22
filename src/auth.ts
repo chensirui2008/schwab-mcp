@@ -519,7 +519,7 @@ async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
 }
 app.post("/security/api/:action", async c => {
   const action = c.req.param("action");
-  if (!["options", "verify", "add-options", "add-verify"].includes(action)) return browserError("INVALID_ARGUMENT", "Unknown operation", 404);
+  if (!["options", "verify", "add-options", "add-verify", "reject-proposal"].includes(action)) return browserError("INVALID_ARGUMENT", "Unknown operation", 404);
   if (new URL(c.req.url).origin !== new URL(c.env.SCHWAB_REDIRECT_URI).origin || c.req.header("Origin") !== new URL(c.env.SCHWAB_REDIRECT_URI).origin || !isJsonContentType(c.req.header("Content-Type"))) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin or content type", 403);
   const sessionId = getCookie(c, SECURITY_COOKIE);
   const csrf = c.req.header("X-CSRF-Token");

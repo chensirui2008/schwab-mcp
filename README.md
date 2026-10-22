@@ -192,6 +192,8 @@ Client OAuth approval can be completed from another owner-authenticated device a
 
 For enhanced clients, `prepare_trade` keeps the same input and returns `proposalId`, `approvalMethod: "passkey"`, `approvalUrl`, the frozen preview, digest and expiry. It returns no executable confirmation token or phrase. Open the URL in an external desktop or phone browser, authenticate with GitHub if needed, review every leg and the complete JSON, then click **批准并提交** to invoke WebAuthn. Successful verification immediately submits the frozen immediate order, or activates the frozen delayed task. Query `get_trade_proposal({ proposalId })` for status and execution outcome. Approving or replaying a proposal never submits it twice. An `EXECUTION_UNCERTAIN` result still requires manual order inspection.
 
+The approval page also provides a red **Reject order** button below Passkey approval. It cancels only the pending draft and returns to `/dashboard` after cancellation succeeds, without invoking Passkey verification or submitting a Schwab request. Already submitted orders and activated tasks cannot be cancelled through this button.
+
 Passkey approval authorizes the frozen proposal; it does not perform balance, notional-limit or wash-sale checks. Review the complete order independently before approving.
 
 Every immediate PLACE/REPLACE and delayed task creation/modification requires Passkey approval; protected delayed tasks cannot be downgraded by modification from an ordinary client. Enhanced clients cannot enable or use session direct trading. Cancellation, delayed task cancellation and disabling an existing direct session retain their existing rules. The deployment killswitch also blocks browser approval and task activation.
