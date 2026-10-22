@@ -500,12 +500,18 @@ describe("browser permission consent", () => {
     expect(page.headers.get("Cache-Control")).toBe("no-store");
     expect(page.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
     const html = await page.text();
+    // The document policy overrides no-referrer for native form submission, which
+    // would otherwise send Origin: null. Cross-origin referrers remain suppressed.
+    expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(html).toContain('<meta name="referrer" content="same-origin">');
     expect(html).not.toContain("123456789");
     expect(html).toContain("••••6789");
     const state = html.match(/name="state" value="([^"]+)"/)?.[1] ?? "";
     const cookie = page.headers.get("set-cookie")?.match(/(?:^|, )(__Host-schwab-oauth=[^;,]+)/)?.[1] ?? "";
     const post = (body: URLSearchParams, headers: Record<string, string> = {}) => dispatch(new Request(`${origin}/authorize/accounts`, { method: "POST", headers: { Origin: origin, Cookie: cookie, ...headers }, body }), appEnv);
     expect((await post(new URLSearchParams({ state }), { Origin: "https://evil.example" })).status).toBe(403);
+    expect((await post(new URLSearchParams({ state }), { Origin: "null" })).status).toBe(403);
+    expect((await post(new URLSearchParams({ state }), { Origin: "" })).status).toBe(403);
     expect((await post(new URLSearchParams({ state }), { Cookie: "" })).status).toBe(400);
     expect((await post(new URLSearchParams({ state, extra: "x".repeat(65536) }))).status).toBe(413);
     const success = await post(new URLSearchParams({ state }));

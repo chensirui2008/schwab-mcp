@@ -1,5 +1,17 @@
 # OAuth consent navigation regression validation
 
+## Account selection Origin regression (2026-10-22)
+
+The account selection document is rendered at `/auth/github/callback` with the shared `Referrer-Policy: no-referrer` response header. Native form POST navigation under that policy sends `Origin: null`, so the strict `/authorize/accounts` origin check rejects a legitimate selection with `Invalid origin`. Worker tests had supplied the expected Origin manually and did not model browser header generation.
+
+The account selection page now includes `<meta name="referrer" content="same-origin">`. This document policy preserves the Origin on its same-origin form submission and suppresses cross-origin referrers. The shared response header, server origin checks, browser-bound one-time state, owner session and account allowlist validation remain unchanged.
+
+Local @Browser validation used the actual `renderAccountSelectionPage` HTML, fake state/account data, and an HTTP loopback receiver with the production `no-referrer` response header. Submitting the baseline document produced `Origin: null` and failed the receiver's exact-origin check; submitting the fixed document produced the loopback origin and passed. This demonstrates browser-generated headers; it does not represent a production OAuth login, token exchange or device Passkey acceptance. Real Schwab requests: **0**.
+
+The account consent regression test checks the document policy and rejects foreign, empty and literal `null` origins before a valid submission. To smoke-test after an approved release, restart MCP authorization, complete owner login, select accounts, and confirm that the POST to `/authorize/accounts` sends the configured origin and advances to client continuation or Passkey approval.
+
+## Historical navigation validation
+
 Validated locally on 2026-10-16. No production deployment or real Schwab request was performed.
 
 ## Failure and fix
