@@ -634,6 +634,13 @@ td.load-error {
   cursor: pointer;
 }
 
+.toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin: 0;
+}
+
 select.permission {
   background: var(--surface-container);
   border: 1px solid var(--outline-variant);
@@ -1047,9 +1054,17 @@ dialog .actions {
     align-items: flex-start;
     gap: 8px;
   }
-  .button, input, select {
+  .button, input:not([type="checkbox"]):not([type="radio"]), select {
     min-height: 44px;
     min-width: 44px;
+  }
+  select.permission {
+    min-height: 32px;
+    min-width: 0;
+  }
+  .toggle {
+    min-height: 44px;
+    white-space: nowrap;
   }
   .button.compact {
     min-height: 44px;
