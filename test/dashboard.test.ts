@@ -180,7 +180,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("Dashboard owner authentication and browser boundaries", () => {
   it("requires numeric GitHub owner OAuth, preserves returnTo, and never exposes session secrets", async () => {
     const appEnv = setup();
-    for (const path of ["overview", "clients", "audit", "session"]) {
+    for (const path of ["overview", "accounts", "clients", "audit", "session"]) {
       expect((await dispatch(new Request(`${origin}/dashboard/api/${path}`), appEnv)).status).toBe(403);
     }
     const forbidden = await beginLogin(appEnv, "/dashboard", false);
@@ -192,6 +192,7 @@ describe("Dashboard owner authentication and browser boundaries", () => {
     expect((await ui.get("overview")).headers.get("Cache-Control")).toBe("no-store");
     const bearer = await authorize(appEnv);
     expect((await dispatch(new Request(`${origin}/dashboard/api/session`, { headers: { Authorization: `Bearer ${bearer.tokens.access_token}` } }), appEnv)).status).toBe(403);
+    expect((await dispatch(new Request(`${origin}/dashboard/api/accounts`, { headers: { Authorization: `Bearer ${bearer.tokens.access_token}` } }), appEnv)).status).toBe(403);
   });
 
   it.each(["recovery", "pending"] as const)("does not treat a %s ceremony session as a dashboard login", async kind => {
@@ -201,7 +202,7 @@ describe("Dashboard owner authentication and browser boundaries", () => {
     });
     const state = await created.json<{ sessionId: string; session: BrowserSession }>();
     const ui = browser(appEnv, `__Host-schwab-security=${state.sessionId}`, state.session.csrf);
-    for (const path of ["session", "overview", "clients", "audit"]) expect((await ui.get(path)).status).toBe(403);
+    for (const path of ["session", "overview", "accounts", "clients", "audit"]) expect((await ui.get(path)).status).toBe(403);
     expect((await ui.post("clients/permission", { clientId: "restricted", permissionLevel: "full_access" })).status).toBe(403);
     const page = await dispatch(new Request(`${origin}/dashboard`, { headers: { Cookie: ui.securityCookie } }), appEnv);
     expect(page.status).toBe(302);
@@ -340,6 +341,33 @@ describe("Dashboard client policies and live OAuth enforcement", () => {
     expect(Number.isFinite(health.schwabStatus.accessExpiresAt)).toBe(true);
     expect(Number.isFinite(health.schwabStatus.refreshExpiresAt)).toBe(true);
     expect(text).not.toContain("fake-access-secret"); expect(text).not.toContain("fake-refresh-secret");
+  });
+
+  it("returns only masked linked account labels to the dashboard owner", async () => {
+    const appEnv = setup(); const ui = await login(appEnv);
+    expect(await (await ui.get("accounts")).json()).toEqual({ accounts: [], connected: false });
+    await connectSchwab(appEnv);
+    const upstream = vi.fn((input: RequestInfo | URL) => {
+      expect(input instanceof Request ? input.url : input.toString()).toContain("/accounts/accountNumbers");
+      return Response.json([
+        { accountNumber: "123456789", hashValue: "a".repeat(32) },
+        { accountNumber: "987650012", hashValue: "b".repeat(32) },
+      ]);
+    });
+    vi.stubGlobal("fetch", upstream);
+    const response = await ui.get("accounts");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.json()).toEqual({ accounts: ["••••6789", "••••0012"], connected: true });
+    expect(upstream).toHaveBeenCalledTimes(1);
+    upstream.mockImplementation(() => Response.json([]));
+    expect(await (await ui.get("accounts")).json()).toEqual({ accounts: [], connected: true });
+    upstream.mockImplementation(() => Response.json([{ accountNumber: "invalid", hashValue: "a".repeat(32) }]));
+    const invalid = await ui.get("accounts");
+    expect(invalid.ok).toBe(false);
+    const failure = await invalid.json<{ error: { code: string; requestId: string } }>();
+    expect(failure.error.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(failure.error.requestId).toBeTruthy();
   });
 
   it("immediately downgrades an existing full-access token, synchronizes refresh, and isolates another client", async () => {

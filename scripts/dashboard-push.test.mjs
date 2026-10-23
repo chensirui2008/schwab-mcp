@@ -265,3 +265,20 @@ test('failed disabling keeps the same button available to retry disabling', asyn
   assert.equal(ui.state.active, true);
   assert.equal(ui.state.subscribed, true);
 });
+
+
+test('dashboard displays all masked account labels and clears stale labels on failures', async () => {
+  const ui = setup({ scriptSuffix: 'globalThis.loadLinkedAccounts = loadLinkedAccounts;' });
+  ui.context.fetch = async () => ({ ok: true, json: async () => ({ connected: true, accounts: ['••••6789', '••••0012'] }) });
+  await ui.context.loadLinkedAccounts();
+  assert.equal(ui.get('linked-accounts').textContent, '已连接账户：••••6789、••••0012');
+  ui.context.fetch = async () => { throw new Error('offline'); };
+  await assert.rejects(ui.context.loadLinkedAccounts(), /网络请求失败/);
+  assert.equal(ui.get('linked-accounts').textContent, '已连接账户：账户读取失败');
+  ui.context.fetch = async () => ({ ok: true, json: async () => ({ connected: false, accounts: [] }) });
+  await ui.context.loadLinkedAccounts();
+  assert.equal(ui.get('linked-accounts').textContent, '已连接账户：无已连接账户');
+  ui.context.fetch = async () => ({ ok: true, json: async () => ({ connected: true, accounts: ['123456789'] }) });
+  await assert.rejects(ui.context.loadLinkedAccounts(), /账户读取失败/);
+  assert.equal(ui.get('linked-accounts').textContent, '已连接账户：账户读取失败');
+});

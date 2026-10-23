@@ -672,6 +672,13 @@ app.get("/dashboard/notifications/:id", async c => {
   }));
 });
 app.get("/dashboard/api/session", c => dashboardRequest(c, state => c.json({ credentials: state.credentials })));
+app.get("/dashboard/api/accounts", c => dashboardRequest(c, async () => {
+  const result = await dashboardVault(c.env, "/security/accounts", z.object({
+    accounts: z.array(z.object({ label: z.string().regex(/^••••[0-9]{1,4}$/) })),
+    connected: z.boolean(),
+  }), { sessionId: getCookie(c, SECURITY_COOKIE) });
+  return c.json({ accounts: result.accounts.map(account => account.label), connected: result.connected });
+}));
 app.get("/dashboard/api/overview", c => dashboardRequest(c, async state => {
   const schwabStatus = await dashboardVault(c.env, "/status", z.object({
     connected: z.boolean(), status: z.enum(["connected", "reauthorization_required"]),
