@@ -219,6 +219,9 @@ export interface I18nDictionary {
     schwabExpiringSoon: string;
     schwabReading: string;
     schwabReadFailed: string;
+    linkedAccounts: string;
+    noLinkedAccounts: string;
+    accountsReadFailed: string;
     accessExpiry: string;
     refreshExpiry: string;
     securityProtocol: string;
@@ -571,6 +574,9 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     schwabExpiringSoon: "Schwab 授权即将到期",
     schwabReading: "正在读取连接状态",
     schwabReadFailed: "连接状态读取失败",
+    linkedAccounts: "已连接账户：",
+    noLinkedAccounts: "无已连接账户",
+    accountsReadFailed: "账户读取失败",
     accessExpiry: "Access 到期：",
     refreshExpiry: "Refresh 到期：",
     securityProtocol: "安全协议：TLS 1.3 // REST+JSON",
@@ -923,6 +929,9 @@ const DICTIONARY_EN_US: I18nDictionary = {
     schwabExpiringSoon: "Expiring Soon",
     schwabReading: "Checking status...",
     schwabReadFailed: "Status check failed",
+    linkedAccounts: "Linked accounts: ",
+    noLinkedAccounts: "No linked accounts",
+    accountsReadFailed: "Unable to load accounts",
     accessExpiry: "Access Expiry: ",
     refreshExpiry: "Refresh Expiry: ",
     securityProtocol: "Security: TLS 1.3 // REST+JSON",

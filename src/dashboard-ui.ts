@@ -1291,6 +1291,17 @@ function updateOverviewStatus() {
   status.className = 'badge ' + (!connected ? 'bad' : soon ? 'warn' : 'good');
   status.textContent = !connected ? t('schwabReauth', 'Schwab 需重新授权') : soon ? t('schwabExpiringSoon', 'Schwab 授权即将到期') : t('schwabConnected', 'Schwab 已连接');
 }
+async function loadLinkedAccounts() {
+  const target = $('linked-accounts');
+  try {
+    const data = await api('/dashboard/api/accounts');
+    if (typeof data.connected !== 'boolean' || !Array.isArray(data.accounts) || data.accounts.some(label => typeof label !== 'string' || !/^••••[0-9]{1,4}$/.test(label))) throw new Error(t('accountsReadFailed', '账户读取失败'));
+    target.textContent = t('linkedAccounts', '已连接账户：') + (data.connected && data.accounts.length ? data.accounts.join('、') : t('noLinkedAccounts', '无已连接账户'));
+  } catch (error) {
+    target.textContent = t('linkedAccounts', '已连接账户：') + t('accountsReadFailed', '账户读取失败');
+    throw error;
+  }
+}
 async function loadOverview() {
   try {
     const data = await api('/dashboard/api/overview');
@@ -1673,6 +1684,7 @@ function checkPwaDisplayMode() {
 async function refreshAll() {
   const results = await Promise.allSettled([
     loadOverview(),
+    loadLinkedAccounts(),
     loadClients(),
     loadAudit(),
     loadPasskeys(),
@@ -2016,6 +2028,7 @@ ${raw(BACKGROUND_SVG)}
         <span id="schwab-status-badge" class="badge neutral">${d.schwabReading}</span>
       </div>
       <div class="status-cell-body">
+        <p id="linked-accounts" class="telemetry-stat">${d.linkedAccounts}${c.loading}</p>
         <p id="access-expiry" class="telemetry-stat">${d.accessExpiry}${c.loading}</p>
         <p id="refresh-expiry" class="telemetry-stat">${d.refreshExpiry}${c.loading}</p>
         <p class="telemetry-stat">${d.securityProtocol}</p>
