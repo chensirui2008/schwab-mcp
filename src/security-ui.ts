@@ -761,10 +761,6 @@ export function renderSecurityPage(
                   ${raw(FINGERPRINT_ICON_SVG)}
                   <span>${s.approveSubmitBtn}</span>
                 </button>
-                <button id="ceremony-submit" class="pill-btn full-width primary-glow" hidden style="background:var(--primary);color:#003824;margin-top:8px;">
-                  ${raw(FINGERPRINT_ICON_SVG)}
-                  <span>${s.invokeHardwareBtn}</span>
-                </button>
                 <button id="reject-order" class="pill-btn full-width">${s.rejectOrderBtn}</button>
               </div>
               <div class="action-hint">${s.approveHint}</div>
