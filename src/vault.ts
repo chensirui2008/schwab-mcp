@@ -41,7 +41,7 @@ interface ProposalRow {
   [key: string]: string | number | null;
   id: string;
   mode: TradeProposalInput["executionMode"];
-  action: TradeProposalInput["action"];
+  action: TradeProposalInput["action"] | "BATCH";
   account_hash: string;
   order_id: number | null;
   order_json: string;
@@ -208,6 +208,15 @@ export class SchwabVault extends DurableObject<AppEnv> {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_trade_proposal_expiry ON trade_proposal(status, expires_at);
+      CREATE TABLE IF NOT EXISTS trade_batch_item (
+        proposal_id TEXT NOT NULL,
+        item_index INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        order_id INTEGER,
+        status TEXT NOT NULL,
+        outcome_json TEXT,
+        PRIMARY KEY (proposal_id, item_index)
+      );
       CREATE TABLE IF NOT EXISTS delayed_trade (
         id TEXT PRIMARY KEY,
         version INTEGER NOT NULL,
@@ -283,6 +292,36 @@ export class SchwabVault extends DurableObject<AppEnv> {
       this.ctx.storage.sql.exec("ALTER TABLE schwab_token ADD COLUMN authorization_generation TEXT");
       this.ctx.storage.sql.exec("ALTER TABLE schwab_token ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0");
       this.ctx.storage.sql.exec("UPDATE schwab_token SET authorization_generation = ? WHERE authorization_generation IS NULL", crypto.randomUUID());
+    }
+    const recovered = this.ctx.storage.transactionSync(() => {
+      const events: Array<{ id: string; status: string; uncertain: boolean }> = [];
+      const interrupted = this.ctx.storage.sql.exec<ProposalRow>("SELECT * FROM trade_proposal WHERE action = 'BATCH' AND status = 'EXECUTING'").toArray();
+      for (const proposal of interrupted) {
+        this.ctx.storage.sql.exec(
+          "UPDATE trade_batch_item SET status = 'EXECUTION_UNCERTAIN', outcome_json = ? WHERE proposal_id = ? AND status = 'EXECUTING'",
+          JSON.stringify({ error: { code: "EXECUTION_UNCERTAIN", message: "Execution was interrupted; inspect the order before retrying" } }), proposal.id,
+        );
+        this.ctx.storage.sql.exec("UPDATE trade_batch_item SET status = 'NOT_SUBMITTED', outcome_json = ? WHERE proposal_id = ? AND status = 'PENDING'",
+          JSON.stringify({ error: { code: "TRADE_STATE_CONFLICT", message: "Batch execution was interrupted before this order was submitted" } }), proposal.id);
+        const items = this.batchOutcome(proposal).result.orders;
+        const uncertain = items.some(item => item.status === "EXECUTION_UNCERTAIN");
+        const successful = items.filter(item => item.status === "EXECUTED").length;
+        const failed = items.filter(item => item.status === "FAILED").length;
+        const status = uncertain ? "EXECUTION_UNCERTAIN" : successful === items.length ? "EXECUTED" : failed === items.length || (successful === 0 && failed === 0) ? "FAILED" : "PARTIALLY_EXECUTED";
+        const outcome = this.batchOutcome({ ...proposal, status });
+        this.ctx.storage.sql.exec("UPDATE trade_proposal SET status = ?, outcome_json = ?, updated_at = ? WHERE id = ?", status, JSON.stringify(outcome), Date.now(), proposal.id);
+        this.audit("trade_execution_finished", proposal.id, crypto.randomUUID(), status, proposal.intent_digest);
+        events.push({ id: proposal.id, status, uncertain });
+      }
+      return events;
+    });
+    for (const { id, status, uncertain } of recovered) {
+      this.notifications.suppressPendingDeliveriesForEntity(id);
+      this.notifications.recordEvent({
+        dedupeKey: `trade_proposal:${id}:${status}`, type: "TRADE_RESULT", entityId: id,
+        summary: uncertain ? "批量交易执行中断，结果不确定，请先查询订单状态" : "批量交易执行中断",
+        ...(uncertain ? { executionStatus: "EXECUTION_UNCERTAIN" } : {}),
+      });
     }
     this.ready = this.ctx.blockConcurrencyWhile(() => this.scheduleNextAlarm(true));
   }
@@ -394,6 +433,9 @@ export class SchwabVault extends DurableObject<AppEnv> {
     if (request.method === "POST" && url.pathname === "/trade/prepare") {
       return this.prepareTrade(request);
     }
+    if (request.method === "POST" && url.pathname === "/trade/prepare-batch") {
+      return this.prepareTradeBatch(request);
+    }
     if (request.method === "POST" && url.pathname === "/trade/confirm") {
       return this.confirmTrade(request);
     }
@@ -475,18 +517,21 @@ export class SchwabVault extends DurableObject<AppEnv> {
       const taskId: unknown = result && typeof result === "object" ? Reflect.get(result, "taskId") : undefined;
       if (typeof taskId === "string") task = this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade WHERE id = ?", taskId).toArray()[0];
     }
+    const effectiveStatus = task?.status ?? (proposal.status === "PENDING" && proposal.expires_at <= Date.now() ? "EXPIRED" : proposal.status);
     return {
-      proposalId: proposal.id, status: task?.status ?? (proposal.status === "PENDING" && proposal.expires_at <= Date.now() ? "EXPIRED" : proposal.status),
+      proposalId: proposal.id, status: effectiveStatus,
       approvalMethod: proposal.approval_method, intentDigest: proposal.intent_digest,
       expiresAt: new Date(proposal.expires_at).toISOString(),
-      preview: { accountHash: proposal.account_hash, action: proposal.action, executionMode: proposal.mode,
-        orderId: proposal.order_id, orderPayload: JSON.parse(proposal.order_json) as unknown,
-        condition: proposal.condition_json ? JSON.parse(proposal.condition_json) as unknown : null,
-        validUntil: proposal.valid_until === null ? null : new Date(proposal.valid_until).toISOString(),
-        pollIntervalSeconds: proposal.poll_interval_seconds, replacesTaskId: proposal.replaces_task_id,
-      },
+      preview: proposal.action === "BATCH"
+        ? { accountHash: proposal.account_hash, action: "BATCH", executionMode: "IMMEDIATE", orders: JSON.parse(proposal.order_json) as unknown }
+        : { accountHash: proposal.account_hash, action: proposal.action, executionMode: proposal.mode,
+          orderId: proposal.order_id, orderPayload: JSON.parse(proposal.order_json) as unknown,
+          condition: proposal.condition_json ? JSON.parse(proposal.condition_json) as unknown : null,
+          validUntil: proposal.valid_until === null ? null : new Date(proposal.valid_until).toISOString(),
+          pollIntervalSeconds: proposal.poll_interval_seconds, replacesTaskId: proposal.replaces_task_id },
       ...(task ? { taskId: task.id, taskVersion: task.version } : {}),
-      outcome: task?.outcome_json ? JSON.parse(task.outcome_json) as unknown : activation,
+      outcome: proposal.action === "BATCH" && effectiveStatus !== "PENDING"
+        ? this.batchOutcome({ ...proposal, status: effectiveStatus }) : task?.outcome_json ? JSON.parse(task.outcome_json) as unknown : activation,
     };
   }
 
@@ -503,6 +548,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     // Editing a protected task requires Passkey approval even for ordinary clients.
     // The frozen proposal determines the approval method; live policy controls access.
     if (policy.revoked || policy.permissionLevel !== "full_access" || policy.version !== binding.policyVersion) throw new SecurityError("SECURITY_POLICY_CHANGED");
+    this.security.assertAccount(binding.clientId, current.account_hash);
   }
 
   private async securityRequest(request: Request, path: string): Promise<Response> {
@@ -677,12 +723,17 @@ export class SchwabVault extends DurableObject<AppEnv> {
       const proposal = this.proposal(raw.proposalId);
       if (!proposal || proposal.approval_method !== "passkey") throw new SecurityError();
       if (proposal.status !== "CANCELLED") {
-        const cancelled = this.ctx.storage.sql.exec<{ id: string }>(
-          "UPDATE trade_proposal SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
-          Date.now(), proposal.id,
-        ).toArray()[0];
-        if (!cancelled) throw new SecurityError();
-        this.audit("passkey_trade_rejected", proposal.id, crypto.randomUUID(), "CANCELLED", proposal.intent_digest);
+        this.ctx.storage.transactionSync(() => {
+          const cancelled = this.ctx.storage.sql.exec<{ id: string }>(
+            "UPDATE trade_proposal SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id",
+            Date.now(), proposal.id,
+          ).toArray()[0];
+          if (!cancelled) throw new SecurityError();
+          if (proposal.action === "BATCH") this.ctx.storage.sql.exec(
+            "UPDATE trade_batch_item SET status = 'NOT_SUBMITTED' WHERE proposal_id = ? AND status = 'PENDING'", proposal.id,
+          );
+          this.audit("passkey_trade_rejected", proposal.id, crypto.randomUUID(), "CANCELLED", proposal.intent_digest);
+        });
       }
       return jsonResponse({ status: "CANCELLED", redirectTo: "/dashboard" });
     }
@@ -723,6 +774,11 @@ export class SchwabVault extends DurableObject<AppEnv> {
         const claimed = this.ctx.storage.sql.exec<{ id: string }>("UPDATE trade_proposal SET status = 'EXECUTING', updated_at = ? WHERE id = ? AND status = 'PENDING' RETURNING id", Date.now(), proposal.id).toArray()[0];
         if (!claimed) return jsonResponse(this.proposalView(this.proposal(proposal.id) ?? proposal));
         this.audit("passkey_trade_approved", proposal.id, requestId, "EXECUTING", proposal.intent_digest);
+        if (proposal.action === "BATCH") {
+          const finished = await this.executeBatch(proposal, requestId, { clientId: result.binding.clientId, advancedSecurity: true, securityPolicyVersion: result.binding.policyVersion });
+          const outcome: Record<string, unknown> = await finished.json();
+          return jsonResponse({ ...outcome, proposalId: proposal.id, status: this.proposal(proposal.id)?.status });
+        }
         const response = await this.executeMutation(proposal.action, proposal.account_hash, proposal.order_id, JSON.parse(proposal.order_json) as { [key: string]: JsonValue }, requestId, "passkey_approval",
           { clientId: result.binding.clientId, advancedSecurity: true, securityPolicyVersion: result.binding.policyVersion });
         const finished = await this.finishProposal(proposal, requestId, response);
@@ -1368,6 +1424,142 @@ export class SchwabVault extends DurableObject<AppEnv> {
     return jsonResponse(payload, response.status);
   }
 
+  private async prepareTradeBatch(request: Request): Promise<Response> {
+    const raw: unknown = await request.json().catch(() => null);
+    const requestId = raw && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
+    if (!tradingEnabled(this.env)) return this.tradingDisabled(requestId);
+    const parsed = toolSchemas.prepareTradeBatch.safeParse(raw && typeof raw === "object" ? field(raw, "input") : undefined);
+    if (!parsed.success) return publicError({ code: "INVALID_ARGUMENT", message: "Invalid trade batch", requestId }, 400);
+    const input = parsed.data;
+    try {
+      for (const order of input.orders) assertSafeOrderPayload(order.orderPayload);
+    } catch {
+      return publicError({ code: "INVALID_ARGUMENT", message: "Unsafe order payload", requestId }, 400);
+    }
+    const identity = this.identity(field(raw as object, "identity"));
+    const proposalId = crypto.randomUUID();
+    const token = randomToken();
+    const intent = { accountHash: input.accountHash, action: "BATCH", executionMode: "IMMEDIATE", orders: input.orders };
+    const intentDigest = await sha256(canonicalJson(JSON.parse(JSON.stringify(intent)) as JsonValue));
+    const instructionDigest = await sha256(input.userInstruction);
+    const tokenHash = await sha256(token);
+    const now = Date.now();
+    const expiresAt = now + CONFIRMATION_TTL_MS;
+    const confirmationText = `确认交易 ${proposalId.slice(0, 8)} ${intentDigest.slice(0, 12)}`;
+    const approvalMethod = identity.advancedSecurity ? "passkey" : "conversation";
+    this.security.assertIdentity(identity);
+    this.security.assertAccount(identity.clientId, input.accountHash);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO trade_proposal
+         (id, mode, action, account_hash, order_json, intent_digest, instruction_digest, token_hash, confirmation_text, status, expires_at, created_at, updated_at, approval_method, client_id, policy_version)
+         VALUES (?, 'IMMEDIATE', 'BATCH', ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?)`,
+        proposalId, input.accountHash, JSON.stringify(input.orders), intentDigest, instructionDigest, tokenHash, confirmationText, expiresAt, now, now, approvalMethod, identity.clientId, identity.securityPolicyVersion,
+      );
+      input.orders.forEach((order, index) => this.ctx.storage.sql.exec(
+        "INSERT INTO trade_batch_item (proposal_id, item_index, action, order_id, status) VALUES (?, ?, ?, ?, 'PENDING')",
+        proposalId, index + 1, order.action, order.orderId ?? null,
+      ));
+      if (approvalMethod === "passkey") this.notifications.recordEvent({
+        dedupeKey: `trade_proposal:${proposalId}:PENDING`, type: "TRADE_APPROVAL_PENDING", entityId: proposalId,
+        summary: "有批量交易待 Passkey 批准", expiresAt,
+      });
+    });
+    this.audit("trade_proposal_created", proposalId, requestId, "PENDING", intentDigest, instructionDigest);
+    await this.scheduleNextAlarm();
+    return jsonResponse({ result: {
+      proposalId,
+      ...(approvalMethod === "passkey"
+        ? { approvalMethod: "passkey", approvalUrl: `${new URL(this.env.SCHWAB_REDIRECT_URI).origin}/security/approvals/${proposalId}` }
+        : { confirmationToken: token, confirmationText }),
+      expiresAt: new Date(expiresAt).toISOString(), intentDigest, preview: intent,
+      warning: `${approvalMethod === "passkey" ? "Open approvalUrl in a browser and approve using a Passkey. No conversational fallback is available." : "Only call confirm_trade after the user explicitly repeats confirmationText; AI must never propose or initiate a trade."} Orders execute sequentially without rollback. Definite rejections do not stop the batch; uncertain outcomes or authorization failures stop remaining orders.`,
+    } });
+  }
+
+  private batchOutcome(proposal: ProposalRow) {
+    const rows = this.ctx.storage.sql.exec<{ item_index: number; action: string; order_id: number | null; status: string; outcome_json: string | null }>(
+      "SELECT item_index, action, order_id, status, outcome_json FROM trade_batch_item WHERE proposal_id = ? ORDER BY item_index", proposal.id,
+    ).toArray();
+    return { result: { proposalId: proposal.id, status: proposal.status, orders: rows.map(row => ({
+      index: row.item_index, action: row.action, ...(row.order_id === null ? {} : { orderId: row.order_id }),
+      status: row.status === "PENDING" && proposal.status !== "PENDING" && proposal.status !== "EXECUTING" ? "NOT_SUBMITTED" : row.status,
+      ...(row.outcome_json === null ? {} : { outcome: JSON.parse(row.outcome_json) as unknown }),
+    })) } };
+  }
+
+  private async executeBatch(proposal: ProposalRow, requestId: string, identity: ClientIdentity): Promise<Response> {
+    const orders = JSON.parse(proposal.order_json) as Array<{ action: "PLACE" | "REPLACE"; orderId?: number; orderPayload: { [key: string]: JsonValue } }>;
+    const guard = (): PublicError | undefined => !tradingEnabled(this.env)
+      ? { code: "TRADE_STATE_CONFLICT", message: "Trading is disabled by deployment configuration", requestId }
+      : proposal.expires_at <= Date.now() ? { code: "CONFIRMATION_EXPIRED", message: "Batch approval expired", requestId } : undefined;
+    let stop: { error: PublicError } | undefined;
+    for (const [index, item] of orders.entries()) {
+      if (!tradingEnabled(this.env)) {
+        stop = { error: { code: "TRADE_STATE_CONFLICT", message: "Trading is disabled by deployment configuration", requestId } };
+        break;
+      }
+      if (proposal.expires_at <= Date.now()) {
+        stop = { error: { code: "CONFIRMATION_EXPIRED", message: "Batch approval expired", requestId } };
+        break;
+      }
+      try {
+        this.security.assertIdentity(identity);
+        this.security.assertAccount(identity.clientId, proposal.account_hash);
+        if (identity.clientId !== proposal.client_id || identity.securityPolicyVersion !== proposal.policy_version) throw new SecurityError("SECURITY_POLICY_CHANGED");
+      } catch (error) {
+        if (error instanceof SecurityError) {
+          stop = { error: { code: error.code, message: "Client policy changed or account access denied", requestId } };
+        } else {
+          logEvent("batch_preflight_failed", { requestId, proposalId: proposal.id });
+          stop = { error: { code: "UPSTREAM_UNAVAILABLE", message: "Unable to validate batch authorization", requestId } };
+        }
+        break;
+      }
+      const claimed = this.ctx.storage.sql.exec<{ item_index: number }>("UPDATE trade_batch_item SET status = 'EXECUTING' WHERE proposal_id = ? AND item_index = ? AND status = 'PENDING' RETURNING item_index", proposal.id, index + 1).toArray()[0];
+      if (!claimed) {
+        logEvent("batch_claim_failed", { requestId, proposalId: proposal.id });
+        return jsonResponse(this.batchOutcome(this.proposal(proposal.id) ?? proposal), 409);
+      }
+      let payload: unknown;
+      let ok = false;
+      try {
+        const response = await this.executeMutation(item.action, proposal.account_hash, item.orderId, item.orderPayload, requestId, "confirm_trade_batch", identity, guard);
+        payload = await response.json();
+        ok = response.ok;
+      } catch {
+        payload = { error: { code: "EXECUTION_UNCERTAIN", message: "Batch item outcome is unknown; inspect the order before retrying", requestId } };
+      }
+      const error = payload && typeof payload === "object" ? field(payload, "error") : undefined;
+      const code = error && typeof error === "object" ? field(error, "code") : undefined;
+      const definite = code === "SCHWAB_REJECTED" || code === "RATE_LIMITED";
+      const uncertain = code === "EXECUTION_UNCERTAIN";
+      const status = ok ? "EXECUTED" : uncertain ? "EXECUTION_UNCERTAIN" : definite ? "FAILED" : "NOT_SUBMITTED";
+      this.ctx.storage.sql.exec("UPDATE trade_batch_item SET status = ?, outcome_json = ? WHERE proposal_id = ? AND item_index = ?", status, JSON.stringify(payload), proposal.id, index + 1);
+      if (!ok && !definite) {
+        stop = { error: { code: uncertain ? "EXECUTION_UNCERTAIN" : code === "AUTH_REQUIRED" ? "AUTH_REQUIRED" : code === "REAUTHORIZATION_REQUIRED" ? "REAUTHORIZATION_REQUIRED" : code === "ACCOUNT_ACCESS_DENIED" ? "ACCOUNT_ACCESS_DENIED" : code === "SECURITY_POLICY_CHANGED" ? "SECURITY_POLICY_CHANGED" : code === "CONFIRMATION_EXPIRED" ? "CONFIRMATION_EXPIRED" : code === "TRADE_STATE_CONFLICT" ? "TRADE_STATE_CONFLICT" : "UPSTREAM_UNAVAILABLE", message: "Batch stopped before this order could be submitted", requestId } };
+        break;
+      }
+    }
+    if (stop) this.audit("trade_batch_stopped", proposal.id, requestId, stop.error.code, proposal.intent_digest);
+    this.ctx.storage.sql.exec("UPDATE trade_batch_item SET status = 'NOT_SUBMITTED', outcome_json = ? WHERE proposal_id = ? AND status = 'PENDING'", stop ? JSON.stringify(stop) : null, proposal.id);
+    const progress = this.batchOutcome(proposal).result.orders;
+    const uncertain = progress.some(item => item.status === "EXECUTION_UNCERTAIN");
+    const successful = progress.filter(item => item.status === "EXECUTED").length;
+    const failed = progress.filter(item => item.status === "FAILED").length;
+    const status = uncertain ? "EXECUTION_UNCERTAIN" : successful === progress.length ? "EXECUTED" : failed === progress.length || (successful === 0 && failed === 0) ? "FAILED" : "PARTIALLY_EXECUTED";
+    this.ctx.storage.sql.exec("UPDATE trade_proposal SET status = ?, updated_at = ? WHERE id = ? AND status = 'EXECUTING'", status, Date.now(), proposal.id);
+    const outcome = this.batchOutcome({ ...proposal, status });
+    this.ctx.storage.sql.exec("UPDATE trade_proposal SET outcome_json = ? WHERE id = ?", JSON.stringify(outcome), proposal.id);
+    this.audit("trade_execution_finished", proposal.id, requestId, status, proposal.intent_digest);
+    this.notifications.suppressPendingDeliveriesForEntity(proposal.id);
+    this.notifications.recordEvent({ dedupeKey: `trade_proposal:${proposal.id}:${status}`, type: "TRADE_RESULT", entityId: proposal.id,
+      summary: uncertain ? "批量交易执行不确定，请先查询订单状态" : "批量交易执行完成",
+      ...(uncertain ? { executionStatus: "EXECUTION_UNCERTAIN" } : {}) });
+    await this.scheduleNextAlarm();
+    return jsonResponse(outcome);
+  }
+
   private async prepareTrade(request: Request): Promise<Response> {
     const raw: unknown = await request.json().catch(() => null);
     const requestId = raw !== null && typeof raw === "object" && typeof field(raw, "requestId") === "string" ? field(raw, "requestId") as string : crypto.randomUUID();
@@ -1505,6 +1697,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     ).toArray()[0];
     if (!claimed) return publicError({ code: "TRADE_STATE_CONFLICT", message: "Trade proposal was already consumed", requestId }, 409);
     this.audit("trade_execution_started", current.id, requestId, "EXECUTING", current.intent_digest);
+    if (current.action === "BATCH") return this.executeBatch(current, requestId, identity);
     const response = await this.executeMutation(current.action, current.account_hash, current.order_id, JSON.parse(current.order_json) as { [key: string]: JsonValue }, requestId, "confirm_trade", identity);
     return this.finishProposal(current, requestId, response);
   }
@@ -2047,11 +2240,12 @@ export class SchwabVault extends DurableObject<AppEnv> {
     requestId: string,
     tool: string,
     identity?: ClientIdentity,
+    guard?: () => PublicError | undefined,
   ): Promise<Response> {
     const accountPath = `/accounts/${encodeURIComponent(accountHash)}/orders`;
-    if (action === "PLACE") return this.requestSchwab({ base: "trader", path: accountPath, requestId, tool }, "POST", orderPayload, identity);
+    if (action === "PLACE") return this.requestSchwab({ base: "trader", path: accountPath, requestId, tool }, "POST", orderPayload, identity, undefined, guard);
     const orderPath = `${accountPath}/${String(orderId)}`;
-    return this.requestSchwab({ base: "trader", path: orderPath, requestId, tool }, action === "REPLACE" ? "PUT" : "DELETE", orderPayload, identity);
+    return this.requestSchwab({ base: "trader", path: orderPath, requestId, tool }, action === "REPLACE" ? "PUT" : "DELETE", orderPayload, identity, undefined, guard);
   }
 
   private async proxySchwab(request: Request): Promise<Response> {
@@ -2111,6 +2305,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
     body?: { [key: string]: JsonValue },
     identity?: ClientIdentity,
     transform?: (value: unknown) => unknown,
+    guard?: () => PublicError | undefined,
   ): Promise<Response> {
     if (!input.path.startsWith("/") || input.path.startsWith("//") || input.path.includes("..")) {
       return publicError({ code: "INVALID_ARGUMENT", message: "Invalid Schwab API path", requestId: input.requestId }, 400);
@@ -2150,6 +2345,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
         }
         catch (error) { return publicError({ code: error instanceof SecurityError ? error.code : "SECURITY_POLICY_CHANGED", message: "Client policy changed or account access denied before execution", requestId: input.requestId }, 403); }
       }
+      const guardError = guard?.();
+      if (guardError) return publicError(guardError, 403);
 
       const started = Date.now();
       let upstream: Response;
@@ -2223,6 +2420,7 @@ export class SchwabVault extends DurableObject<AppEnv> {
         await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
         continue;
       }
+      if (guard && (upstream.status === 401 || upstream.status === 403)) return publicError({ code: "AUTH_REQUIRED", message: "Schwab rejected authorization", requestId: input.requestId, attempts }, 401);
       const code = upstream.status === 429 ? "RATE_LIMITED" : upstream.status >= 500 ? method === "GET" ? "UPSTREAM_UNAVAILABLE" : "EXECUTION_UNCERTAIN" : "SCHWAB_REJECTED";
       return publicError(
         {

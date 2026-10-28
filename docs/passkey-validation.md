@@ -1,5 +1,16 @@
 # Advanced Security 验证与发布前验收
 
+## 2026-10-28 批量订单批准
+
+- `prepare_trade_batch` 冻结同账户的即时 `PLACE`/`REPLACE` 列表；普通模式复用一次 `confirm_trade`，增强模式复用一个批准 URL 和一次 WebAuthn assertion。完整输入和失败策略见 [README 批量订单](../README.md#batch-orders-one-approval-ordered-submissions)。
+- 独立 workerd + SQLite DO 烟雾验证：三笔 `POST → PUT → POST`，第二笔模拟 HTTP 400 后第三笔仍提交，结果为 `EXECUTED / FAILED / EXECUTED`；另一批首笔模拟 HTTP 503，结果为 `EXECUTION_UNCERTAIN / NOT_SUBMITTED`。重复确认均不增加提交次数。所有出站调用只允许 `smoke.invalid`，真实 Schwab 请求为 0。
+- Chrome 实际页面检查使用临时本地 fixture 和真实 `renderSecurityPage`：中文及英文显示三笔顺序预览、改单目标 ID、全量冻结 JSON、一次批准全部/拒绝全部按钮及非原子风险；不确定结果页明确区分已执行、不确定和未提交，且不再显示批准按钮。桌面视口 1523 CSS px，页面报告内容宽同为 1523。fixture 与服务已移除，不进入生产。
+- 自动化签名使用真实本地生成的软件认证器密钥；不是硬件设备验收，也不是生产交易验收。本轮未部署、未更改生产总开关或 bindings，未提交真实 Schwab 订单。
+- 自动化结果：`npm run typecheck`、`npm run lint`、全量 `npm test`（19 文件、353 项）通过；`npm run test:passkey-acceptance`（8 项）、`npm run test:dashboard-ui`（14 项）、`npm run test:deploy-config`（6 项）及 `npm run test:introspect` 通过。新增覆盖整批一次签名、重复/并发确认、部分失败继续、不确定停止、撤权/过期/总开关和 401 刷新后的再次检查、取消整批及 DO 驱逐重建后的不重放。
+- `npx wrangler deploy --dry-run --outdir /tmp/schwab-batch-dry-run` 打包成功，未上传。Vitest 使用的 Wrangler 对现有 `observability.redact_query_string` 发出“不识别字段”警告；本功能没有改动该配置，也未借此升级依赖。
+
+发布前仍需人工完成：在隔离模拟环境以 Safari/手机原生 Passkey 对混合批次批准一次，取消一次，刷新结果并确认不重放；核对窄屏所有订单、改单目标及完整 JSON；在正式 origin 核对 OAuth 和批准链接。不得用真实下单替代这些验收。
+
 ## 2026-10-20 验证失败时保留 Passkey
 
 - 仪表盘和安全页不再因 `verify` / `add-verify` 的异常调用 `signalUnknownCredential`；网络中断或服务端错误不能证明凭据不存在，也不能据此通知认证器删除凭据。

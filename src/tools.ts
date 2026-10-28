@@ -415,6 +415,15 @@ export function createServer(
     async (input) => tradeAction("prepare_trade", "/trade/prepare", input),
   );
 
+  server.registerTool(
+    "prepare_trade_batch",
+    {
+      description: "Freeze 1–20 user-initiated immediate PLACE or REPLACE orders for one account and one mandatory approval. Orders execute in sequence without rollback; an uncertain outcome stops the batch. Never initiate trades proactively.",
+      inputSchema: toolSchemas.prepareTradeBatch,
+    },
+    async (input) => tradeAction("prepare_trade_batch", "/trade/prepare-batch", input),
+  );
+
   if (!identity.advancedSecurity) server.registerTool(
     "confirm_trade",
     {

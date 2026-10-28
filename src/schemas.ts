@@ -62,6 +62,21 @@ const prepareTrade = z.object({
   }
 });
 
+const prepareTradeBatch = z.object({
+  accountHash,
+  orders: z.array(z.object({
+    action: z.enum(["PLACE", "REPLACE"]),
+    orderId: z.number().int().positive().optional(),
+    orderPayload,
+  }).strict().superRefine((value, ctx) => {
+    if (value.action === "REPLACE" && value.orderId === undefined) ctx.addIssue({ code: "custom", message: "orderId is required for REPLACE" });
+    if (value.action === "PLACE" && value.orderId !== undefined) ctx.addIssue({ code: "custom", message: "orderId is not allowed for PLACE" });
+  })).min(1).max(20),
+  userInstruction: z.string().trim().min(1).max(4000),
+}).strict().superRefine((value, ctx) => {
+  if (new TextEncoder().encode(JSON.stringify(value.orders)).byteLength > 262_144) ctx.addIssue({ code: "custom", message: "orders must not exceed 256 KiB" });
+});
+
 export const toolSchemas = {
   getTradeProposal: z.object({ proposalId: z.uuid() }).strict(),
   empty: z.object({}),
@@ -130,6 +145,7 @@ export const toolSchemas = {
     message: "startDate must not be after endDate",
   }),
   prepareTrade,
+  prepareTradeBatch,
   confirmTrade: z.object({
     proposalId: uuid,
     confirmationToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
