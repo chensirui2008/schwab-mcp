@@ -146,6 +146,53 @@ test('approval redirects only completed results and preserves errors', async () 
     if (result.error) assert.equal(status.textContent, result.error.message);
   }
 });
+test('batch approval uses one native assertion and reloads persisted results without completion redirects', async () => {
+  for (const batchStatus of ['PARTIALLY_EXECUTED', 'EXECUTION_UNCERTAIN', 'EXECUTED']) {
+    const session = { csrf: 'test', expiresAt: Date.now() + 900_000, credentialVersion: 1, recovery: false };
+    const preview = { accountHash: 'a'.repeat(32), action: 'BATCH', executionMode: 'IMMEDIATE', orders: [{ action: 'PLACE', orderPayload: {} }] };
+    const proposal = { proposalId: 'batch-123', status: 'PENDING', preview, intentDigest: 'digest', expiresAt: new Date().toISOString(), outcome: null };
+    const page = String(await renderSecurityPage(session, [], proposal, 'en-US'));
+    const batchScript = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)][0][1];
+    const pageData = page.match(/<script id="page-data" type="application\/json">([^<]*)<\/script>/)[1];
+    const calls = [];
+    const redirects = [];
+    const persisted = { result: { proposalId: proposal.proposalId, status: batchStatus, orders: [{ index: 1, action: 'PLACE', status: batchStatus === 'EXECUTED' ? 'EXECUTED' : 'NOT_SUBMITTED' }] } };
+    let nativeCalls = 0;
+    let reloaded = '';
+    const reloads = [];
+    const context = {
+      document: {
+        querySelectorAll: () => [],
+        querySelector: selector => ({ '#status': { textContent: '' }, 'meta[name="csrf"]': { content: 'test' }, '#page-data': { textContent: pageData } })[selector],
+      },
+      window: { PublicKeyCredential: function () {} },
+      navigator: { credentials: { get: async () => { nativeCalls++; return { toJSON: () => ({ id: 'signed-credential' }) }; } } },
+      location: {
+        assign: url => redirects.push(url),
+        replace: url => redirects.push(url),
+        reload: () => { reloads.push(Promise.resolve(renderSecurityPage(session, [], { ...proposal, status: batchStatus, outcome: persisted }, 'en-US')).then(value => { reloaded = String(value); })); },
+      },
+      fetch: async (path, options) => {
+        calls.push({ path, body: JSON.parse(options.body) });
+        return { ok: true, json: async () => path.endsWith('/options')
+          ? { registration: false, challengeId: 'challenge', options: { challenge: 'YQ', allowCredentials: [] } }
+          : persisted };
+      },
+      atob, btoa, Uint8Array,
+    };
+    runInNewContext(batchScript, context);
+    await runInNewContext('act("approve")', context);
+    await Promise.all(reloads);
+    assert.equal(nativeCalls, 1);
+    assert.deepEqual(calls.map(call => call.path), ['/security/api/options', '/security/api/verify']);
+    assert.equal(calls[0].body.proposalId, proposal.proposalId);
+    assert.deepEqual(calls[1].body.response, { id: 'signed-credential' });
+    assert.deepEqual(redirects, []);
+    assert.match(reloaded, new RegExp(batchStatus));
+    assert.match(reloaded, new RegExp(persisted.result.orders[0].status));
+  }
+});
+
 test('isolated fixture serves real UI, rejects foreign origins and cannot create an unregistered approval', async () => {
   const server = await startAcceptance(8792);
   try {

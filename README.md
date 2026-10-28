@@ -130,7 +130,7 @@ flowchart TD
 
 ## MCP Tools Catalog
 
-The server registers **up to 25 MCP tools**. Schema validation strictly follows Zod definitions in [`src/schemas.ts`](src/schemas.ts).
+The server registers **up to 26 MCP tools**. Schema validation strictly follows Zod definitions in [`src/schemas.ts`](src/schemas.ts).
 
 ### Read-Only & Diagnostics (15 Tools)
 
@@ -162,17 +162,18 @@ The Durable Object enforces each client's account allowlist for balances, positi
 
 Reauthorization revokes the client's old grants before committing the new account scope. Removing an account pauses that client's active delayed tasks for the account as `PAUSED`; records remain available for that client to inspect and cancel. Existing tasks without explicit account consent are also paused during migration. Adding an account back never resumes paused tasks automatically: create and approve a new task. Other account data stays inaccessible. No new bindings or secrets are required. Real browser/account selection and real-device Passkey checks remain manual acceptance before release; automated tests use simulated Schwab responses only.
 
-### Trading Control Tools (10 Tools)
+### Trading Control Tools (11 Tools)
 
 > [!WARNING]
-> Only registered for clients granted **`full_access`** during OAuth authorization. Advanced Security clients omit `confirm_trade`, `enable_session_direct_trading`, and `place_order_direct` (22 tools total); read-only clients retain 15 tools. Executing trades additionally requires `ENABLE_TRADING=true`. Cancellation remains available even when trading is disabled to de-risk positions.
+> Only registered for clients granted **`full_access`** during OAuth authorization. Advanced Security clients omit `confirm_trade`, `enable_session_direct_trading`, and `place_order_direct` (23 tools total); read-only clients retain 15 tools. Executing trades additionally requires `ENABLE_TRADING=true`. Cancellation remains available even when trading is disabled to de-risk positions.
 
 | Tool | Description | Key Inputs |
 | :--- | :--- | :--- |
 | `enable_trading` | Read-only check for deployment killswitch status | None (switch cannot be toggled via MCP) |
 | `prepare_trade` | Freeze an order for five minutes; return a confirmation token or a Passkey approval URL | `accountHash`, `action` (`PLACE`/`REPLACE`), `executionMode`, `orderPayload`, `userInstruction` |
+| `prepare_trade_batch` | Freeze 1–20 immediate orders for one account and one approval | `accountHash`, `orders` (`PLACE`/`REPLACE`, `orderId` for replacements, `orderPayload`), `userInstruction` |
 | `get_trade_proposal` | Read this client’s proposal status and execution result without confirmation credentials | `proposalId` (UUID) |
-| `confirm_trade` | Consume confirmation token with verbatim text playback | `proposalId`, `confirmationToken`, `confirmationText` |
+| `confirm_trade` | Consume one confirmation token and verbatim phrase for a frozen order or entire batch | `proposalId`, `confirmationToken`, `confirmationText` |
 | `enable_session_direct_trading` | Enable direct order placement for the current session | `userInstruction` (returns single-reveal `sessionCapability`) |
 | `place_order_direct` | Direct order submission bypassing per-order confirmation | `sessionCapability`, `executionKey` (UUID), `accountHash`, `orderPayload`, `userInstruction` |
 | `disable_session_direct_trading` | Invalidate active direct trading capability immediately | `sessionCapability` |
@@ -181,6 +182,65 @@ Reauthorization revokes the client's old grants before committing the new accoun
 | `cancel_delayed_trade` | Cancel an active conditional task immediately | `taskId`, `userInstruction` |
 
 ---
+
+## Batch orders: one approval, ordered submissions
+
+`prepare_trade_batch` accepts **one authorized account** and an ordered list of immediate `PLACE` and/or `REPLACE` operations. Every replacement requires its target `orderId`; a new order must omit it. Delayed execution and session direct trading are not part of a batch. Each payload retains the existing 64 KiB safety limit; the serialized `orders` array is limited to 256 KiB and 20 orders.
+
+The following shows the input shape only, not a trading recommendation:
+
+```json
+{
+  "accountHash": "<authorized-account-hash>",
+  "orders": [
+    {
+      "action": "PLACE",
+      "orderPayload": {
+        "orderStrategyType": "SINGLE",
+        "orderType": "LIMIT",
+        "session": "NORMAL",
+        "duration": "DAY",
+        "price": "100.00",
+        "orderLegCollection": [
+          {
+            "instruction": "BUY",
+            "quantity": 1,
+            "instrument": { "symbol": "AAPL", "assetType": "EQUITY" }
+          }
+        ]
+      }
+    },
+    {
+      "action": "REPLACE",
+      "orderId": 123456,
+      "orderPayload": {
+        "orderStrategyType": "SINGLE",
+        "orderType": "LIMIT",
+        "session": "NORMAL",
+        "duration": "DAY",
+        "price": "101.00",
+        "orderLegCollection": [
+          {
+            "instruction": "BUY",
+            "quantity": 1,
+            "instrument": { "symbol": "MSFT", "assetType": "EQUITY" }
+          }
+        ]
+      }
+    }
+  ],
+  "userInstruction": "<the user's explicit instruction covering this entire batch>"
+}
+```
+
+- Preparation validates **all** items before saving a proposal; it submits nothing. The five-minute proposal digest covers the account, complete ordered list, actions, replacement targets and payloads.
+- Ordinary clients receive **one** `confirmationToken` and `confirmationText`. Show the entire frozen preview and obtain the user's verbatim confirmation once, then call the existing `confirm_trade`.
+- Advanced Security clients receive **one** approval URL, no conversational credentials. The browser shows every order and the complete JSON; one Passkey assertion approves the entire batch. Rejecting cancels the pending batch, not existing Schwab orders.
+- Submissions run **sequentially in input order**, not as a Schwab atomic transaction. A definite order rejection does not prevent later submissions. Network errors or 5xx produce `EXECUTION_UNCERTAIN` and stop the remaining orders. Expired approval, lost authorization, policy changes or disabled trading also stop further submissions.
+- No rollback or automatic resubmission: accepted requests remain accepted. Acceptance is **not** a fill guarantee. Inspect uncertain orders manually before preparing anything again. Unsubmitted items require a new proposal and approval.
+- `get_trade_proposal({ "proposalId": "..." })` returns the frozen preview and durable per-item progress/results. Items distinguish `EXECUTED`, `FAILED`, `EXECUTION_UNCERTAIN` and `NOT_SUBMITTED` (or `PENDING`/`EXECUTING` while running). Overall states include `PARTIALLY_EXECUTED` and `EXECUTION_UNCERTAIN`; do not treat an HTTP-success result as proof every order succeeded.
+- A consumed batch is never resumed by another confirmation or approval replay. If execution is interrupted, inspect the persisted item states; a claimed item without a recorded outcome must be reconciled with Schwab, not blindly submitted again.
+
 
 ## Advanced Security: optional Passkey approval
 

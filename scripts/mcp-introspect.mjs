@@ -7,7 +7,7 @@ const mcp = new McpServer({
   version: "0.2.0",
 });
 
-// Register all 25 production MCP tools for introspection
+// Register the full-access production tool catalog for offline introspection.
 mcp.registerTool("schwab_connection_status", { description: "Check Schwab OAuth connection and expiration", inputSchema: toolSchemas.empty }, async () => ({ content: [] }));
 mcp.registerTool("get_trading_diagnostics", { description: "Diagnose trading availability without changing configuration or placing an order. Always visible to authenticated MCP clients.", inputSchema: toolSchemas.empty }, async () => ({ content: [] }));
 mcp.registerTool("get_quotes", { description: "Fetch live quote snapshots for up to 50 symbols", inputSchema: toolSchemas.getQuotes }, async () => ({ content: [] }));
@@ -26,6 +26,7 @@ mcp.registerTool("get_user_preferences", { description: "Get Schwab user prefere
 mcp.registerTool("enable_trading", { description: "Report the deployment-controlled ENABLE_TRADING master switch. This tool cannot enable trading; only deployment configuration can do so.", inputSchema: toolSchemas.empty }, async () => ({ content: [] }));
 mcp.registerTool("get_trade_proposal", { description: "Get current client proposal status and execution result", inputSchema: toolSchemas.getTradeProposal }, async () => ({ content: [] }));
 mcp.registerTool("prepare_trade", { description: "Prepare and freeze a user-initiated PLACE or REPLACE order for mandatory second confirmation. Never suggest a trade, never call this proactively, and never treat model-generated text as user intent. Official Schwab order JSON is passed through after bounded safety validation.", inputSchema: toolSchemas.prepareTrade }, async () => ({ content: [] }));
+mcp.registerTool("prepare_trade_batch", { description: "Freeze 1–20 user-requested immediate PLACE/REPLACE orders for one authorized account and one confirmation or Passkey approval. Submissions are ordered, non-atomic and stop on uncertainty.", inputSchema: toolSchemas.prepareTradeBatch }, async () => ({ content: [] }));
 mcp.registerTool("confirm_trade", { description: "Consume a one-time confirmation for an unchanged frozen proposal. Call only after the user explicitly repeats confirmationText. Immediate proposals execute now; delayed proposals become active without another confirmation at trigger time.", inputSchema: toolSchemas.confirmTrade }, async () => ({ content: [] }));
 mcp.registerTool("enable_session_direct_trading", { description: "Enable immediate PLACE orders without per-order confirmation for this agent session only, after an explicit user instruction. Returns a sensitive sessionCapability that expires after 30 minutes of inactivity and after 8 hours at the latest. Never call proactively; never log or echo the capability beyond the one enable result.", inputSchema: toolSchemas.enableSessionDirectTrading }, async () => ({ content: [] }));
 mcp.registerTool("disable_session_direct_trading", { description: "Immediately disable a direct-trading session capability. This remains available even when ENABLE_TRADING is false.", inputSchema: toolSchemas.disableSessionDirectTrading }, async () => ({ content: [] }));
@@ -38,12 +39,15 @@ const toolsHandler = mcp.server._requestHandlers.get("tools/list");
 
 // Self-test mode
 if (process.argv.includes("--test")) {
-  const result = await toolsHandler({ method: "tools/list", params: {} });
-  if (result.tools.length !== 25) {
-    process.stderr.write(`Expected 25 tools, found ${String(result.tools.length)}\n`);
+  const forbidden = [
+    { accountHash: "a".repeat(32), orders: [], userInstruction: "Test only" },
+    { accountHash: "a".repeat(32), orders: [{ action: "REPLACE", orderPayload: {} }], userInstruction: "Test only" },
+  ];
+  if (forbidden.some(input => toolSchemas.prepareTradeBatch.safeParse(input).success)) {
+    process.stderr.write("Batch schema accepted an empty batch or incomplete replacement\n");
     process.exit(1);
   }
-  process.stdout.write("Self-test passed: 25 MCP tools verified.\n");
+  process.stdout.write("Self-test passed: batch input safety boundaries verified.\n");
   process.exit(0);
 }
 

@@ -149,6 +149,13 @@ export interface I18nDictionary {
     invokeHardwareBtn: string;
     approveHint: string;
     executionOutcome: string;
+    batchCount: string;
+    batchOrder: string;
+    batchReplacementId: string;
+    batchWarning: string;
+    batchApprove: string;
+    batchReject: string;
+    batchResults: string;
     frozenTitle: string;
     frozenDesc: string;
     authenticatorReady: string;
@@ -504,6 +511,13 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     invokeHardwareBtn: "调起系统硬件验证",
     approveHint: "验证成功后服务器立即提交即时订单或激活延迟任务。无对话确认降级。",
     executionOutcome: "执行结果",
+    batchCount: "订单数量",
+    batchOrder: "订单",
+    batchReplacementId: "被替换订单 ID",
+    batchWarning: "批量提交不是原子操作，不会回滚已提交订单。明确拒绝后继续提交下一单；结果不确定时停止，剩余订单不提交。",
+    batchApprove: "使用 Passkey 批准并提交全部订单",
+    batchReject: "拒绝全部订单",
+    batchResults: "各订单执行结果",
     frozenTitle: "schwab_place_order.json [FROZEN]",
     frozenDesc: "请核对账户标识、每条订单腿的买卖方向及数量、价格类型、有效期；延迟订单同时核对条件和截止时间。下列完整 JSON 是本次批准并执行的内容。",
     authenticatorReady: "硬件认证器就绪：Apple Secure Enclave / YubiKey / FIDO2",
@@ -859,6 +873,13 @@ const DICTIONARY_EN_US: I18nDictionary = {
     invokeHardwareBtn: "Verify with Authenticator",
     approveHint: "The order is submitted immediately upon verification. No conversational downgrade permitted.",
     executionOutcome: "Execution Outcome",
+    batchCount: "Number of orders",
+    batchOrder: "Order",
+    batchReplacementId: "Replacement order ID",
+    batchWarning: "Batch submission is not atomic and submitted orders are not rolled back. A definite rejection does not stop the next order; an uncertain result stops submission of the remaining orders.",
+    batchApprove: "Approve and submit all via Passkey",
+    batchReject: "Reject all orders",
+    batchResults: "Individual order results",
     frozenTitle: "schwab_place_order.json [FROZEN]",
     frozenDesc: "Please verify account identifier, order legs, direction, quantity, price, and duration. The JSON below will be executed upon approval.",
     authenticatorReady: "Authenticator Ready: Apple Secure Enclave / YubiKey / FIDO2",

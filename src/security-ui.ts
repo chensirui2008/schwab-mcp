@@ -75,6 +75,7 @@ async function act(operation, target) {
       return;
     }
     if (operation === 'approve') {
+      if (data.isBatch) { location.reload(); return; }
       if (['EXECUTED', 'ACTIVE'].includes(result.status) || result.result?.status === 'ACTIVE') {
         location.replace('/security/approvals/' + encodeURIComponent(data.proposalId) + '/complete');
         return;
@@ -632,33 +633,64 @@ function orderSummary(preview: unknown, s: I18nDictionary["security"]) {
   const account: unknown = Reflect.get(preview, "accountHash");
   const action: unknown = Reflect.get(preview, "action");
   const mode: unknown = Reflect.get(preview, "executionMode");
-  const order: unknown = Reflect.get(preview, "orderPayload");
-  const legs: Record<string, unknown>[] = [];
-  function visit(value: unknown): void {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return;
-    const record = value as Record<string, unknown>;
-    if (Array.isArray(record.orderLegCollection)) for (const leg of record.orderLegCollection as unknown[]) {
-      if (leg && typeof leg === "object") {
-        const instrument: unknown = Reflect.get(leg, "instrument");
-        legs.push({
-          symbol: instrument && typeof instrument === "object" ? Reflect.get(instrument, "symbol") as unknown : s.seeJson,
-          instruction: Reflect.get(leg, "instruction") as unknown, quantity: Reflect.get(leg, "quantity") as unknown,
-          type: record.orderType, price: record.price ?? record.stopPrice ?? s.seeJson, duration: record.duration,
-        });
-      }
-    }
-    if (Array.isArray(record.childOrderStrategies)) for (const child of record.childOrderStrategies as unknown[]) visit(child);
-  }
-  visit(order);
   const display = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : s.seeJson;
+  const table = (order: unknown, caption: string) => {
+    const legs: Record<string, unknown>[] = [];
+    function visit(value: unknown): void {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return;
+      const record = value as Record<string, unknown>;
+      if (Array.isArray(record.orderLegCollection)) for (const leg of record.orderLegCollection as unknown[]) {
+        if (leg && typeof leg === "object") {
+          const instrument: unknown = Reflect.get(leg, "instrument");
+          legs.push({
+            symbol: instrument && typeof instrument === "object" ? Reflect.get(instrument, "symbol") as unknown : s.seeJson,
+            instruction: Reflect.get(leg, "instruction") as unknown, quantity: Reflect.get(leg, "quantity") as unknown,
+            type: record.orderType, price: record.price != null && record.stopPrice != null ? `${display(record.price)} / stop ${display(record.stopPrice)}` : record.price ?? record.stopPrice ?? s.seeJson, duration: record.duration,
+          });
+        }
+      }
+      if (Array.isArray(record.childOrderStrategies)) for (const child of record.childOrderStrategies as unknown[]) visit(child);
+    }
+    visit(order);
+    return html`<table class="order-table">
+      <caption>${caption}</caption>
+      <thead><tr><th scope="col">${s.symbolSide}</th><th scope="col">${s.quantity}</th><th scope="col">${s.priceType}</th><th scope="col">${s.duration}</th></tr></thead>
+      <tbody>${legs.map(leg => html`<tr><td>${display(leg.symbol)} / ${display(leg.instruction)}</td><td>${display(leg.quantity)}</td><td>${display(leg.type)} / ${display(leg.price)}</td><td>${display(leg.duration)}</td></tr>`)}</tbody>
+    </table>`;
+  };
+  const orders: unknown = Reflect.get(preview, "orders");
   return html`
     <div class="info-row"><span class="info-label">${s.accountLabel}</span><span class="info-value"><span class="tag-badge">${display(account)}</span></span></div>
     <div class="info-row" style="margin-top: 6px;"><span class="info-label">${s.actionLabel}</span><span class="info-value">${display(action)} · ${display(mode)}</span></div>
-    <table class="order-table">
-      <thead><tr><th>${s.symbolSide}</th><th>${s.quantity}</th><th>${s.priceType}</th><th>${s.duration}</th></tr></thead>
-      <tbody>${legs.map(leg => html`<tr><td>${display(leg.symbol)} / ${display(leg.instruction)}</td><td>${display(leg.quantity)}</td><td>${display(leg.type)} / ${display(leg.price)}</td><td>${display(leg.duration)}</td></tr>`)}</tbody>
-    </table>
+    ${action === "BATCH" && Array.isArray(orders) ? html`
+      <div class="info-row"><span class="info-label">${s.batchCount}</span><span class="info-value">${orders.length}</span></div>
+      <p class="security-notice">${s.batchWarning}</p>
+      <ol>${orders.map((item, index) => {
+        if (!item || typeof item !== "object") return html`<li>${s.seeJson}</li>`;
+        const itemAction: unknown = Reflect.get(item, "action");
+        return html`<li>
+          <h2 class="policy-title">${s.batchOrder} ${index + 1} · ${display(itemAction)}</h2>
+          ${itemAction === "REPLACE" ? html`<div class="info-row"><span class="info-label">${s.batchReplacementId}</span><span class="info-value">${display(Reflect.get(item, "orderId"))}</span></div>` : ""}
+          ${table(Reflect.get(item, "orderPayload"), `${s.batchOrder} ${String(index + 1)}`)}
+        </li>`;
+      })}</ol>
+    ` : table(Reflect.get(preview, "orderPayload"), s.actionLabel)}
   `;
+}
+
+function batchResults(outcome: unknown, s: I18nDictionary["security"]) {
+  const result: unknown = outcome && typeof outcome === "object" ? Reflect.get(outcome, "result") : null;
+  const orders: unknown = result && typeof result === "object" ? Reflect.get(result, "orders") : null;
+  if (!Array.isArray(orders)) return html`<pre class="code-preview">${JSON.stringify(outcome, null, 2)}</pre>`;
+  return html`<h2 class="policy-title">${s.batchResults}</h2><ol>${orders.map((item, index) => {
+    if (!item || typeof item !== "object") return html`<li>${s.seeJson}</li>`;
+    const value = item as Record<string, unknown>;
+    return html`<li>
+      <h3 class="policy-title">${s.batchOrder} ${index + 1} · ${typeof value.action === "string" ? value.action : s.seeJson}</h3>
+      <p>${typeof value.status === "string" ? value.status : s.seeJson}</p>
+      ${value.outcome === undefined ? "" : html`<pre class="code-preview">${JSON.stringify(value.outcome, null, 2)}</pre>`}
+    </li>`;
+  })}</ol>`;
 }
 
 export function renderSecurityPage(
@@ -672,8 +704,9 @@ export function renderSecurityPage(
   const s = dict.security;
   const c = dict.common;
 
+  const isBatch = !!proposal?.preview && typeof proposal.preview === "object" && Reflect.get(proposal.preview, "action") === "BATCH";
   // JSON script content is escaped for the HTML parser as well as the JS parser.
-  const data = JSON.stringify({ proposalId: proposal?.proposalId }).replaceAll("<", "\\u003c");
+  const data = JSON.stringify({ proposalId: proposal?.proposalId, isBatch }).replaceAll("<", "\\u003c");
 
   const policyListHtml = html`
     <div class="policy-list">
@@ -740,7 +773,7 @@ export function renderSecurityPage(
             <div class="info-row">
               <span class="info-label">${s.proposalStatus}</span>
               <span class="info-value">
-                <span class="tag-badge ${proposal.status === "PENDING" ? "" : "green"}">${proposal.status}</span>
+                <span class="tag-badge ${(isBatch ? ["EXECUTED", "ACTIVE"].includes(proposal.status) : proposal.status !== "PENDING") ? "green" : ""}">${proposal.status}</span>
               </span>
             </div>
             <div class="info-row">
@@ -759,14 +792,14 @@ export function renderSecurityPage(
               <div class="approval-sticky-bar">
                 <button id="approve" class="pill-btn full-width primary-glow" data-operation="approve">
                   ${raw(FINGERPRINT_ICON_SVG)}
-                  <span>${s.approveSubmitBtn}</span>
+                  <span>${isBatch ? s.batchApprove : s.approveSubmitBtn}</span>
                 </button>
-                <button id="reject-order" class="pill-btn full-width">${s.rejectOrderBtn}</button>
+                <button id="reject-order" class="pill-btn full-width">${isBatch ? s.batchReject : s.rejectOrderBtn}</button>
               </div>
               <div class="action-hint">${s.approveHint}</div>
             ` : html`
               <div class="policy-title" style="margin: 12px 0 4px;">${s.executionOutcome}</div>
-              <pre class="code-preview">${JSON.stringify(proposal.outcome, null, 2)}</pre>
+              ${isBatch ? batchResults(proposal.outcome, s) : html`<pre class="code-preview">${JSON.stringify(proposal.outcome, null, 2)}</pre>`}
             `}
           </div>
         </div>

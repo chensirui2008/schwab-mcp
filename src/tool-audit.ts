@@ -10,7 +10,7 @@ const TOOL_NAMES: Readonly<Record<string, true>> = {
   get_option_chain: true, get_option_expiration_chain: true, get_market_hours: true, get_movers: true,
   search_instruments: true, list_accounts: true, get_account: true, get_orders: true, get_order: true,
   get_transactions: true, get_user_preferences: true, enable_trading: true, get_trade_proposal: true,
-  prepare_trade: true, confirm_trade: true, enable_session_direct_trading: true, disable_session_direct_trading: true,
+  prepare_trade: true, prepare_trade_batch: true, confirm_trade: true, enable_session_direct_trading: true, disable_session_direct_trading: true,
   place_order_direct: true, cancel_order: true, list_delayed_trades: true, cancel_delayed_trade: true,
 };
 const PUBLIC_ERROR_CODES: Readonly<Record<ErrorCode, true>> = {

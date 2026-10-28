@@ -510,7 +510,7 @@ async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
       const proposal = await securityCall<Parameters<typeof renderSecurityPage>[2]>(c.env, "/proposal", { sessionId, proposalId });
       if (c.req.path.endsWith("/complete")) {
         if (!proposal || !["EXECUTED", "ACTIVE"].includes(proposal.status)) return c.text("授权尚未成功完成，请返回客户端查询状态。", 409);
-        return c.html(renderPasskeyAuthorizedPage(lang));
+        if (!proposal.preview || typeof proposal.preview !== "object" || Reflect.get(proposal.preview, "action") !== "BATCH") return c.html(renderPasskeyAuthorizedPage(lang));
       }
       return await c.html(renderSecurityPage(state.session, state.credentials, proposal, lang));
     } catch { return c.text("提案不可用，请返回客户端查询状态。", 403); }

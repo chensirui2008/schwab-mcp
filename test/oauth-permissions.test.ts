@@ -285,6 +285,33 @@ describe("OAuth permission enforcement", () => {
     }
   });
 
+  it("blocks batch preparation for read-only clients and unselected accounts at the MCP boundary", async () => {
+    const { appEnv, helpers } = setup();
+    const args = {
+      accountHash: "a".repeat(32),
+      orders: [{
+        action: "PLACE",
+        orderPayload: {
+          orderStrategyType: "SINGLE", orderType: "LIMIT", price: "1.00",
+          session: "NORMAL", duration: "DAY",
+          orderLegCollection: [{ instruction: "BUY", quantity: 1, instrument: { symbol: "TEST_ONLY", assetType: "EQUITY" } }],
+        },
+      }],
+      userInstruction: "Isolated batch authorization test only",
+    };
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    for (const permission of ["read_only", "full_access"] as const) {
+      const request = await authRequest(helpers);
+      const tokens = await exchange(appEnv, request, await grant(appEnv, request, currentProps(appEnv, permission)));
+      const response = await dispatch(mcpRequest(tokens.access_token, "tools/call", { name: "prepare_trade_batch", arguments: args }), appEnv);
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain(permission === "read_only" ? "not found" : "ACCOUNT_ACCESS_DENIED");
+    }
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("revokes full-access tokens when the same client reauthorizes as read-only", async () => {
     const { appEnv, helpers } = setup();
     const request = await authRequest(helpers);
