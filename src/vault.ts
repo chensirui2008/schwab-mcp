@@ -517,8 +517,9 @@ export class SchwabVault extends DurableObject<AppEnv> {
       const taskId: unknown = result && typeof result === "object" ? Reflect.get(result, "taskId") : undefined;
       if (typeof taskId === "string") task = this.ctx.storage.sql.exec<DelayedTradeRow>("SELECT * FROM delayed_trade WHERE id = ?", taskId).toArray()[0];
     }
+    const effectiveStatus = task?.status ?? (proposal.status === "PENDING" && proposal.expires_at <= Date.now() ? "EXPIRED" : proposal.status);
     return {
-      proposalId: proposal.id, status: task?.status ?? (proposal.status === "PENDING" && proposal.expires_at <= Date.now() ? "EXPIRED" : proposal.status),
+      proposalId: proposal.id, status: effectiveStatus,
       approvalMethod: proposal.approval_method, intentDigest: proposal.intent_digest,
       expiresAt: new Date(proposal.expires_at).toISOString(),
       preview: proposal.action === "BATCH"
@@ -529,8 +530,8 @@ export class SchwabVault extends DurableObject<AppEnv> {
           validUntil: proposal.valid_until === null ? null : new Date(proposal.valid_until).toISOString(),
           pollIntervalSeconds: proposal.poll_interval_seconds, replacesTaskId: proposal.replaces_task_id },
       ...(task ? { taskId: task.id, taskVersion: task.version } : {}),
-      outcome: proposal.action === "BATCH" && proposal.status !== "PENDING"
-        ? this.batchOutcome(proposal) : task?.outcome_json ? JSON.parse(task.outcome_json) as unknown : activation,
+      outcome: proposal.action === "BATCH" && effectiveStatus !== "PENDING"
+        ? this.batchOutcome({ ...proposal, status: effectiveStatus }) : task?.outcome_json ? JSON.parse(task.outcome_json) as unknown : activation,
     };
   }
 

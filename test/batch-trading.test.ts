@@ -201,6 +201,27 @@ describe("batch trade proposals", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("projects expired pending batches as not submitted in proposal outcome when deadline elapses", async () => {
+    const vault = await setup();
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const proposal = await prepare(vault);
+    clock.mockReturnValue(now + 301_000);
+    expect(await (await call(vault, "/trade/proposal", { proposalId: proposal.proposalId })).json()).toMatchObject({
+      result: {
+        status: "EXPIRED",
+        outcome: {
+          result: {
+            status: "EXPIRED",
+            orders: [{ status: "NOT_SUBMITTED" }, { status: "NOT_SUBMITTED" }, { status: "NOT_SUBMITTED" }],
+          },
+        },
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("stops on a network exception and reports all definite rejections as failed", async () => {
     const vault = await setup();
     const fetchMock = vi.fn(() => { throw new Error("connection lost"); });
