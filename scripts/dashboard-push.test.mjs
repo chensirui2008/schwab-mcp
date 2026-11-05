@@ -8,20 +8,22 @@ import { build } from 'esbuild';
 const bundle = await build({ entryPoints: ['src/dashboard-ui.ts'], bundle: true, write: false, platform: 'node', format: 'esm' });
 const { renderDashboardPage } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const html = String(await renderDashboardPage({ session: { csrf: 'test', expiresAt: Date.now() + 900_000 }, appVersion: 'test', allowedUserId: 'owner' }));
+const enHtml = String(await renderDashboardPage({ session: { csrf: 'test', expiresAt: Date.now() + 900_000 }, appVersion: 'test', allowedUserId: 'owner', lang: 'en-US' }));
 const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match => match[1]).find(script => script.includes('async function loadPushSettings()'));
+const enScript = [...enHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match => match[1]).find(script => script.includes('async function loadPushSettings()'));
 // Skip unrelated startup API loads; execute the rendered script and its actual event handlers.
 const startup = 'run(async () => { await refreshAll(); await loadHighlightedNotification(); });';
 assert.ok(script.includes(startup));
 const isolatedScript = script.replace(startup, 'globalThis.loadPushSettings = loadPushSettings;');
 
-function setup({ permission = 'default', active = false, subscribed = false, permissionApi = true, scriptSuffix = '' } = {}) {
+function setup({ permission = 'default', active = false, subscribed = false, permissionApi = true, scriptSuffix = '', lang = 'zh-CN', userAgent = 'Chrome', passkeys = false } = {}) {
   const elements = new Map();
   function element() {
-    return { dataset: {}, value: '', textContent: '', events: {}, children: [], addEventListener(type, handler) { this.events[type] = handler; }, setAttribute() {}, append(...children) { this.children.push(...children); this.lastChild = children.at(-1); }, replaceChildren(...children) { this.children = children; } };
+    return { dataset: {}, style: {}, value: '', textContent: '', events: {}, children: [], focus() {}, close() { this.open = false; }, showModal() { this.open = true; }, addEventListener(type, handler) { this.events[type] = handler; }, setAttribute() {}, append(...children) { this.children.push(...children); this.lastChild = children.at(-1); }, replaceChildren(...children) { this.children = children; } };
   }
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
-  const document = { visibilityState: 'visible', events: {}, getElementById: get, createElement: element, querySelector: selector => ({ content: selector.includes('session-expires') ? Date.now() + 900_000 : 'test' }), querySelectorAll: selector => selector === '[data-action]' ? [...elements.values()] : [], addEventListener(type, handler) { this.events[type] = handler; } };
-  const window = { events: {}, addEventListener(type, handler) { this.events[type] = handler; }, prompt: () => 'Chrome' };
+  const document = { documentElement: { lang }, visibilityState: 'visible', events: {}, getElementById: get, createElement: element, querySelector: selector => ({ content: selector.includes('session-expires') ? Date.now() + 900_000 : 'test' }), querySelectorAll: selector => selector === '[data-action]' ? [...elements.values()] : [], addEventListener(type, handler) { this.events[type] = handler; } };
+  const window = { events: {}, matchMedia: () => ({ matches: false }), addEventListener(type, handler) { this.events[type] = handler; }, prompt: () => 'Chrome' };
   const permissionStatus = element();
   const calls = [];
   const timers = new Map();
@@ -30,11 +32,18 @@ function setup({ permission = 'default', active = false, subscribed = false, per
   const notification = { permission, requestPermission: async () => { state.permissionCalls++; notification.permission = 'granted'; return 'granted'; } };
   Object.assign(window, { Notification: notification, PushManager: function () {} });
   const registration = { active: {}, pushManager: { getSubscription: async () => state.hangLookup ? new Promise(() => {}) : state.subscribed ? subscription : null, subscribe: async () => { state.subscribeCalls++; if (state.hangSubscribe) await new Promise(resolve => { state.finishSubscribe = resolve; }); state.subscribed = true; return subscription; } } };
-  const navigator = { userAgent: 'Chrome', serviceWorker: { getRegistration: async () => registration, addEventListener() {} } };
+  const navigator = { userAgent, serviceWorker: { getRegistration: async () => registration, addEventListener() {} } };
+  window.navigator = navigator;
+  if (passkeys) {
+    window.PublicKeyCredential = function () {};
+    window.isSecureContext = true;
+    navigator.credentials = {};
+  }
   if (permissionApi) navigator.permissions = { query: async () => permissionStatus };
   const context = {
     window, document, navigator, Notification: notification, atob,
-    setInterval() {},
+    intervals: [],
+    setInterval(fn, ms) { context.intervals.push({ fn, ms }); },
     setTimeout(fn, ms) { const id = {}; timers.set(id, { fn, ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
     fetch: async (path, options) => {
@@ -48,7 +57,8 @@ function setup({ permission = 'default', active = false, subscribed = false, per
       return { ok: true, status: 200, json: async () => data };
     },
   };
-  runInNewContext(isolatedScript.replace('globalThis.loadPushSettings = loadPushSettings;', 'globalThis.loadPushSettings = loadPushSettings;' + scriptSuffix), context);
+  const localizedScript = lang === 'en-US' ? enScript.replace(startup, 'globalThis.loadPushSettings = loadPushSettings;') : isolatedScript;
+  runInNewContext(localizedScript.replace('globalThis.loadPushSettings = loadPushSettings;', 'globalThis.loadPushSettings = loadPushSettings;' + scriptSuffix), context);
   return { context, get, state, timers, notification, permissionStatus, window, document, calls };
 }
 
@@ -271,7 +281,7 @@ test('dashboard displays all masked account labels and clears stale labels on fa
   const ui = setup({ scriptSuffix: 'globalThis.loadLinkedAccounts = loadLinkedAccounts;' });
   ui.context.fetch = async () => ({ ok: true, json: async () => ({ connected: true, accounts: ['••••6789', '••••0012'] }) });
   await ui.context.loadLinkedAccounts();
-  assert.equal(ui.get('linked-accounts').textContent, '已连接账户：••••6789、••••0012');
+  assert.equal(ui.get('linked-accounts').textContent, '已连接账户：••••6789, ••••0012');
   ui.context.fetch = async () => { throw new Error('offline'); };
   await assert.rejects(ui.context.loadLinkedAccounts(), /网络请求失败/);
   assert.equal(ui.get('linked-accounts').textContent, '已连接账户：账户读取失败');
@@ -282,3 +292,72 @@ test('dashboard displays all masked account labels and clears stale labels on fa
   await assert.rejects(ui.context.loadLinkedAccounts(), /账户读取失败/);
   assert.equal(ui.get('linked-accounts').textContent, '已连接账户：账户读取失败');
 });
+
+for (const lang of ['zh-CN', 'en-US']) {
+  test(`countdown remains localized after the first timer tick (${lang})`, () => {
+    const ui = setup({ lang });
+    const expected = lang === 'en-US' ? 'Session remaining: 15 minutes' : '会话剩余 15 分钟';
+    assert.equal(ui.get('session-state').textContent, expected);
+    ui.context.intervals.find(timer => timer.ms === 1000).fn();
+    assert.equal(ui.get('session-state').textContent, expected);
+  });
+
+  test(`refresh failures and PWA guidance use the selected dictionary (${lang})`, async () => {
+    const ui = setup({ lang });
+    ui.context.fetch = async () => { throw new Error('offline'); };
+    await ui.get('refresh-all-btn').events.click();
+    const text = ['last-refresh', 'global-msg', 'overview-counts', 'clients-count', 'audit-pagination-info', 'passkeys-state', 'pwa-install-status'].map(id => ui.get(id).textContent).join('\n');
+    if (lang === 'en-US') {
+      assert.match(text, /Last refreshed \(some failures\)/);
+      assert.match(text, /Refresh incomplete/);
+      assert.match(text, /Unable to load overview/);
+      assert.match(text, /Credential status unknown/);
+      assert.match(text, /Install as a standalone desktop app/);
+      assert.doesNotMatch(text, /\p{Script=Han}/u);
+    } else {
+      assert.match(text, /最近刷新（部分失败）/);
+      assert.match(text, /刷新未完整完成/);
+    }
+  });
+
+  test(`both stages of adding a Passkey and cancellation stay localized (${lang})`, async () => {
+    const ui = setup({ lang, passkeys: true, scriptSuffix: 'credentials = [{}]; ceremony = async () => ({});' });
+    ui.context.fetch = async path => ({
+      ok: true,
+      json: async () => path.endsWith('/verify') ? { registrationTicket: 'ticket' } : { registration: path.endsWith('/add-options'), challengeId: 'challenge', options: {} },
+    });
+    ui.get('credential-name').value = 'Test Key';
+    ui.get('add-passkey-form').events.submit({ preventDefault() {} });
+    await setImmediate();
+    assert.equal(ui.get('ceremony-title').textContent, lang === 'en-US' ? 'Add Passkey · 1 / 2' : '添加 Passkey · 1 / 2');
+    await ui.get('ceremony-submit').events.click();
+    assert.equal(ui.get('ceremony-title').textContent, lang === 'en-US' ? 'Add Passkey · 2 / 2' : '添加 Passkey · 2 / 2');
+    assert.match(ui.get('ceremony-description').textContent, /Test Key/);
+    if (lang === 'en-US') {
+      for (const id of ['ceremony-description', 'ceremony-submit', 'ceremony-state']) {
+        assert.doesNotMatch(ui.get(id).textContent, /\p{Script=Han}/u);
+      }
+    }
+    ui.get('ceremony-cancel').events.click();
+    assert.equal(ui.get('global-msg').textContent, lang === 'en-US' ? 'Passkey flow cancelled. No changes submitted.' : '已取消 Passkey 流程，未提交变更。');
+  });
+
+  test(`push defaults do not misidentify Firefox or Android and errors stay localized (${lang})`, async () => {
+    for (const userAgent of ['Mozilla Android Firefox', 'Mozilla Linux Firefox', 'iPhone Safari']) {
+      const ui = setup({ lang, permission: 'granted', userAgent });
+      await ui.get('push-toggle-btn').events.click();
+      const registration = ui.calls.find(call => call.path.endsWith('/push/subscribe'));
+      assert.equal(JSON.parse(registration.options.body).label, lang === 'en-US' ? 'This browser' : '当前浏览器');
+      ui.state.hangLookup = true;
+      const lookup = ui.context.loadPushSettings();
+      await expireWait(ui);
+      await lookup;
+      if (lang === 'en-US') {
+        assert.match(ui.get('push-status-badge').textContent, /Reading this device’s push subscription timed out/);
+        assert.doesNotMatch(ui.get('push-status-badge').textContent, /\p{Script=Han}/u);
+      } else {
+        assert.match(ui.get('push-status-badge').textContent, /读取本机推送订阅超时/);
+      }
+    }
+  });
+}

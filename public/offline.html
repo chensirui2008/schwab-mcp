@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>离线状态 - Schwab MCP</title>
+  <title>Offline / 离线状态 - Schwab MCP</title>
   <meta name="theme-color" content="#070b12">
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
   <style>
@@ -49,7 +49,7 @@
       justify-content: center;
       font-size: 28px;
     }
-    h1 {
+    h1, h2 {
       font-size: 20px;
       font-weight: 600;
       margin-bottom: 12px;
@@ -84,9 +84,15 @@
 <body>
   <div class="card">
     <div class="icon">⚡</div>
-    <h1>当前处于离线状态</h1>
-    <p>网络连接不可用，或服务器无法访问。为了安全起见，Schwab MCP 不在本地缓存账户、订单或凭据数据。请恢复网络后重试。</p>
-    <button class="btn" onclick="window.location.reload()">重新连接</button>
+    <section lang="en-US">
+      <h1>You are offline</h1>
+      <p>The network or server is unavailable. For safety, Schwab MCP does not cache account, order, or credential data locally. Restore your connection and try again.</p>
+    </section>
+    <section lang="zh-CN">
+      <h2>当前处于离线状态</h2>
+      <p>网络连接不可用，或服务器无法访问。为了安全起见，Schwab MCP 不在本地缓存账户、订单或凭据数据。请恢复网络后重试。</p>
+    </section>
+    <button class="btn" onclick="window.location.reload()"><span lang="en-US">Reconnect</span> / <span lang="zh-CN">重新连接</span></button>
   </div>
 </body>
 </html>

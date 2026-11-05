@@ -34,12 +34,48 @@ export interface AuthorizePageProps {
   authorizationQuery?: string;
 }
 
+// These pages follow one-time OAuth POSTs/callbacks. Switch locally rather than
+// reloading a consumed authorization code or resubmitting the consent form.
+function renderTransientLangControl(lang: SupportedLang) {
+  const dict = getDictionary(lang);
+  return html`<label for="auth-language">
+    <span id="auth-language-label" data-auth-i18n="switchLangTitle">${dict.common.switchLangTitle}</span>
+    <select id="auth-language" aria-labelledby="auth-language-label">
+      <option value="zh-CN" lang="zh-CN" ${lang === "zh-CN" ? "selected" : ""}>${getDictionary("zh-CN").common.langName}</option>
+      <option value="en-US" lang="en-US" ${lang === "en-US" ? "selected" : ""}>${getDictionary("en-US").common.langName}</option>
+    </select>
+  </label>`;
+}
+
+function renderTransientLangScript() {
+  const translations = Object.fromEntries((["zh-CN", "en-US"] as const).map(lang => {
+    const dict = getDictionary(lang);
+    return [lang, { ...dict.auth, ...dict.common }];
+  }));
+  return html`<script>
+(() => {
+  const translations = ${raw(JSON.stringify(translations).replaceAll("<", "\\u003c"))};
+  document.getElementById('auth-language').addEventListener('change', event => {
+    const lang = event.target.value;
+    const i18n = translations[lang];
+    if (!i18n) return;
+    document.documentElement.lang = lang;
+    document.cookie = 'schwab_lang=' + lang + '; Path=/; Max-Age=31536000; SameSite=Lax; Secure';
+    document.querySelectorAll('[data-auth-i18n]').forEach(el => {
+      el.textContent = i18n[el.dataset.authI18n];
+    });
+  });
+})();
+</script>`;
+}
+
 // Finish the same-origin form navigation before starting GitHub OAuth. A 302
 // directly from the form POST remains subject to the form-action 'self' CSP.
 export function renderClientContinuePage(url: string, langCandidate?: SupportedLang) {
   const lang = resolveLang(langCandidate);
-  const zh = lang !== "en-US";
-  return html`<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FAVICON_LINK}<title>${zh ? "返回客户端" : "Return to client"}</title><style>${COMMON_STYLES}</style></head><body><main class="main-wrapper"><p class="page-subtitle">${zh ? "账户授权已完成，正在返回客户端。" : "Account authorization complete. Returning to the client."}</p><a class="pill-btn" id="client-continue" href="${url}">${zh ? "继续返回客户端" : "Continue to client"}</a></main><script>location.replace(document.getElementById('client-continue').href);</script></body></html>`;
+  const dict = getDictionary(lang);
+  const t = dict.auth;
+  return html`<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FAVICON_LINK}<title data-auth-i18n="clientContinueTitle">${t.clientContinueTitle}</title><style>${COMMON_STYLES}</style></head><body><main class="main-wrapper">${renderTransientLangControl(lang)}<div class="brand-header">${raw(BRAND_LOGO_SVG)}<span class="brand-title" data-auth-i18n="brandTitle">${dict.common.brandTitle}</span></div><p class="page-subtitle" data-auth-i18n="clientContinueNotice">${t.clientContinueNotice}</p><a class="pill-btn" id="client-continue" href="${url}" data-auth-i18n="clientContinueLink">${t.clientContinueLink}</a></main>${renderTransientLangScript()}<script>location.replace(document.getElementById('client-continue').href);</script></body></html>`;
 }
 
 export function renderGitHubContinuePage(url: string, langCandidate?: SupportedLang) {
@@ -884,7 +920,7 @@ function renderCompletionPage(passkey: boolean, langCandidate?: SupportedLang): 
         <span class="info-label">${t.statusLabel}</span>
         <span class="info-value">
           ${passkey ? t.passkeyStatusValue : t.schwabStatusValue}
-          <span class="tag-badge green">${passkey ? "完成 DONE" : "正常 ONLINE"}</span>
+          <span class="tag-badge green">${passkey ? t.completionDone : t.completionOnline}</span>
         </span>
       </div>
       <div class="card-divider"></div>
@@ -936,7 +972,8 @@ export function renderAccountSelectionPage(props: {
   lang?: SupportedLang;
 }) {
   const lang = resolveLang(props.lang);
-  const zh = lang !== "en-US";
+  const dict = getDictionary(lang);
+  const t = dict.auth;
   return html`<!doctype html>
 <html lang="${lang}">
 <head>
@@ -945,20 +982,21 @@ export function renderAccountSelectionPage(props: {
   <!-- Keep Origin on native same-origin form POSTs; suppress cross-origin referrers. -->
   <meta name="referrer" content="same-origin">
   ${FAVICON_LINK}
-  <title>${zh ? "选择授权账户" : "Select accounts"}</title>
+  <title data-auth-i18n="accountsTitle">${t.accountsTitle}</title>
   <style>${COMMON_STYLES}</style>
 </head>
 <body>
   ${raw(BACKGROUND_SVG)}
   <main class="main-wrapper">
-    <div class="brand-header">${raw(BRAND_LOGO_SVG)}<span class="brand-title">Schwab MCP</span></div>
-    <h1 class="page-title">${zh ? "选择开放的账户" : "Select accounts to share"}</h1>
+    ${renderTransientLangControl(lang)}
+    <div class="brand-header">${raw(BRAND_LOGO_SVG)}<span class="brand-title" data-auth-i18n="brandTitle">${dict.common.brandTitle}</span></div>
+    <h1 class="page-title" data-auth-i18n="accountsHeading">${t.accountsHeading}</h1>
     <p class="page-subtitle">${props.clientName}</p>
     <form class="auth-card" action="/authorize/accounts" method="post" style="width:100%">
       <input type="hidden" name="state" value="${props.state}">
       <fieldset class="permission-options">
-        <legend>${zh ? "此客户端可访问的账户" : "Accounts available to this client"}</legend>
-        <p class="policy-desc">${zh ? "可选择多个账户。不选择账户时仅开放行情。新增账户需重新授权。" : "Select any accounts. Leave all unchecked for market data only. New accounts require fresh consent."}</p>
+        <legend data-auth-i18n="accountsLegend">${t.accountsLegend}</legend>
+        <p class="policy-desc" data-auth-i18n="accountsDesc">${t.accountsDesc}</p>
         ${props.accounts.map(account => html`
           <label class="permission-option">
             <input type="checkbox" name="accountHash" value="${account.hashValue}" ${props.selected.includes(account.hashValue) ? "checked" : ""}>
@@ -967,12 +1005,13 @@ export function renderAccountSelectionPage(props: {
         `)}
       </fieldset>
       ${props.connected ? "" : html`
-        <p class="policy-desc">${zh ? "Schwab 尚未连接或需重新连接；当前只能授权行情访问。" : "Reconnect Schwab to select accounts. Market data consent remains available."}</p>
-        <p><a href="/auth/schwab/connect">${zh ? "连接 Schwab（完成后重新发起 MCP 授权）" : "Connect Schwab, then restart MCP authorization"}</a></p>
+        <p class="policy-desc" data-auth-i18n="accountsDisconnected">${t.accountsDisconnected}</p>
+        <p><a href="/auth/schwab/connect" data-auth-i18n="accountsConnect">${t.accountsConnect}</a></p>
       `}
-      <div class="action-form"><button type="submit" class="pill-btn">${zh ? "确认账户并继续授权" : "Confirm accounts and continue"}</button></div>
+      <div class="action-form"><button type="submit" class="pill-btn" data-auth-i18n="accountsConfirm">${t.accountsConfirm}</button></div>
     </form>
   </main>
+  ${renderTransientLangScript()}
 </body>
 </html>`;
 }

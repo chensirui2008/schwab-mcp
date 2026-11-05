@@ -68,7 +68,7 @@ describe("PWA Assets and Specification", () => {
       start_url: string;
       scope: string;
       display: string;
-      lang: string;
+      lang?: string;
       name: string;
       short_name: string;
       theme_color: string;
@@ -80,7 +80,8 @@ describe("PWA Assets and Specification", () => {
     expect(manifest.start_url).toBe("/dashboard");
     expect(manifest.scope).toBe("/");
     expect(manifest.display).toBe("standalone");
-    expect(manifest.lang).toBe("zh-CN");
+    // The static manifest contains only a language-neutral brand name.
+    expect(manifest.lang).toBeUndefined();
     expect(manifest.name).toBe("Schwab MCP");
     expect(manifest.short_name).toBe("Schwab MCP");
     expect(manifest.theme_color).toBe("#070b12");
@@ -102,6 +103,9 @@ describe("PWA Assets and Specification", () => {
   it("has unauthenticated offline fallback page without sensitive data or tokens", () => {
     expect(offlineHtml).toContain("<!DOCTYPE html>");
     expect(offlineHtml).toContain("离线状态");
+    expect(offlineHtml).toContain('lang="en-US"');
+    expect(offlineHtml).toContain('lang="zh-CN"');
+    expect(offlineHtml).toContain("does not cache account, order, or credential data locally");
     expect(offlineHtml).toContain("viewport-fit=cover");
     expect(offlineHtml).not.toContain("token");
     expect(offlineHtml).not.toContain("orderId");

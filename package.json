@@ -27,7 +27,7 @@
     "introspect": "node scripts/mcp-introspect.mjs",
     "test:introspect": "node scripts/mcp-introspect.mjs --test",
     "test:passkey-acceptance": "node --test scripts/passkey-acceptance.test.mjs",
-    "test:dashboard-ui": "node --test scripts/dashboard-push.test.mjs",
+    "test:dashboard-ui": "node --test scripts/dashboard-push.test.mjs scripts/i18n-runtime.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

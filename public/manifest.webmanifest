@@ -2,7 +2,6 @@
   "id": "/dashboard",
   "name": "Schwab MCP",
   "short_name": "Schwab MCP",
-  "lang": "zh-CN",
   "start_url": "/dashboard",
   "scope": "/",
   "display": "standalone",

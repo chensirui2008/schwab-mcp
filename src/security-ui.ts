@@ -7,6 +7,10 @@ import { formatString, getDictionary, getSecurityClientI18n, type I18nDictionary
 // Native WebAuthn only; no framework, CDN or browser bearer token.
 const SCRIPT = `
 function t(k, fallback = '') { return (typeof i18n !== 'undefined' && i18n[k]) || fallback; }
+function format(str, vars) {
+  for (const [key, value] of Object.entries(vars)) str = str.replaceAll('{' + key + '}', value);
+  return str;
+}
 const status = document.querySelector('#status');
 const csrf = document.querySelector('meta[name="csrf"]').content;
 const data = JSON.parse(document.querySelector('#page-data').textContent);
@@ -15,7 +19,7 @@ const dec = s => Uint8Array.from(atob(s.replaceAll('-','+').replaceAll('_','/'))
 async function api(path, body) {
   const r = await fetch('/security/api/' + path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify(body)});
   const v = await r.json();
-  if (!r.ok || v.error) throw new Error(v.error?.message || t('error', '验证失败，请刷新页面重试。'));
+  if (!r.ok || v.error) throw new Error(v.error?.message || t('error'));
   return v;
 }
 async function ceremony(v) {
@@ -38,7 +42,7 @@ async function ceremony(v) {
     }
   }
   const c = await navigator.credentials[v.registration ? 'create' : 'get']({publicKey:o});
-  if (!c) throw new Error(t('scriptCancelledOrTimeout', '验证已取消，订单保持未批准。'));
+  if (!c) throw new Error(t('scriptCancelledOrTimeout'));
   if (typeof c.toJSON === 'function') {
     return c.toJSON();
   }
@@ -60,7 +64,7 @@ async function act(operation, target) {
   busy = true;
   const enabledButtons = [...document.querySelectorAll('button')].filter(b => !b.disabled);
   document.querySelectorAll('button').forEach(b => b.disabled = true);
-  if (status) status.textContent = t('scriptVerifyingPrompt', '请在系统提示中完成 Passkey 验证…');
+  if (status) status.textContent = t('scriptVerifyingPrompt');
   try {
     const name = document.querySelector('#credential-name')?.value || 'Passkey';
     const v = await api('options', {operation,target,name,proposalId:data.proposalId,resetConfirmation:document.querySelector('#reset-confirmation')?.value});
@@ -69,7 +73,7 @@ async function act(operation, target) {
     if (result.redirectTo) { location.assign(result.redirectTo); return; }
     if (result.recovered) { location.assign('/security'); return; }
     if (result.registrationTicket) {
-      if (status) status.textContent = t('scriptVerifySuccess', '已有 Passkey 验证成功。点击“注册新 Passkey”继续。');
+      if (status) status.textContent = t('scriptVerifySuccess');
       const button = document.querySelector('#register-add');
       if (button) { button.hidden = false; button.dataset.ticket = result.registrationTicket; }
       return;
@@ -85,7 +89,7 @@ async function act(operation, target) {
       if (approveBtn) approveBtn.hidden = true;
     } else location.reload();
   } catch(e) {
-    if (status) status.textContent = e.name === 'NotAllowedError' ? t('scriptCancelledOrTimeout', '操作已取消或超时，订单保持未批准。') : e.message;
+    if (status) status.textContent = e.name === 'NotAllowedError' ? t('scriptCancelledOrTimeout') : e.message;
   } finally {
     busy = false;
     enabledButtons.forEach(b => b.disabled = false);
@@ -129,7 +133,7 @@ if (data && data.authorizationId) {
     if (resumePromise) return resumePromise;
     clearInterval(poller);
     document.querySelector('#action-buttons-container')?.remove();
-    if (status) status.textContent = t('scriptAuthResume', 'Passkey 核准成功，正在完成授权并交付结果…');
+    if (status) status.textContent = t('scriptAuthResume');
     resumePromise = api('authorization-resume', { authorizationId: authId }).then(result => {
       if (result.redirectTo) location.replace(result.redirectTo);
     }).catch(e => {
@@ -141,13 +145,13 @@ if (data && data.authorizationId) {
   document.querySelector('#stage-auth-btn')?.addEventListener('click', async () => {
     if (busy) return;
     busy = true;
-    if (status) status.textContent = '正在获取核准选项…';
+    if (status) status.textContent = t('scriptOptionsLoading');
     try {
       const v = await api('authorization-options', { authorizationId: authId });
       stagedAuth = v;
       document.querySelector('#stage-auth-btn').style.display = 'none';
       document.querySelector('#submit-auth-btn').style.display = 'inline-flex';
-      if (status) status.textContent = '选项已准备就绪，请点击“调起系统硬件验证”。';
+      if (status) status.textContent = t('scriptOptionsReady');
     } catch(e) {
       if (status) status.textContent = e.message;
     } finally {
@@ -158,18 +162,18 @@ if (data && data.authorizationId) {
   document.querySelector('#submit-auth-btn')?.addEventListener('click', async () => {
     if (busy || resumePromise || !stagedAuth) return;
     busy = true;
-    if (status) status.textContent = '请在系统提示中验证生物识别或硬件密钥…';
+    if (status) status.textContent = t('scriptVerifyingPrompt');
     try {
       const response = await ceremony(stagedAuth);
       await api('authorization-verify', { challengeId: stagedAuth.challengeId, response });
       if (data.isOriginalSession) {
         await resumeAuthorization();
       } else {
-        if (status) status.textContent = '已使用 Passkey 成功核准！发起端设备将自动完成授权并继续。';
+        if (status) status.textContent = t('scriptAuthVerified');
         document.querySelector('#action-buttons-container')?.remove();
       }
     } catch(e) {
-      if (status) status.textContent = e.name === 'NotAllowedError' ? '操作已取消，保持未批准。' : e.message;
+      if (status) status.textContent = e.name === 'NotAllowedError' ? t('scriptCancelledOrTimeout') : e.message;
     } finally {
       busy = false;
     }
@@ -180,7 +184,7 @@ if (data && data.authorizationId) {
     busy = true;
     try {
       await api('authorization-cancel', { authorizationId: authId });
-      if (status) status.textContent = '已取消本次申请。';
+      if (status) status.textContent = t('scriptAuthCancelled');
       document.querySelector('#action-buttons-container')?.remove();
     } catch(e) {
       if (status) status.textContent = e.message;
@@ -207,7 +211,7 @@ if (data && data.authorizationId) {
           clearInterval(poller);
           const badge = document.querySelector('#auth-status-badge');
           if (badge) badge.textContent = s.status;
-          if (status) status.textContent = '授权状态已变更为: ' + s.status;
+          if (status) status.textContent = format(t('scriptStatusChanged'), {status: s.status});
         }
       } catch {} finally { polling = false; }
     }, 2000);
@@ -215,7 +219,7 @@ if (data && data.authorizationId) {
 }
 
 if (!window.PublicKeyCredential || !navigator.credentials) {
-  if (status) status.textContent = t('scriptUnsupported', '此浏览器不支持 WebAuthn。请在支持 Passkey 的外部浏览器中打开；操作保持未批准。');
+  if (status) status.textContent = t('scriptUnsupported');
   document.querySelectorAll('button').forEach(b => { if (b.id !== 'reject-order') b.disabled = true; });
 }
 `;
@@ -1036,8 +1040,8 @@ export function renderClientAuthorizationPage(
         <span class="info-value mono" style="font-size:11px">${clientAuth.redirectUri}</span>
       </div>
       <div class="info-row column">
-        <span class="info-label">${lang === "en-US" ? "Authorized accounts" : "授权账户"}</span>
-        <span class="info-value mono" style="overflow-wrap:anywhere">${(clientAuth.allowedAccountHashes ?? []).join(", ") || (lang === "en-US" ? "Market data only" : "仅行情")}</span>
+        <span class="info-label">${s.authorizedAccounts}</span>
+        <span class="info-value mono" style="overflow-wrap:anywhere">${(clientAuth.allowedAccountHashes ?? []).join(", ") || s.marketDataOnly}</span>
       </div>
       <div class="info-row">
         <span class="info-label">${c.status}</span>

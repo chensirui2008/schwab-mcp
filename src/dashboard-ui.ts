@@ -1210,6 +1210,7 @@ function format(str, vars) {
   for (const [key, val] of Object.entries(vars)) res = res.replaceAll('{' + key + '}', val);
   return res;
 }
+const lang = document.documentElement.lang;
 const csrf = document.querySelector('meta[name="csrf"]').content;
 const sessionExpiresAt = Number(document.querySelector('meta[name="session-expires"]').content);
 const supportsPasskeys = !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
@@ -1249,23 +1250,23 @@ function syncControls() {
 function markExpired() {
   if (expired) return;
   expired = true;
-  $('session-state').textContent = t('sessionExpired', '会话已过期');
+  $('session-state').textContent = t('sessionExpired');
   $('session-state').className = 'badge bad';
   $('session-login').hidden = false;
-  message(t('sessionExpiredMessage', '浏览器安全会话已失效。请重新通过 GitHub owner 登录；未完成的 Passkey 操作不会自动继续。'), true);
+  message(t('sessionExpiredMessage'), true);
   if (dialog.open && !busy) { pending = null; dialog.close(); }
   syncControls();
 }
 async function api(path, method = 'GET', body) {
-  if (expired || Date.now() >= sessionExpiresAt) { markExpired(); throw new Error(t('sessionExpiredError', '会话已过期，请重新登录。')); }
+  if (expired || Date.now() >= sessionExpiresAt) { markExpired(); throw new Error(t('sessionExpiredError')); }
   let res;
   try {
     res = await fetch(path, {method, credentials:'same-origin', cache:'no-store', redirect:'error', headers:{'Accept':'application/json', ...(method === 'POST' ? {'Content-Type':'application/json','X-CSRF-Token':csrf} : {})}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
-  } catch { throw new Error(t('networkError', '网络请求失败或登录状态已变更。请检查连接并刷新；若已提交操作，请核对服务器状态，勿盲目重复。')); }
+  } catch { throw new Error(t('networkError')); }
   let data;
-  try { data = await res.json(); } catch { throw new Error(format(t('invalidJsonError', '服务器未返回有效 JSON（HTTP {status}）。请重新登录或稍后刷新。'), { status: res.status })); }
+  try { data = await res.json(); } catch { throw new Error(format(t('invalidJsonError'), { status: res.status })); }
   if (res.status === 401 || data.error?.code === 'BROWSER_AUTH_REQUIRED') markExpired();
-  if (!res.ok) throw new Error((data.error?.message || data.error_description || '请求失败') + (data.error?.code ? ' [' + data.error.code + ']' : '') + ' (HTTP ' + res.status + ')');
+  if (!res.ok) throw new Error((data.error?.message || data.error_description || t('requestFailed')) + (data.error?.code ? ' [' + data.error.code + ']' : '') + ' (HTTP ' + res.status + ')');
   return data;
 }
 async function run(action) {
@@ -1274,7 +1275,7 @@ async function run(action) {
   syncControls();
   try { await action(); }
   catch (error) {
-    if (!expired) message(error.name === 'NotAllowedError' || error.name === 'AbortError' ? t('passkeyCancelledOrTimeout', 'Passkey 操作已取消或超时，未提交变更。请重新开始；不会降级为普通验证。') : (error.message || '操作失败，请刷新后重试。'), true);
+    if (!expired) message(error.name === 'NotAllowedError' || error.name === 'AbortError' ? t('passkeyCancelledOrTimeout') : (error.message || t('operationFailed')), true);
   } finally {
     busy = false;
     syncControls();
@@ -1282,12 +1283,12 @@ async function run(action) {
     else if (pending && dialog.open) $('ceremony-submit').focus();
   }
 }
-function requireArray(value) { if (!Array.isArray(value)) throw new Error('服务器列表数据格式异常。'); return value; }
-function requireCount(value) { if (!Number.isFinite(value) || value < 0) throw new Error('服务器统计数据格式异常。'); return value; }
+function requireArray(value) { if (!Array.isArray(value)) throw new Error(t('invalidList')); return value; }
+function requireCount(value) { if (!Number.isFinite(value) || value < 0) throw new Error(t('invalidCount')); return value; }
 function date(value) {
-  if (value === null || value === undefined || value === 0) return t('neverInvoked', '暂无记录');
+  if (value === null || value === undefined || value === 0) return t('neverInvoked');
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? t('unknown', '时间格式异常') : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? t('unknown') : d.toLocaleString(lang);
 }
 function tableMessage(body, columns, text, error = false) {
   const row = node('tr'); const cell = node('td',text,'empty' + (error ? ' load-error' : ''));
@@ -1304,39 +1305,39 @@ function updateOverviewStatus() {
   const connected = overview.schwabConnected && (!refresh || refresh > Date.now());
   const status = $('schwab-status-badge');
   status.className = 'badge ' + (!connected ? 'bad' : soon ? 'warn' : 'good');
-  status.textContent = !connected ? t('schwabReauth', 'Schwab 需重新授权') : soon ? t('schwabExpiringSoon', 'Schwab 授权即将到期') : t('schwabConnected', 'Schwab 已连接');
+  status.textContent = !connected ? t('schwabReauth') : soon ? t('schwabExpiringSoon') : t('schwabConnected');
 }
 async function loadLinkedAccounts() {
   const target = $('linked-accounts');
   try {
     const data = await api('/dashboard/api/accounts');
-    if (typeof data.connected !== 'boolean' || !Array.isArray(data.accounts) || data.accounts.some(label => typeof label !== 'string' || !/^••••[0-9]{1,4}$/.test(label))) throw new Error(t('accountsReadFailed', '账户读取失败'));
-    target.textContent = t('linkedAccounts', '已连接账户：') + (data.connected && data.accounts.length ? data.accounts.join('、') : t('noLinkedAccounts', '无已连接账户'));
+    if (typeof data.connected !== 'boolean' || !Array.isArray(data.accounts) || data.accounts.some(label => typeof label !== 'string' || !/^••••[0-9]{1,4}$/.test(label))) throw new Error(t('accountsReadFailed'));
+    target.textContent = t('linkedAccounts') + (data.connected && data.accounts.length ? data.accounts.join(', ') : t('noLinkedAccounts'));
   } catch (error) {
-    target.textContent = t('linkedAccounts', '已连接账户：') + t('accountsReadFailed', '账户读取失败');
+    target.textContent = t('linkedAccounts') + t('accountsReadFailed');
     throw error;
   }
 }
 async function loadOverview() {
   try {
     const data = await api('/dashboard/api/overview');
-    if (typeof data.schwabConnected !== 'boolean' || typeof data.tradingEnabled !== 'boolean') throw new Error('服务器连接状态格式异常。');
+    if (typeof data.schwabConnected !== 'boolean' || typeof data.tradingEnabled !== 'boolean') throw new Error(t('invalidConnection'));
     requireCount(data.clientCount); requireCount(data.toolCallsCount); requireCount(data.passkeyCount); requireCount(data.legacyGrantCount);
     overview = data;
     updateOverviewStatus();
     $('trading-status-badge').className = 'badge ' + (data.tradingEnabled ? 'good' : 'neutral');
-    $('trading-status-badge').textContent = data.tradingEnabled ? t('tradingEnabled', '交易总开关已开启') : t('tradingDisabled', '交易总开关已关闭');
-    $('access-expiry').textContent = t('accessExpiry', 'Access 到期：') + date(data.schwabStatus?.accessExpiresAt);
-    $('refresh-expiry').textContent = t('refreshExpiry', 'Refresh 到期：') + date(data.schwabStatus?.refreshExpiresAt);
-    $('overview-counts').textContent = format(t('overviewCounts', '{clients} 个客户端 / {calls} 次调用 / {passkeys} 个 Passkey'), { clients: data.clientCount, calls: data.toolCallsCount, passkeys: data.passkeyCount }) + (data.legacyGrantCount ? format(t('legacyGrantNotice', '；{count} 条旧版 MCP 授权需在客户端重新授权'), { count: data.legacyGrantCount }) : '');
+    $('trading-status-badge').textContent = data.tradingEnabled ? t('tradingEnabled') : t('tradingDisabled');
+    $('access-expiry').textContent = t('accessExpiry') + date(data.schwabStatus?.accessExpiresAt);
+    $('refresh-expiry').textContent = t('refreshExpiry') + date(data.schwabStatus?.refreshExpiresAt);
+    $('overview-counts').textContent = format(t('overviewCounts'), { clients: data.clientCount, calls: data.toolCallsCount, passkeys: data.passkeyCount }) + (data.legacyGrantCount ? format(t('legacyGrantNotice'), { count: data.legacyGrantCount }) : '');
     $('stat-clients-count').textContent = data.clientCount;
     $('stat-total-calls').textContent = data.toolCallsCount;
     $('stat-passkeys-count').textContent = data.passkeyCount;
   } catch (error) {
     overview = null;
-    $('schwab-status-badge').textContent = t('schwabReadFailed', '连接状态读取失败'); $('schwab-status-badge').className = 'badge bad';
-    $('trading-status-badge').textContent = t('tradingUnknown', '交易开关状态未知'); $('trading-status-badge').className = 'badge warn';
-    $('overview-counts').textContent = '概览读取失败'; $('access-expiry').textContent = t('accessExpiry', 'Access 到期：') + '未知'; $('refresh-expiry').textContent = t('refreshExpiry', 'Refresh 到期：') + '未知';
+    $('schwab-status-badge').textContent = t('schwabReadFailed'); $('schwab-status-badge').className = 'badge bad';
+    $('trading-status-badge').textContent = t('tradingUnknown'); $('trading-status-badge').className = 'badge warn';
+    $('overview-counts').textContent = t('overviewFailed'); $('access-expiry').textContent = t('accessExpiry') + t('unknown'); $('refresh-expiry').textContent = t('refreshExpiry') + t('unknown');
     ['stat-clients-count','stat-total-calls','stat-passkeys-count'].forEach(id => $(id).textContent = '—');
     throw error;
   }
@@ -1347,51 +1348,51 @@ async function loadClients() {
     const data = await api('/dashboard/api/clients');
     const clients = requireArray(data.clients);
     body.replaceChildren();
-    $('clients-count').textContent = clients.length + (t('colClient') === 'Client / Redirect URI' ? ' clients' : ' 个客户端');
-    if (!clients.length) tableMessage(body,6,t('noClients', '暂无已授权客户端。请在 MCP 客户端中发起 OAuth 授权。'));
+    $('clients-count').textContent = format(t('clientCount'), {n: clients.length});
+    if (!clients.length) tableMessage(body,6,t('noClients'));
     for (const client of clients) {
       const row = node('tr');
       const identity = node('td',null,'client-meta');
-      identity.append(node('div',client.clientName || '未命名客户端','client-name'),node('code',client.clientId));
-      const redirects = node('details',null,'redirects'); redirects.append(node('summary',(t('colClient') === 'Client / Redirect URI' ? 'Redirect URIs (' : '重定向 URI (') + requireArray(client.redirectUris).length + ')'));
+      identity.append(node('div',client.clientName || t('unnamedClient'),'client-name'),node('code',client.clientId));
+      const redirects = node('details',null,'redirects'); redirects.append(node('summary',format(t('redirectCount'), {n: requireArray(client.redirectUris).length})));
       const uris = node('ul'); client.redirectUris.forEach(uri => uris.append(node('li',uri,'mono'))); redirects.append(uris); identity.append(redirects);
-      const state = node('td'); state.append(badge(client.revoked ? t('revoked', '已撤销') : t('authorized', '已授权'),client.revoked ? 'bad' : 'good'));
+      const state = node('td'); state.append(badge(client.revoked ? t('revoked') : t('authorized'),client.revoked ? 'bad' : 'good'));
       const permissionCell = node('td'); const permission = node('select',null,'permission');
-      permission.dataset.action = ''; permission.setAttribute('aria-label',(client.clientName || client.clientId) + ' ' + t('colPermission', '权限等级'));
-      [['read_only',t('permReadOnly', '只读')],['full_access',t('permFullAccess', '完整交易')]].forEach(([value,label]) => { const option = node('option',label); option.value = value; permission.append(option); });
+      permission.dataset.action = ''; permission.setAttribute('aria-label',(client.clientName || client.clientId) + ' ' + t('colPermission'));
+      [['read_only',t('permReadOnly')],['full_access',t('permFullAccess')]].forEach(([value,label]) => { const option = node('option',label); option.value = value; permission.append(option); });
       permission.value = client.permissionLevel; disabled(permission,!!client.revoked);
       permission.addEventListener('change', () => {
         const desired = permission.value; permission.value = client.permissionLevel;
         run(async () => {
           await api('/dashboard/api/clients/permission','POST',{clientId:client.clientId,permissionLevel:desired});
-          await refreshAll(); message(t('permissionUpdated', '客户端权限已更新。后续 MCP 请求使用新权限。'));
+          await refreshAll(); message(t('permissionUpdated'));
         });
       });
-      permissionCell.append(permission,node('span',t('permPolicyNote', '权限不会改变部署级交易总开关。'),'policy-note'));
+      permissionCell.append(permission,node('span',t('permPolicyNote'),'policy-note'));
       const advancedCell = node('td'); const toggleLabel = node('label',null,'toggle'); const toggle = node('input');
       toggle.type = 'checkbox'; toggle.checked = !!client.advancedSecurity; toggle.dataset.action = ''; toggle.setAttribute('aria-label',(client.clientName || client.clientId) + ' Advanced Security');
       disabled(toggle,!!client.revoked || !supportsPasskeys || (client.permissionLevel !== 'full_access' && !client.advancedSecurity));
-      toggleLabel.append(toggle,node('span',client.advancedSecurity ? t('modeEnhanced', 'Passkey 增强') : t('modeStandard', '普通模式')));
+      toggleLabel.append(toggle,node('span',client.advancedSecurity ? t('modeEnhanced') : t('modeStandard')));
       toggle.addEventListener('change', () => {
         const desired = toggle.checked; toggle.checked = !!client.advancedSecurity;
         run(async () => {
           const values = {clientId:client.clientId,advancedSecurity:desired};
           const challenge = await api('/dashboard/api/clients/advanced-security','POST',values);
-          stageChallenge(challenge,(desired ? '开启' : '关闭') + ' Advanced Security',
-            (client.clientName || client.clientId) + '：' + (desired ? '开启后，每笔受保护交易须由 Passkey 批准。' : '关闭后此客户端将使用普通交易确认。') + (challenge.registration ? ' 此操作将同时登记首个 Passkey。' : ''),
-            response => api('/dashboard/api/clients/advanced-security','POST',{...values,challengeId:challenge.challengeId,response}), t('passkeyOperationSuccess', 'Advanced Security 策略已验证并更新。'));
+          stageChallenge(challenge,t(desired ? 'enableAdvanced' : 'disableAdvanced'),
+            (client.clientName || client.clientId) + ': ' + t(desired ? 'enableAdvancedHint' : 'disableAdvancedHint') + (challenge.registration ? ' ' + t('firstKeyNotice') : ''),
+            response => api('/dashboard/api/clients/advanced-security','POST',{...values,challengeId:challenge.challengeId,response}), t('passkeyOperationSuccess'));
         });
       });
-      advancedCell.append(toggleLabel,node('span',format(t('policyVersion', '策略版本 v{version}'), { version: client.version }),'policy-note'));
-      if (client.permissionLevel !== 'full_access' && !client.advancedSecurity) advancedCell.append(node('span',t('fullAccessOnlyNote', '仅完整访问可开启。'),'policy-note'));
-      const times = node('td'); times.append(node('div',t('createdAt', '授权：') + date(client.createdAt),'timestamp'),node('div',t('lastInvocationAt', '最后调用：') + date(client.lastInvocationAt),'timestamp muted'));
-      const actions = node('td'); actions.append(button(t('revokeBtn', '撤销授权'),async () => {
-        if (!window.confirm(format(t('revokeConfirm', '撤销 {name} 的全部授权及 Token？此客户端需要重新授权才能连接。'), { name: client.clientName || client.clientId }))) return;
-        await api('/dashboard/api/clients/revoke','POST',{clientId:client.clientId}); await refreshAll(); message(t('revokedSuccess', '客户端已撤销，全部旧 Token 已失效。'));
+      advancedCell.append(toggleLabel,node('span',format(t('policyVersion'), { version: client.version }),'policy-note'));
+      if (client.permissionLevel !== 'full_access' && !client.advancedSecurity) advancedCell.append(node('span',t('fullAccessOnlyNote'),'policy-note'));
+      const times = node('td'); times.append(node('div',t('createdAt') + date(client.createdAt),'timestamp'),node('div',t('lastInvocationAt') + date(client.lastInvocationAt),'timestamp muted'));
+      const actions = node('td'); actions.append(button(t('revokeBtn'),async () => {
+        if (!window.confirm(format(t('revokeConfirm'), { name: client.clientName || client.clientId }))) return;
+        await api('/dashboard/api/clients/revoke','POST',{clientId:client.clientId}); await refreshAll(); message(t('revokedSuccess'));
       },!!client.revoked,'danger'));
       row.append(identity,state,permissionCell,advancedCell,times,actions); body.append(row);
     }
-  } catch (error) { tableMessage(body,6,'客户端读取失败：' + error.message,true); $('clients-count').textContent = '读取失败'; throw error; }
+  } catch (error) { tableMessage(body,6,t('clientsFailed') + error.message,true); $('clients-count').textContent = t('readFailed'); throw error; }
 }
 async function loadAudit() {
   const body = $('audit-table-body');
@@ -1412,20 +1413,20 @@ async function loadAudit() {
     $('audit-error-count').textContent = data.errorCount;
     $('audit-active24h').textContent = data.active24h;
     body.replaceChildren();
-    if (!data.items.length) tableMessage(body,7,t('noAuditItems', '没有符合当前筛选条件的调用记录。'));
+    if (!data.items.length) tableMessage(body,7,t('noAuditItems'));
     for (const item of data.items) {
       const row = node('tr'); const state = node('td'); state.append(badge(item.status,item.status === 'SUCCESS' ? 'good' : 'bad'));
-      const summary = node('td',null,'summary'); summary.append(node('div',item.parametersSummary || t('noSummary', '无参数摘要'),'mono'));
+      const summary = node('td',null,'summary'); summary.append(node('div',item.parametersSummary || t('noSummary'),'mono'));
       if (item.errorCode || item.errorMessage) summary.append(node('div',[item.errorCode,item.errorMessage].filter(Boolean).join(' · '),'load-error'));
       row.append(node('td',date(item.createdAt),'timestamp'),node('td',item.clientId,'mono'),node('td',item.toolName,'mono'),state,node('td',item.durationMs + ' ms','timestamp'),summary,node('td',item.requestId,'mono request-id'));
       body.append(row);
     }
-    $('audit-pagination-info').textContent = format(t('paginationInfo', '显示 {start}–{end} / 共 {total} 条'), { start: data.items.length ? auditOffset + 1 : 0, end: data.items.length ? auditOffset + data.items.length : 0, total: data.total });
+    $('audit-pagination-info').textContent = format(t('paginationInfo'), { start: data.items.length ? auditOffset + 1 : 0, end: data.items.length ? auditOffset + data.items.length : 0, total: data.total });
     disabled($('audit-prev-btn'),auditOffset === 0); disabled($('audit-next-btn'),auditOffset + data.items.length >= auditTotal || data.items.length === 0);
   } catch (error) {
-    tableMessage(body,7,'审计日志读取失败：' + error.message,true);
+    tableMessage(body,7,t('auditFailed') + error.message,true);
     ['audit-total-count','audit-success-rate','audit-success-count','audit-error-count','audit-active24h'].forEach(id => $(id).textContent = '—');
-    $('audit-pagination-info').textContent = '分页状态未知'; disabled($('audit-prev-btn'),true); disabled($('audit-next-btn'),true);
+    $('audit-pagination-info').textContent = t('paginationUnknown'); disabled($('audit-prev-btn'),true); disabled($('audit-next-btn'),true);
     throw error;
   }
 }
@@ -1438,30 +1439,30 @@ async function loadPasskeys() {
     const data = await api('/dashboard/api/session');
     credentials = requireArray(data.credentials);
     list.replaceChildren();
-    if (!credentials.length) list.append(node('li',t('noPasskeysRegistered', '尚未登记 Passkey。可在下方注册首个凭据，或在客户端开启 Advanced Security 时注册。'),'empty'));
+    if (!credentials.length) list.append(node('li',t('noPasskeysRegistered'),'empty'));
     for (const credential of credentials) {
       const item = node('li',null,'credential'); const identity = node('div'); identity.append(node('h3',credential.name),node('code',credential.id,'credential-id'));
       const actions = node('div',null,'actions');
-      actions.append(button(t('rename', '重命名'),async () => {
-        const name = window.prompt(t('promptNewKeyName', '新的 Passkey 名称（1–80 字符）'),credential.name);
+      actions.append(button(t('rename'),async () => {
+        const name = window.prompt(t('promptNewKeyName'),credential.name);
         if (name === null) return;
-        const trimmed = name.trim(); if (!trimmed || trimmed.length > 80) throw new Error('Passkey 名称须为 1–80 字符。');
+        const trimmed = name.trim(); if (!trimmed || trimmed.length > 80) throw new Error(t('invalidKeyName'));
         const challenge = await securityOptions('rename',credential.id,trimmed);
-        stageChallenge(challenge,'重命名 Passkey','将 “' + credential.name + '” 改为 “' + trimmed + '”。须验证已有 Passkey。',response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),'Passkey 已重命名。');
+        stageChallenge(challenge,t('renameKeyTitle'),format(t('renameKeyHint'), {old: credential.name, name: trimmed}),response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),t('keyRenamed'));
       },!supportsPasskeys));
-      actions.append(button(t('delete', '删除'),async () => {
-        if (!window.confirm(format(t('deleteConfirm', '删除 Passkey “{name}”？此操作须先验证已有 Passkey。'), { name: credential.name }))) return;
+      actions.append(button(t('delete'),async () => {
+        if (!window.confirm(format(t('deleteConfirm'), { name: credential.name }))) return;
         const challenge = await securityOptions('delete',credential.id);
-        stageChallenge(challenge,'删除 Passkey','验证已有 Passkey 后删除 “' + credential.name + '”。其他凭据不受影响。',response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),'Passkey 已删除。');
+        stageChallenge(challenge,t('deleteKeyTitle'),format(t('deleteKeyHint'), {name: credential.name}),response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),t('keyDeleted'));
       },!supportsPasskeys || credentials.length <= 1,'danger'));
-      if (credentials.length <= 1) actions.append(node('small',t('cannotDeleteLast', '最后一个凭据不可删除')));
+      if (credentials.length <= 1) actions.append(node('small',t('cannotDeleteLast')));
       item.append(identity,actions); list.append(item);
     }
-    $('passkeys-state').textContent = credentials.length ? format(t('ownerSharedCount', '{n} 个 owner 共享凭据'), { n: credentials.length }) : t('noPasskeyProtection', '尚未启用 Passkey 防护');
-    $('add-passkey-btn').textContent = credentials.length ? t('addKeyWithVerify', '添加 Passkey · 先验证已有凭据') : t('registerFirstKey', '注册首个 Passkey');
+    $('passkeys-state').textContent = credentials.length ? format(t('ownerSharedCount'), { n: credentials.length }) : t('noPasskeyProtection');
+    $('add-passkey-btn').textContent = credentials.length ? t('addKeyWithVerify') : t('registerFirstKey');
     disabled($('add-passkey-btn'),!supportsPasskeys);
   } catch (error) {
-    credentials = null; list.replaceChildren(node('li','Passkey 读取失败：' + error.message,'empty load-error')); $('passkeys-state').textContent = '凭据状态未知'; disabled($('add-passkey-btn'),true); throw error;
+    credentials = null; list.replaceChildren(node('li',t('passkeysFailed') + error.message,'empty load-error')); $('passkeys-state').textContent = t('credentialsUnknown'); disabled($('add-passkey-btn'),true); throw error;
   }
 }
 async function loadPendingApprovals() {
@@ -1471,34 +1472,34 @@ async function loadPendingApprovals() {
   try {
     const data = await api('/dashboard/api/pending-approvals');
     const items = data.items || [];
-    if (countTag) countTag.textContent = format(t('pendingCountTag', '{n} 待办'), { n: items.length });
+    if (countTag) countTag.textContent = format(t('pendingCountTag'), { n: items.length });
     if (inboxBadge) {
       inboxBadge.textContent = String(items.length);
       inboxBadge.hidden = items.length === 0;
     }
     container.replaceChildren();
     if (!items.length) {
-      container.append(node('p', t('noPending', '当前没有待 Passkey 核准的交易或授权请求。'), 'muted'));
+      container.append(node('p', t('noPending'), 'muted'));
       return;
     }
     for (const item of items) {
       const card = node('div', null, 'approval-item-card');
       card.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--surface-container);border-radius:var(--radius-sm);margin-bottom:8px;gap:12px;flex-wrap:wrap;';
       const info = node('div');
-      const kindLabel = item.kind === 'trade' ? t('tradeProposalTag', '[交易提案]') : t('clientAuthTag', '[客户端授权]');
+      const kindLabel = item.kind === 'trade' ? t('tradeProposalTag') : t('clientAuthTag');
       const title = node('div', null);
       title.append(node('span', kindLabel + ' ', 'badge ' + (item.kind === 'trade' ? 'warning' : 'good')));
       title.append(node('strong', item.clientId, 'mono'));
-      const timeInfo = node('div', new Date(item.createdAt).toLocaleTimeString() + ' · 截止: ' + new Date(item.expiresAt).toLocaleTimeString(), 'muted');
+      const timeInfo = node('div', format(t('pendingDeadline'), {created: new Date(item.createdAt).toLocaleTimeString(lang), deadline: new Date(item.expiresAt).toLocaleTimeString(lang)}), 'muted');
       timeInfo.style.fontSize = '11px';
       info.append(title, timeInfo);
-      const link = node('a', t('proceedToApproval', '前往核准 →'), 'button primary compact');
+      const link = node('a', t('proceedToApproval'), 'button primary compact');
       link.href = item.actionPath;
       card.append(info, link);
       container.append(card);
     }
   } catch (err) {
-    container.replaceChildren(node('p', '读取待办失败: ' + err.message, 'empty load-error'));
+    container.replaceChildren(node('p', t('pendingFailed') + err.message, 'empty load-error'));
   }
 }
 async function loadNotifications(offset = 0) {
@@ -1509,31 +1510,31 @@ async function loadNotifications(offset = 0) {
   try {
     const data = await api('/dashboard/api/notifications?limit=15&offset=' + offset);
     notificationsTotal = data.total;
-    if (unreadTag) unreadTag.textContent = format(t('unreadCountTag', '{n} 未读'), { n: data.unreadCount });
-    if (infoEl) infoEl.textContent = format(t('paginationInfo', '显示 {start}–{end} / 共 {total} 条'), { start: data.total ? offset + 1 : 0, end: Math.min(offset + 15, data.total), total: data.total });
+    if (unreadTag) unreadTag.textContent = format(t('unreadCountTag'), { n: data.unreadCount });
+    if (infoEl) infoEl.textContent = format(t('paginationInfo'), { start: data.total ? offset + 1 : 0, end: Math.min(offset + 15, data.total), total: data.total });
     disabled($('notifications-prev-btn'), offset <= 0);
     disabled($('notifications-next-btn'), offset + 15 >= data.total);
     tbody.replaceChildren();
     if (!data.items.length) {
-      tableMessage(tbody, 5, t('noNotifications', '暂无通知记录。'));
+      tableMessage(tbody, 5, t('noNotifications'));
       return;
     }
     for (const item of data.items) {
       const tr = node('tr');
       if (!item.readAt) tr.style.fontWeight = '600';
-      const timeTd = node('td', new Date(item.createdAt).toLocaleString(), 'mono');
+      const timeTd = node('td', new Date(item.createdAt).toLocaleString(lang), 'mono');
       timeTd.style.fontSize = '11px';
       const typeTd = node('td');
       typeTd.append(node('span', item.type, 'badge'));
       const summaryTd = node('td', item.summary);
-      const statusTd = node('td', item.readAt ? t('read', '已读') : t('unread', '未读'), item.readAt ? 'muted' : 'badge warning');
+      const statusTd = node('td', item.readAt ? t('read') : t('unread'), item.readAt ? 'muted' : 'badge warning');
       const actionTd = node('td');
       if (item.actionPath) {
-        const link = node('a', t('viewDetails', '查看详情 →'), 'card-action-link');
+        const link = node('a', t('viewDetails'), 'card-action-link');
         link.href = item.actionPath;
         actionTd.append(link);
       } else if (!item.readAt) {
-        actionTd.append(button(t('markAsRead', '标为已读'), async () => {
+        actionTd.append(button(t('markAsRead'), async () => {
           await api('/dashboard/api/notifications/read', 'POST', { id: item.id });
           loadNotifications(notificationsOffset);
         }, false, 'compact'));
@@ -1542,7 +1543,7 @@ async function loadNotifications(offset = 0) {
       tbody.append(tr);
     }
   } catch (err) {
-    tableMessage(tbody, 5, '读取通知失败: ' + err.message, true);
+    tableMessage(tbody, 5, t('notificationsFailed') + err.message, true);
   }
 }
 async function loadHighlightedNotification() {
@@ -1550,12 +1551,12 @@ async function loadHighlightedNotification() {
   if (!id) return;
   const banner = $('notification-detail-banner');
   banner.style.display = '';
-  banner.replaceChildren(node('p', '正在读取所选通知…'));
+  banner.replaceChildren(node('p', t('selectedNotificationLoading')));
   try {
     const item = await api('/dashboard/api/notifications/' + encodeURIComponent(id));
-    banner.replaceChildren(node('strong', item.summary), node('p', item.type + ' · ' + new Date(item.createdAt).toLocaleString(), 'muted'));
+    banner.replaceChildren(node('strong', item.summary), node('p', item.type + ' · ' + new Date(item.createdAt).toLocaleString(lang), 'muted'));
     if (item.actionPath) {
-      const link = node('a', t('proceedToApproval', '前往核准 →'), 'card-action-link');
+      const link = node('a', t('proceedToApproval'), 'card-action-link');
       link.href = item.actionPath;
       banner.append(link);
     }
@@ -1564,7 +1565,7 @@ async function loadHighlightedNotification() {
       await loadNotifications(notificationsOffset);
     }
   } catch (err) {
-    banner.replaceChildren(node('p', '所选通知不存在或读取失败：' + err.message, 'load-error'));
+    banner.replaceChildren(node('p', t('selectedNotificationFailed') + err.message, 'load-error'));
   }
 }
 // Browser push promises can remain pending while the push service is unreachable.
@@ -1574,7 +1575,7 @@ async function pushWait(promise, step, timeoutMs = 20000) {
   let timer;
   try {
     return await Promise.race([promise, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(step + '超时。请检查网络后重试；Chrome 还需能连接 Google 推送服务。')), timeoutMs);
+      timer = setTimeout(() => reject(new Error(format(t('pushWaitTimeout'), {step}))), timeoutMs);
     })]);
   } finally { clearTimeout(timer); }
 }
@@ -1584,17 +1585,17 @@ function pushProgress(text, error = false) {
   status.className = error ? 'load-error' : 'muted';
 }
 async function pushApi(path, method = 'GET', body) {
-  return pushWait(api(path, method, body), '推送设备服务请求');
+  return pushWait(api(path, method, body), t('pushServiceRequest'));
 }
 async function pushRegistration() {
-  if (!('serviceWorker' in navigator)) throw new Error('此浏览器不支持 Service Worker。');
-  const reg = await pushWait(navigator.serviceWorker.getRegistration(), '读取 Service Worker');
-  if (!reg?.active || !reg.pushManager) throw new Error('推送服务尚未就绪，请稍后刷新重试。');
+  if (!('serviceWorker' in navigator)) throw new Error(t('serviceWorkerUnsupported'));
+  const reg = await pushWait(navigator.serviceWorker.getRegistration(), t('readServiceWorker'));
+  if (!reg?.active || !reg.pushManager) throw new Error(t('pushNotReady'));
   return reg;
 }
 async function currentPushDevice() {
   const reg = await pushRegistration();
-  const sub = await pushWait(reg.pushManager.getSubscription(), '读取本机推送订阅');
+  const sub = await pushWait(reg.pushManager.getSubscription(), t('readSubscription'));
   const data = sub ? await pushApi('/dashboard/api/push/subscription', 'POST', { endpoint: sub.endpoint }) : null;
   const device = data?.subscription;
   return { reg, sub, device };
@@ -1602,7 +1603,7 @@ async function currentPushDevice() {
 function renderNotificationPermission() {
   const badge = $('push-permission-badge');
   const permission = 'Notification' in window ? Notification.permission : null;
-  badge.textContent = permission === 'granted' ? t('permGranted', '通知权限：已允许') : permission === 'denied' ? t('permDenied', '通知权限：已禁止') : permission === 'default' ? t('permDefault', '通知权限：未授权') : t('permUnsupported', '通知权限：不支持');
+  badge.textContent = permission === 'granted' ? t('permGranted') : permission === 'denied' ? t('permDenied') : permission === 'default' ? t('permDefault') : t('permUnsupported');
   badge.className = 'badge ' + (permission === 'granted' ? 'good' : 'neutral');
   return permission;
 }
@@ -1611,14 +1612,14 @@ async function loadPushSettings() {
   const toggleBtn = $('push-toggle-btn');
   const testBtn = $('push-test-btn');
   toggleBtn.dataset.pushActive = 'false';
-  toggleBtn.textContent = t('enablePushBtn', '开启本机通知推送');
+  toggleBtn.textContent = t('enablePushBtn');
   toggleBtn.className = 'button primary';
   const devicesBody = $('push-devices-table-body');
   disabled(toggleBtn, true); disabled(testBtn, true);
   const supported = ('serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
   renderNotificationPermission();
   if (!supported) {
-    if (badge) { badge.textContent = t('pushBadgeUnsupported', '环境不支持'); badge.className = 'badge neutral'; }
+    if (badge) { badge.textContent = t('pushBadgeUnsupported'); badge.className = 'badge neutral'; }
     disabled(toggleBtn, true); disabled(testBtn, true);
     return;
   }
@@ -1626,23 +1627,23 @@ async function loadPushSettings() {
     const { device } = await currentPushDevice();
     const permission = renderNotificationPermission();
     if (permission === 'denied') {
-      if (badge) { badge.textContent = t('pushBadgePermDenied', '通知权限已禁止'); badge.className = 'badge neutral'; }
+      if (badge) { badge.textContent = t('pushBadgePermDenied'); badge.className = 'badge neutral'; }
       disabled(toggleBtn, true); disabled(testBtn, true);
     } else if (permission === 'granted' && device?.active) {
-      if (badge) { badge.textContent = t('pushBadgeEnabled', '本机已开启推送'); badge.className = 'badge good'; }
+      if (badge) { badge.textContent = t('pushBadgeEnabled'); badge.className = 'badge good'; }
       toggleBtn.dataset.pushActive = 'true';
-      toggleBtn.textContent = t('disablePushBtn', '停用本机推送');
+      toggleBtn.textContent = t('disablePushBtn');
       toggleBtn.className = 'button danger';
       disabled(toggleBtn, false); disabled(testBtn, false);
     } else {
-      if (badge) { badge.textContent = permission === 'granted' ? t('pushBadgePermGrantedUnsubscribed', '权限已允许，尚未开启推送') : t('pushBadgeDisabled', '未开启推送'); badge.className = 'badge warning'; }
+      if (badge) { badge.textContent = permission === 'granted' ? t('pushBadgePermGrantedUnsubscribed') : t('pushBadgeDisabled'); badge.className = 'badge warning'; }
       disabled(toggleBtn, false); disabled(testBtn, true);
     }
     const devData = await pushApi('/dashboard/api/push/subscriptions');
     const items = devData.items || [];
     devicesBody.replaceChildren();
     if (!items.length) {
-      tableMessage(devicesBody, 5, '暂无已登记的推送设备。');
+      tableMessage(devicesBody, 5, t('noPushDevices'));
       return;
     }
     for (const dev of items) {
@@ -1650,13 +1651,13 @@ async function loadPushSettings() {
       tr.append(
         node('td', dev.id.slice(0, 8) + '…', 'mono'),
         node('td', dev.label),
-        node('td', dev.active ? t('active', '活跃') : t('pushBadgeDisabled', '已停用'), 'badge ' + (dev.active ? 'good' : 'neutral')),
-        node('td', new Date(dev.createdAt).toLocaleDateString(), 'mono'),
+        node('td', dev.active ? t('active') : t('pushBadgeDisabled'), 'badge ' + (dev.active ? 'good' : 'neutral')),
+        node('td', new Date(dev.createdAt).toLocaleDateString(lang), 'mono'),
         node('td')
       );
       if (dev.active) {
-        tr.lastChild.append(button('解绑', async () => {
-          if (!confirm(format(t('unsubscribeDeviceConfirm', '确定解绑设备 “{name}”？该设备将不再接收新提醒。'), { name: dev.label }))) return;
+        tr.lastChild.append(button(t('unlinkDevice'), async () => {
+          if (!confirm(format(t('unsubscribeDeviceConfirm'), { name: dev.label }))) return;
           await api('/dashboard/api/push/unsubscribe', 'POST', { id: dev.id });
           loadPushSettings();
         }, false, 'danger compact'));
@@ -1665,7 +1666,7 @@ async function loadPushSettings() {
     }
   } catch (err) {
     renderNotificationPermission();
-    if (badge) { badge.textContent = t('pushBadgeServiceUnavailable', '推送暂不可用') + '：' + err.message; badge.className = 'badge neutral'; }
+    if (badge) { badge.textContent = t('pushBadgeServiceUnavailable') + ': ' + err.message; badge.className = 'badge neutral'; }
     disabled(toggleBtn, Notification.permission === 'denied'); disabled(testBtn, true);
   } finally {
     syncControls();
@@ -1679,19 +1680,19 @@ function checkPwaDisplayMode() {
   const installBtn = $('pwa-install-btn');
   if (isStandalone) {
     if (badge) { badge.textContent = 'STANDALONE'; badge.className = 'badge good'; }
-    if (statusEl) statusEl.textContent = t('pwaStandalone', '已作为独立应用运行 (独立全屏运行模式)');
+    if (statusEl) statusEl.textContent = t('pwaStandalone');
     if (iosGuideEl) iosGuideEl.style.display = 'none';
     if (installBtn) installBtn.hidden = true;
   } else {
     const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
     if (isIos) {
-      if (badge) { badge.textContent = t('pwaBrowser', '浏览器运行中'); badge.className = 'badge warning'; }
-      if (statusEl) statusEl.textContent = '当前通过 Safari 打开。建议添加至主屏幕以获得完整 PWA 与锁屏推送能力。';
+      if (badge) { badge.textContent = t('pwaBrowser'); badge.className = 'badge warning'; }
+      if (statusEl) statusEl.textContent = t('pwaIosHint');
       if (iosGuideEl) iosGuideEl.style.display = 'block';
       if (installBtn) installBtn.hidden = true;
     } else {
-      if (badge) { badge.textContent = t('pwaBrowser', '浏览器标签页模式'); badge.className = 'badge neutral'; }
-      if (statusEl) statusEl.textContent = '可在支持的浏览器（如 Chrome / Edge）中安装为独立桌面应用。';
+      if (badge) { badge.textContent = t('pwaBrowser'); badge.className = 'badge neutral'; }
+      if (statusEl) statusEl.textContent = t('pwaDesktopHint');
       if (iosGuideEl) iosGuideEl.style.display = 'none';
     }
   }
@@ -1708,10 +1709,10 @@ async function refreshAll() {
     loadPushSettings(),
   ]);
   const failures = results.filter(result => result.status === 'rejected');
-  $('last-refresh').textContent = (failures.length ? '最近刷新（部分失败）：' : '最近刷新：') + new Date().toLocaleTimeString();
+  $('last-refresh').textContent = (failures.length ? t('lastRefreshPartial') : t('lastRefresh')) + new Date().toLocaleTimeString(lang);
   syncControls();
   checkPwaDisplayMode();
-  if (failures.length) throw new Error('刷新未完整完成：' + failures.map(result => result.reason.message).join('；'));
+  if (failures.length) throw new Error(t('refreshIncomplete') + failures.map(result => result.reason.message).join('; '));
 }
 const enc = value => {
   let binary = ''; for (const byte of new Uint8Array(value)) binary += String.fromCharCode(byte);
@@ -1742,7 +1743,7 @@ async function ceremony(challenge) {
   }
   // This call runs synchronously from the dedicated dialog button, before any network await.
   const credential = await navigator.credentials[challenge.registration ? 'create' : 'get']({publicKey:options});
-  if (!credential) throw new DOMException('Passkey 操作已取消。','NotAllowedError');
+  if (!credential) throw new DOMException(t('passkeyCancelledOrTimeout'),'NotAllowedError');
   if (typeof credential.toJSON === 'function') {
     return credential.toJSON();
   }
@@ -1760,25 +1761,25 @@ async function ceremony(challenge) {
   return result;
 }
 function stageChallenge(challenge, title, description, verify, success) {
-  if (!supportsPasskeys) throw new Error('此浏览器不支持 WebAuthn。请使用支持 Passkey 的安全外部浏览器；不会降级为普通验证。');
-  if (!challenge?.options || !challenge.challengeId || typeof challenge.registration !== 'boolean') throw new Error('服务器 Passkey challenge 格式异常。');
+  if (!supportsPasskeys) throw new Error(t('webauthnUnsupported'));
+  if (!challenge?.options || !challenge.challengeId || typeof challenge.registration !== 'boolean') throw new Error(t('invalidChallenge'));
   pending = {challenge,verify,success,deadline:Math.min(Date.now() + 120000,sessionExpiresAt)};
   $('ceremony-title').textContent = title;
   $('ceremony-description').textContent = description;
-  $('ceremony-submit').textContent = challenge.registration ? '注册 Passkey 并确认' : '验证 Passkey 并确认';
-  $('ceremony-state').textContent = '点击下方按钮打开系统 Passkey 提示。操作须在两分钟内完成。';
+  $('ceremony-submit').textContent = challenge.registration ? t('registerKeyConfirm') : t('dialogConfirm');
+  $('ceremony-state').textContent = t('ceremonyReady');
   disabled($('ceremony-submit'),false);
   if (!dialog.open) { returnFocus = document.activeElement; dialog.showModal(); }
   $('ceremony-submit').focus();
 }
 $('ceremony-submit').addEventListener('click', () => run(async () => {
   const current = pending;
-  if (!current || Date.now() >= current.deadline) { pending = null; dialog.close(); throw new Error('Passkey challenge 已过期，请重新开始。'); }
+  if (!current || Date.now() >= current.deadline) { pending = null; dialog.close(); throw new Error(t('challengeExpired')); }
   pending = null;
-  $('ceremony-state').textContent = '等待系统 Passkey 验证；请勿关闭此页面…';
+  $('ceremony-state').textContent = t('ceremonyWaiting');
   try {
     const response = await ceremony(current.challenge);
-    $('ceremony-state').textContent = '正在校验签名并提交，请勿重复操作…';
+    $('ceremony-state').textContent = t('ceremonySubmitting');
     await current.verify(response);
     if (!pending) {
       dialog.close();
@@ -1788,12 +1789,12 @@ $('ceremony-submit').addEventListener('click', () => run(async () => {
   } catch (error) {
     dialog.close(); pending = null;
     if (error.name !== 'NotAllowedError' && error.name !== 'AbortError') {
-      throw new Error(error.message + ' 操作未确认完成；请刷新核对服务器状态后再重试。');
+      throw new Error(error.message + ' ' + t('ceremonyUncertain'));
     }
     throw error;
   }
 }));
-function cancelCeremony() { pending = null; dialog.close(); message('已取消 Passkey 流程，未提交变更。'); }
+function cancelCeremony() { pending = null; dialog.close(); message(t('ceremonyCancelled')); }
 $('ceremony-cancel').addEventListener('click',() => { if (!busy) cancelCeremony(); });
 dialog.addEventListener('cancel',event => { event.preventDefault(); if (!busy) cancelCeremony(); });
 dialog.addEventListener('close',() => { if (returnFocus?.isConnected) returnFocus.focus(); });
@@ -1813,69 +1814,69 @@ if (!('closedBy' in dialog)) {
 $('add-passkey-form').addEventListener('submit',event => {
   event.preventDefault();
   run(async () => {
-    if (!credentials) throw new Error('请先成功读取 Passkey 列表。');
+    if (!credentials) throw new Error(t('loadKeysFirst'));
     const name = $('credential-name').value.trim();
-    if (!name || name.length > 80) throw new Error('Passkey 名称须为 1–80 字符。');
+    if (!name || name.length > 80) throw new Error(t('invalidKeyName'));
     if (!credentials.length) {
       const challenge = await securityOptions('register','',name);
-      stageChallenge(challenge,'注册首个 Passkey','登记 “' + name + '”。注册不会自动更改任何客户端策略。',response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),'首个 Passkey 已注册。');
+      stageChallenge(challenge,t('registerFirstKey'),format(t('registerFirstHint'), {name}),response => api('/security/api/verify','POST',{challengeId:challenge.challengeId,response}),t('firstKeyRegistered'));
     } else {
       const challenge = await securityOptions('add','',name);
-      stageChallenge(challenge,'添加 Passkey · 1 / 2','先验证已有凭据；成功后需再次点击注册新 Passkey。',async response => {
+      stageChallenge(challenge,t('addKeyStepOne'),t('addKeyVerifyHint'),async response => {
         const proof = await api('/security/api/verify','POST',{challengeId:challenge.challengeId,response});
-        if (!proof.registrationTicket) throw new Error('服务器未返回新凭据注册许可。');
+        if (!proof.registrationTicket) throw new Error(t('missingRegistrationTicket'));
         const registration = await api('/security/api/add-options','POST',{ticket:proof.registrationTicket,name});
-        stageChallenge(registration,'添加 Passkey · 2 / 2','已有凭据验证成功。点击下方按钮，为 “' + name + '” 注册新 Passkey。',response => api('/security/api/add-verify','POST',{challengeId:registration.challengeId,response}),'新 Passkey 已注册。');
+        stageChallenge(registration,t('addKeyStepTwo'),format(t('addKeyRegisterHint'), {name}),response => api('/security/api/add-verify','POST',{challengeId:registration.challengeId,response}),t('keyRegistered'));
       },'');
     }
   });
 });
-$('refresh-all-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
-$('clients-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
-$('audit-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
-$('passkeys-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
-$('inbox-refresh-btn')?.addEventListener('click',() => run(async () => { await Promise.all([loadPendingApprovals(), loadNotifications(notificationsOffset)]); message('待办与通知已刷新。'); }));
-$('settings-refresh-btn')?.addEventListener('click',() => run(async () => { await loadPushSettings(); message('设备状态已刷新。'); }));
+$('refresh-all-btn').addEventListener('click',() => run(async () => { await refreshAll(); message(t('allRefreshed')); }));
+$('clients-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message(t('allRefreshed')); }));
+$('audit-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message(t('allRefreshed')); }));
+$('passkeys-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message(t('allRefreshed')); }));
+$('inbox-refresh-btn')?.addEventListener('click',() => run(async () => { await Promise.all([loadPendingApprovals(), loadNotifications(notificationsOffset)]); message(t('inboxRefreshed')); }));
+$('settings-refresh-btn')?.addEventListener('click',() => run(async () => { await loadPushSettings(); message(t('devicesRefreshed')); }));
 $('notifications-prev-btn')?.addEventListener('click',() => run(async () => { notificationsOffset = Math.max(0, notificationsOffset - 15); await loadNotifications(notificationsOffset); }));
 $('notifications-next-btn')?.addEventListener('click',() => run(async () => { if (notificationsOffset + 15 < notificationsTotal) { notificationsOffset += 15; await loadNotifications(notificationsOffset); } }));
 $('push-toggle-btn')?.addEventListener('click', () => run(async () => {
   try {
     if ($('push-toggle-btn').dataset.pushActive === 'true') {
-      pushProgress(t('pushBadgePendingUnsubscribe', '正在停用本机推送…'));
+      pushProgress(t('pushBadgePendingUnsubscribe'));
       const { sub, device } = await currentPushDevice();
       if (device?.active) await api('/dashboard/api/push/unsubscribe', 'POST', { id: device.id });
-      if (sub) await pushWait(sub.unsubscribe(), '停用本机推送订阅');
-      pushProgress(t('disablePushSuccess', '已停用本机推送通知。'));
-      message(t('disablePushSuccess', '已停用本机推送通知。'));
+      if (sub) await pushWait(sub.unsubscribe(), t('unsubscribeStep'));
+      pushProgress(t('disablePushSuccess'));
+      message(t('disablePushSuccess'));
       return;
     }
-    pushProgress(t('permChecking', '正在检查通知权限…'));
-    const perm = Notification.permission === 'granted' ? 'granted' : await pushWait(Notification.requestPermission(), '等待通知权限', 60000);
-    if (perm !== 'granted') throw new Error('未授权通知权限，无法开启推送。');
+    pushProgress(t('permChecking'));
+    const perm = Notification.permission === 'granted' ? 'granted' : await pushWait(Notification.requestPermission(), t('permissionStep'), 60000);
+    if (perm !== 'granted') throw new Error(t('pushPermissionRequired'));
     renderNotificationPermission();
-    pushProgress('正在读取推送配置…');
+    pushProgress(t('pushConfigLoading'));
     const config = await pushApi('/dashboard/api/push/config');
     const reg = await pushRegistration();
-    let sub = await pushWait(reg.pushManager.getSubscription(), '读取本机推送订阅');
+    let sub = await pushWait(reg.pushManager.getSubscription(), t('readSubscription'));
     if (!sub) {
-      pushProgress(t('connectingPushService', '正在连接浏览器推送服务（最长等待 20 秒）…'));
+      pushProgress(t('connectingPushService'));
       // Reuse an in-flight browser operation when retrying after a timeout.
       if (!pendingPushSubscription) {
         pendingPushSubscription = reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(config.publicKey) });
         pendingPushSubscription.then(() => { pendingPushSubscription = null; }, () => { pendingPushSubscription = null; });
       }
-      sub = await pushWait(pendingPushSubscription, '连接浏览器推送服务');
+      sub = await pushWait(pendingPushSubscription, t('connectPushStep'));
     }
     const subJson = sub.toJSON();
-    pushProgress(t('pushBadgePendingRegistration', '正在登记本机推送设备…'));
+    pushProgress(t('pushBadgePendingRegistration'));
     await pushApi('/dashboard/api/push/subscribe', 'POST', {
       subscription: { endpoint: sub.endpoint, expirationTime: sub.expirationTime, keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth } },
-      label: $('push-device-label').value.trim() || (navigator.userAgent.includes('iPhone') ? 'iPhone' : '桌面 Chrome'),
+      label: $('push-device-label').value.trim() || t('defaultDeviceName'),
     });
-    pushProgress(t('enablePushSuccess', '已成功开启本机推送！'));
-    message(t('enablePushSuccess', '已成功开启本机推送！'));
+    pushProgress(t('enablePushSuccess'));
+    message(t('enablePushSuccess'));
   } catch (error) {
-    const detail = ($('push-toggle-btn').dataset.pushActive === 'true' ? t('disablePushFailed', '停用通知失败：') : '开启推送失败：') + (error.message || '请刷新后重试。');
+    const detail = ($('push-toggle-btn').dataset.pushActive === 'true' ? t('disablePushFailed') : t('enablePushFailed')) + (error.message || t('retryRefresh'));
     pushProgress(detail, true);
     message(detail, true);
   } finally { await loadPushSettings(); }
@@ -1883,10 +1884,10 @@ $('push-toggle-btn')?.addEventListener('click', () => run(async () => {
 $('push-test-btn')?.addEventListener('click', async () => {
   try {
     const { device } = await currentPushDevice();
-    if (!device?.active) { alert('未找到活跃的本机推送设备，请先开启推送。'); return; }
+    if (!device?.active) { alert(t('noActiveDevice')); return; }
     await api('/dashboard/api/push/test', 'POST', { id: device.id });
-    alert(t('testPushSent', '测试通知已发送！请观察设备通知栏。'));
-  } catch (err) { alert(t('testPushFailed', '发送测试通知失败: ') + err.message); }
+    alert(t('testPushSent'));
+  } catch (err) { alert(t('testPushFailed') + err.message); }
 });
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', e => {
@@ -1934,11 +1935,11 @@ navigator.serviceWorker?.addEventListener('message', e => {
 $('audit-filter-form').addEventListener('submit',event => {
   event.preventDefault(); run(async () => {
     auditFilters = {clientId:$('audit-filter-client').value.trim(),toolName:$('audit-filter-tool').value.trim(),status:$('audit-filter-status').value};
-    auditOffset = 0; await loadAudit(); message('审计筛选已应用。');
+    auditOffset = 0; await loadAudit(); message(t('auditApplied'));
   });
 });
 $('audit-clear-btn').addEventListener('click',() => run(async () => {
-  $('audit-filter-form').reset(); auditFilters = {clientId:'',toolName:'',status:''}; auditOffset = 0; await loadAudit(); message('已清除审计筛选。');
+  $('audit-filter-form').reset(); auditFilters = {clientId:'',toolName:'',status:''}; auditOffset = 0; await loadAudit(); message(t('auditCleared'));
 }));
 $('audit-prev-btn').addEventListener('click',() => run(async () => { auditOffset = Math.max(0,auditOffset - auditLimit); await loadAudit(); }));
 $('audit-next-btn').addEventListener('click',() => run(async () => { if (auditOffset + auditLimit < auditTotal) { auditOffset += auditLimit; await loadAudit(); } }));
@@ -1971,10 +1972,10 @@ tabs.forEach((tab,index) => {
 function tick() {
   const remaining = sessionExpiresAt - Date.now();
   if (remaining <= 0) { markExpired(); return; }
-  $('session-state').textContent = '会话剩余 ' + Math.ceil(remaining / 60000) + ' 分钟';
+  $('session-state').textContent = format(t('sessionRemaining'), {minutes: Math.ceil(remaining / 60000)});
   $('session-state').className = 'badge ' + (remaining < 120000 ? 'warn' : 'neutral');
   updateOverviewStatus();
-  if (pending && Date.now() >= pending.deadline && !busy) { pending = null; dialog.close(); message('Passkey challenge 已过期，未提交变更。请重新开始。',true); }
+  if (pending && Date.now() >= pending.deadline && !busy) { pending = null; dialog.close(); message(t('challengeExpired'),true); }
 }
 if (!supportsPasskeys) {
   $('webauthn-warning').hidden = false;
@@ -2009,7 +2010,7 @@ export function renderDashboardPage(props: DashboardPageProps) {
 ${raw(BACKGROUND_SVG)}
 <a class="skip" href="#dashboard-main">${d.skipLink}</a>
 <div class="shell">
-  <div class="telemetry-bar-top" role="region" aria-label="系统运行遥测">
+  <div class="telemetry-bar-top" role="region" aria-label="${d.telemetryRegion}">
     <div class="telemetry-node">
       <span class="status-pulse-dot" aria-hidden="true"></span>
       <span>&gt;_ SCHWAB_MCP // CORE_SYS MCP NODE-01 [EDGE ENCLAVE]</span>
@@ -2036,7 +2037,7 @@ ${raw(BACKGROUND_SVG)}
       <button id="refresh-all-btn" class="button primary" data-action type="button">&#x21bb; ${d.refreshAllBtn}</button>
     </div>
   </header>
-  <section class="status-deck" aria-label="服务与会话状态">
+  <section class="status-deck" aria-label="${d.statusRegion}">
     <div class="status-cell card-schwab">
       <div class="status-cell-header">
         <span class="label">${d.schwabLink}</span>
@@ -2060,7 +2061,7 @@ ${raw(BACKGROUND_SVG)}
       <div class="status-cell-body">
         <p>${d.tradingSwitchDesc}</p>
         <p id="overview-counts" class="telemetry-stat">${d.overviewReading}</p>
-        <p class="telemetry-stat">安全策略：IMMUTABLE_ENCLAVE</p>
+        <p class="telemetry-stat">${d.securityPolicyStat}</p>
       </div>
     </div>
     <div class="status-cell card-session">
@@ -2070,7 +2071,7 @@ ${raw(BACKGROUND_SVG)}
       </div>
       <div class="status-cell-body">
         <p>${d.sessionDesc}</p>
-        <p class="telemetry-stat">沙箱状态：EPHEMERAL_ISOLATION</p>
+        <p class="telemetry-stat">${d.sandboxStat}</p>
       </div>
       <div class="status-cell-footer">
         <a class="card-action-link" href="/security">${d.securityCenter}</a>
@@ -2082,7 +2083,7 @@ ${raw(BACKGROUND_SVG)}
   <p id="session-login" class="session-link" hidden><a class="button primary" href="/dashboard/login">${d.sessionReloginBtn}</a></p>
   <p id="webauthn-warning" class="support-warning" style="margin-top:16px" hidden>${d.webauthnUnsupported}</p>
   <main id="dashboard-main" tabindex="-1" aria-busy="false">
-    <div class="tabs" role="tablist" aria-label="控制面板模块">
+    <div class="tabs" role="tablist" aria-label="${d.modulesRegion}">
       <button id="inbox-tab" class="tab" role="tab" aria-selected="${Boolean(highlightNotificationId)}" aria-controls="tab-inbox" tabindex="${highlightNotificationId ? "0" : "-1"}" type="button"><span>[01/INBOX]</span> ${d.tabInbox} <span id="inbox-badge" class="badge warning" style="font-size:10px;padding:1px 5px" hidden>0</span></button>
       <button id="clients-tab" class="tab" role="tab" aria-selected="${highlightNotificationId ? "false" : "true"}" aria-controls="tab-clients" tabindex="${highlightNotificationId ? "-1" : "0"}" type="button"><span>[02/ACCESS]</span> ${d.tabClients}</button>
       <button id="audit-tab" class="tab" role="tab" aria-selected="false" aria-controls="tab-audit" tabindex="-1" type="button"><span>[03/ACTIVITY]</span> ${d.tabAudit}</button>
@@ -2115,7 +2116,7 @@ ${raw(BACKGROUND_SVG)}
             <span id="notifications-unread-tag" class="badge neutral" style="font-size:10px">${formatString(d.unreadCountTag, { n: 0 })}</span>
           </div>
           <div id="notification-detail-banner" class="security-notice" style="display:none;margin-bottom:12px;"></div>
-          <div class="table-scroll" role="region" aria-label="通知列表，可横向滚动" tabindex="0">
+          <div class="table-scroll" role="region" aria-label="${d.notificationsRegion}" tabindex="0">
             <table id="notifications-table">
               <thead>
                 <tr>
@@ -2149,7 +2150,7 @@ ${raw(BACKGROUND_SVG)}
         </div>
         <button id="clients-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshClients}</button>
       </div>
-      <div class="table-scroll" role="region" aria-label="客户端列表，可横向滚动" tabindex="0">
+      <div class="table-scroll" role="region" aria-label="${d.clientsRegion}" tabindex="0">
         <table id="clients-table">
           <caption id="clients-count">${c.loading}</caption>
           <thead>
@@ -2176,7 +2177,7 @@ ${raw(BACKGROUND_SVG)}
         </div>
         <button id="audit-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshAudit}</button>
       </div>
-      <div class="stats" aria-label="审计统计">
+      <div class="stats" aria-label="${d.auditStatsRegion}">
         <div class="stat"><span class="label">${d.statMatchedCalls}</span><div id="audit-total-count" class="stat-value">—</div></div>
         <div class="stat"><span class="label">${d.statSuccessRate}</span><div id="audit-success-rate" class="stat-value">—</div></div>
         <div class="stat"><span class="label">${d.statSuccess}</span><div id="audit-success-count" class="stat-value">—</div></div>
@@ -2189,7 +2190,7 @@ ${raw(BACKGROUND_SVG)}
         <label class="field" for="audit-filter-status">${d.filterStatusLabel}<select id="audit-filter-status" data-action><option value="">${d.filterAllStatus}</option><option value="SUCCESS">${d.filterSuccess}</option><option value="ERROR">${d.filterError}</option></select></label>
         <div class="actions"><button class="button primary" data-action type="submit">${d.applyFilter}</button><button id="audit-clear-btn" class="button" data-action type="button">${d.clearFilter}</button></div>
       </form>
-      <div class="table-scroll" role="region" aria-label="调用日志，可横向滚动" tabindex="0">
+      <div class="table-scroll" role="region" aria-label="${d.auditRegion}" tabindex="0">
         <table id="audit-table">
           <thead>
             <tr>
@@ -2223,7 +2224,7 @@ ${raw(BACKGROUND_SVG)}
         </div>
         <button id="passkeys-refresh-btn" class="button" data-action type="button">&#x21bb; ${d.refreshPasskeys}</button>
       </div>
-      <div class="stats overview-stats" aria-label="全局概览">
+      <div class="stats overview-stats" aria-label="${d.overviewRegion}">
         <div class="stat"><span class="label">${d.statClientsCount}</span><div id="stat-clients-count" class="stat-value">—</div></div>
         <div class="stat"><span class="label">${d.statTotalCalls}</span><div id="stat-total-calls" class="stat-value">—</div></div>
         <div class="stat"><span class="label">${d.statPasskeysCount}</span><div id="stat-passkeys-count" class="stat-value">—</div></div>
@@ -2266,7 +2267,7 @@ ${raw(BACKGROUND_SVG)}
           </div>
           <p id="push-action-status" class="muted" role="status" aria-live="polite"></p>
           <h4 style="font-size:12px;color:var(--text);margin-bottom:8px;text-transform:uppercase;">${d.registeredDevices}</h4>
-          <div class="table-scroll" role="region" aria-label="推送设备列表" tabindex="0">
+          <div class="table-scroll" role="region" aria-label="${d.pushDevicesRegion}" tabindex="0">
             <table id="push-devices-table">
               <thead>
                 <tr>

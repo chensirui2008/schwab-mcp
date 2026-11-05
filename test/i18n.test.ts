@@ -10,9 +10,11 @@ import {
   renderLangDropdown,
   resolveLang,
 } from "../src/i18n";
-import { renderAuthorizePage, renderSchwabConnectedPage } from "../src/auth-ui";
+import { renderAccountSelectionPage, renderAuthorizePage, renderClientContinuePage, renderPasskeyAuthorizedPage, renderSchwabConnectedPage } from "../src/auth-ui";
 import { renderSecurityPage } from "../src/security-ui";
 import { renderDashboardPage } from "../src/dashboard-ui";
+import dashboardSource from "../src/dashboard-ui.ts?raw";
+import securitySource from "../src/security-ui.ts?raw";
 
 describe("i18n language resolution", () => {
   it("resolves default language for empty candidates", () => {
@@ -99,6 +101,57 @@ describe("i18n getRequestLang", () => {
 });
 
 describe("i18n dictionaries and helpers", () => {
+  it("keeps interpolation placeholders aligned in every translation", () => {
+    const zh = getDictionary("zh-CN");
+    const en = getDictionary("en-US");
+    const placeholders = (value: string) => [...value.matchAll(/\{\w+\}/g)].map(match => match[0]).sort();
+    for (const group of ["common", "auth", "security", "dashboard"] as const) {
+      for (const [key, value] of Object.entries(zh[group])) {
+        expect(placeholders(en[group][key as keyof typeof en[typeof group]]), `${group}.${key}`).toEqual(placeholders(value));
+      }
+    }
+  });
+
+  it("requires dictionary entries for every client translation and prevents hardcoded Chinese", () => {
+    for (const [source, translations] of [
+      [dashboardSource, getDashboardClientI18n("en-US")],
+      [securitySource, getSecurityClientI18n("en-US")],
+    ] as const) {
+      expect(source).not.toMatch(/\p{Script=Han}/u);
+      for (const match of source.matchAll(/\bt\('(\w+)'/g)) {
+        expect(translations[match[1] ?? ""], match[1]).toBeTruthy();
+      }
+    }
+    expect(dashboardSource).toContain("document.documentElement.lang");
+    expect(dashboardSource).not.toContain("t('colClient') ===");
+  });
+
+  it("preserves each high-risk security condition in both languages", () => {
+    const zh = getDictionary("zh-CN");
+    const en = getDictionary("en-US");
+    const cases: [string, string, RegExp, RegExp][] = [
+      [zh.auth.fullAccessDesc, en.auth.fullAccessDesc, /session 直下/, /session-direct trading/],
+      [zh.auth.fullAccessDesc, en.auth.fullAccessDesc, /二次确认.*撤单/, /secondary confirmation.*cancellation/],
+      [zh.auth.advancedSecurityDesc, en.auth.advancedSecurityDesc, /仅完整访问/, /only for full access/],
+      [zh.auth.advancedSecurityDesc, en.auth.advancedSecurityDesc, /建单、改单/, /placement or replacement/],
+      [zh.auth.advancedSecurityDesc, en.auth.advancedSecurityDesc, /延迟任务创建和修改/, /delayed-task creation or modification/],
+      [zh.auth.advancedSecurityDesc, en.auth.advancedSecurityDesc, /禁止 session 直下/, /Session-direct trading is prohibited/],
+      [zh.auth.advancedSecurityDesc, en.auth.advancedSecurityDesc, /按客户端生效/, /per client/],
+      [zh.security.frozenDesc, en.security.frozenDesc, /条件和截止时间/, /conditions and deadline/],
+      [zh.security.approveHint, en.security.approveHint, /立即提交即时订单或激活延迟任务/, /immediately submits instant orders or activates delayed tasks/],
+      [zh.security.approveHint, en.security.approveHint, /无对话确认降级/, /No downgrade to conversational confirmation/],
+      [zh.security.recoverNotice, en.security.recoverNotice, /新凭据注册成功前不删除旧凭据/, /Old credentials are not deleted until the new credential is successfully registered/],
+      [zh.security.recoverNotice, en.security.recoverNotice, /旧凭据、浏览器会话、challenge 和待批准增强提案全部失效/, /old credentials, browser sessions, challenges, and pending enhanced proposals are invalidated/],
+      [zh.security.recoverNotice, en.security.recoverNotice, /已激活延迟任务保留/, /Already activated delayed tasks are retained/],
+      [zh.security.recoverNotice, en.security.recoverNotice, /Advanced Security 保持开启/, /Advanced Security remains enabled/],
+      [zh.security.disclaimer, en.security.disclaimer, /Worker、批准设备或 GitHub 恢复账户/, /Worker, approval device, or GitHub recovery account/],
+    ];
+    for (const [chinese, english, zhCondition, enCondition] of cases) {
+      expect(chinese).toMatch(zhCondition);
+      expect(english).toMatch(enCondition);
+    }
+  });
+
   it("provides comprehensive dictionaries for both zh-CN and en-US", () => {
     const zh = getDictionary("zh-CN");
     const en = getDictionary("en-US");
@@ -174,6 +227,29 @@ describe("i18n dictionaries and helpers", () => {
 });
 
 describe("UI rendering with localization", () => {
+  it.each(["zh-CN", "en-US"] as const)("localizes transient consent pages and completion badges in %s", async lang => {
+    const dict = getDictionary(lang);
+    const accounts = String(await renderAccountSelectionPage({
+      state: "opaque-state", clientName: "Client <name>", accounts: [{ hashValue: "hash", label: "••••1234" }],
+      selected: ["hash"], connected: false, lang,
+    }));
+    expect(accounts).toContain(dict.auth.accountsHeading);
+    expect(accounts).toContain(dict.auth.accountsDesc);
+    expect(accounts).toContain(dict.auth.accountsDisconnected);
+    expect(accounts).toContain(dict.common.brandTitle);
+    expect(accounts).toContain('id="auth-language"');
+    expect(accounts).toContain('value="opaque-state"');
+    expect(accounts).toContain('value="hash" checked');
+    expect(accounts).toContain("Client &lt;name&gt;");
+    expect(accounts).not.toContain("location.reload");
+    const continuation = String(await renderClientContinuePage("https://client.example/cb?code=opaque&state=s", lang));
+    expect(continuation).toContain(dict.auth.clientContinueNotice);
+    expect(continuation).toContain('id="auth-language"');
+    expect(continuation).toContain("code=opaque&amp;state=s");
+    const completion = renderPasskeyAuthorizedPage(lang);
+    expect(completion).toContain(`>${dict.auth.completionDone}</span>`);
+  });
+
   it("renders authorize page in both zh-CN and en-US", async () => {
     const zhOutput = await renderAuthorizePage({
       clientName: "Claude Desktop",
@@ -257,5 +333,8 @@ describe("UI rendering with localization", () => {
     expect(enHtml).toContain('lang="en-US"');
     expect(enHtml).toContain("Inbox &amp; Alerts");
     expect(enHtml).toContain("Authorized Clients");
+    const labels = [...enHtml.matchAll(/aria-label="([^"]+)"/g)].map(match => match[1]);
+    expect(labels.length).toBeGreaterThanOrEqual(10);
+    labels.forEach(label => { expect(label).not.toMatch(/\p{Script=Han}/u); });
   });
 });

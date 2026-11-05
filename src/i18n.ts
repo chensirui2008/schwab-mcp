@@ -84,6 +84,18 @@ export interface I18nDictionary {
     nextPage: string;
   };
   auth: {
+    clientContinueTitle: string;
+    clientContinueNotice: string;
+    clientContinueLink: string;
+    accountsTitle: string;
+    accountsHeading: string;
+    accountsLegend: string;
+    accountsDesc: string;
+    accountsDisconnected: string;
+    accountsConnect: string;
+    accountsConfirm: string;
+    completionDone: string;
+    completionOnline: string;
     gitHubContinueTitle: string;
     gitHubContinueNotice: string;
     gitHubContinueLink: string;
@@ -127,6 +139,13 @@ export interface I18nDictionary {
     completionFooter: string;
   };
   security: {
+    scriptOptionsLoading: string;
+    scriptOptionsReady: string;
+    scriptAuthVerified: string;
+    scriptAuthCancelled: string;
+    scriptStatusChanged: string;
+    authorizedAccounts: string;
+    marketDataOnly: string;
     orderApprovalTitle: string;
     orderApprovalSubtitle: string;
     zeroKnowledgeNotice: string;
@@ -212,6 +231,93 @@ export interface I18nDictionary {
     scriptAuthResume: string;
   };
   dashboard: {
+    requestFailed: string;
+    operationFailed: string;
+    invalidList: string;
+    invalidCount: string;
+    invalidConnection: string;
+    overviewFailed: string;
+    clientCount: string;
+    unnamedClient: string;
+    redirectCount: string;
+    enableAdvanced: string;
+    disableAdvanced: string;
+    enableAdvancedHint: string;
+    disableAdvancedHint: string;
+    firstKeyNotice: string;
+    clientsFailed: string;
+    readFailed: string;
+    auditFailed: string;
+    paginationUnknown: string;
+    invalidKeyName: string;
+    renameKeyTitle: string;
+    renameKeyHint: string;
+    keyRenamed: string;
+    deleteKeyTitle: string;
+    deleteKeyHint: string;
+    keyDeleted: string;
+    passkeysFailed: string;
+    credentialsUnknown: string;
+    pendingDeadline: string;
+    pendingFailed: string;
+    notificationsFailed: string;
+    selectedNotificationLoading: string;
+    selectedNotificationFailed: string;
+    pushWaitTimeout: string;
+    serviceWorkerUnsupported: string;
+    readServiceWorker: string;
+    pushNotReady: string;
+    readSubscription: string;
+    noPushDevices: string;
+    unlinkDevice: string;
+    pwaIosHint: string;
+    pwaDesktopHint: string;
+    lastRefresh: string;
+    lastRefreshPartial: string;
+    refreshIncomplete: string;
+    invalidChallenge: string;
+    registerKeyConfirm: string;
+    ceremonyReady: string;
+    challengeExpired: string;
+    ceremonyWaiting: string;
+    ceremonySubmitting: string;
+    ceremonyUncertain: string;
+    ceremonyCancelled: string;
+    loadKeysFirst: string;
+    registerFirstHint: string;
+    firstKeyRegistered: string;
+    addKeyStepOne: string;
+    addKeyVerifyHint: string;
+    missingRegistrationTicket: string;
+    addKeyStepTwo: string;
+    addKeyRegisterHint: string;
+    keyRegistered: string;
+    allRefreshed: string;
+    inboxRefreshed: string;
+    devicesRefreshed: string;
+    unsubscribeStep: string;
+    permissionStep: string;
+    pushPermissionRequired: string;
+    pushConfigLoading: string;
+    connectPushStep: string;
+    defaultDeviceName: string;
+    enablePushFailed: string;
+    retryRefresh: string;
+    noActiveDevice: string;
+    auditApplied: string;
+    auditCleared: string;
+    sessionRemaining: string;
+    telemetryRegion: string;
+    statusRegion: string;
+    modulesRegion: string;
+    notificationsRegion: string;
+    clientsRegion: string;
+    auditStatsRegion: string;
+    auditRegion: string;
+    overviewRegion: string;
+    pushDevicesRegion: string;
+    securityPolicyStat: string;
+    sandboxStat: string;
     pageTitle: string;
     skipLink: string;
     sysTitle: string;
@@ -446,6 +552,18 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     nextPage: "下一页 →",
   },
   auth: {
+    clientContinueTitle: "返回客户端",
+    clientContinueNotice: "账户授权已完成，正在返回客户端。",
+    clientContinueLink: "继续返回客户端",
+    accountsTitle: "选择授权账户",
+    accountsHeading: "选择开放的账户",
+    accountsLegend: "此客户端可访问的账户",
+    accountsDesc: "可选择多个账户。不选择账户时仅开放行情。新增账户需重新授权。",
+    accountsDisconnected: "Schwab 尚未连接或需重新连接；当前只能授权行情访问。",
+    accountsConnect: "连接 Schwab（完成后重新发起 MCP 授权）",
+    accountsConfirm: "确认账户并继续授权",
+    completionDone: "完成 DONE",
+    completionOnline: "正常 ONLINE",
     gitHubContinueTitle: "正在跳转 GitHub 验证 · Schwab MCP",
     gitHubContinueNotice: ">_ 正在跳转至 GitHub 身份验证…",
     gitHubContinueLink: "若未自动跳转，点击继续验证",
@@ -489,6 +607,13 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     completionFooter: "Charles Schwab MCP · 个人专用高安全实例",
   },
   security: {
+    scriptOptionsLoading: "正在获取核准选项…",
+    scriptOptionsReady: "选项已准备就绪，请点击“调起系统硬件验证”。",
+    scriptAuthVerified: "已使用 Passkey 成功核准！发起端设备将自动完成授权并继续。",
+    scriptAuthCancelled: "已取消本次申请。",
+    scriptStatusChanged: "授权状态已变更为: {status}",
+    authorizedAccounts: "授权账户",
+    marketDataOnly: "仅行情",
     orderApprovalTitle: "订单 Passkey 硬件批准",
     orderApprovalSubtitle: "核对订单明细并使用 Passkey 授权执行 · 严格防篡改保障",
     zeroKnowledgeNotice: "• 零降级执行保障：受保护订单必须通过原生生物识别或硬件密钥批准，禁止对话降级。",
@@ -574,6 +699,93 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     scriptAuthResume: "Passkey 核准成功，正在完成授权并交付结果…",
   },
   dashboard: {
+    requestFailed: "请求失败",
+    operationFailed: "操作失败，请刷新后重试。",
+    invalidList: "服务器列表数据格式异常。",
+    invalidCount: "服务器统计数据格式异常。",
+    invalidConnection: "服务器连接状态格式异常。",
+    overviewFailed: "概览读取失败",
+    clientCount: "{n} 个客户端",
+    unnamedClient: "未命名客户端",
+    redirectCount: "重定向 URI ({n})",
+    enableAdvanced: "开启 Advanced Security",
+    disableAdvanced: "关闭 Advanced Security",
+    enableAdvancedHint: "开启后，每笔受保护交易须由 Passkey 批准。",
+    disableAdvancedHint: "关闭后此客户端将使用普通交易确认。",
+    firstKeyNotice: "此操作将同时登记首个 Passkey。",
+    clientsFailed: "客户端读取失败：",
+    readFailed: "读取失败",
+    auditFailed: "审计日志读取失败：",
+    paginationUnknown: "分页状态未知",
+    invalidKeyName: "Passkey 名称须为 1–80 字符。",
+    renameKeyTitle: "重命名 Passkey",
+    renameKeyHint: "将 “{old}” 改为 “{name}”。须验证已有 Passkey。",
+    keyRenamed: "Passkey 已重命名。",
+    deleteKeyTitle: "删除 Passkey",
+    deleteKeyHint: "验证已有 Passkey 后删除 “{name}”。其他凭据不受影响。",
+    keyDeleted: "Passkey 已删除。",
+    passkeysFailed: "Passkey 读取失败：",
+    credentialsUnknown: "凭据状态未知",
+    pendingDeadline: "{created} · 截止: {deadline}",
+    pendingFailed: "读取待办失败: ",
+    notificationsFailed: "读取通知失败: ",
+    selectedNotificationLoading: "正在读取所选通知…",
+    selectedNotificationFailed: "所选通知不存在或读取失败：",
+    pushWaitTimeout: "{step}超时。请检查网络后重试；Chrome 还需能连接 Google 推送服务。",
+    serviceWorkerUnsupported: "此浏览器不支持 Service Worker。",
+    readServiceWorker: "读取 Service Worker",
+    pushNotReady: "推送服务尚未就绪，请稍后刷新重试。",
+    readSubscription: "读取本机推送订阅",
+    noPushDevices: "暂无已登记的推送设备。",
+    unlinkDevice: "解绑",
+    pwaIosHint: "当前通过 Safari 打开。建议添加至主屏幕以获得完整 PWA 与锁屏推送能力。",
+    pwaDesktopHint: "可在支持的浏览器（如 Chrome / Edge）中安装为独立桌面应用。",
+    lastRefresh: "最近刷新：",
+    lastRefreshPartial: "最近刷新（部分失败）：",
+    refreshIncomplete: "刷新未完整完成：",
+    invalidChallenge: "服务器 Passkey challenge 格式异常。",
+    registerKeyConfirm: "注册 Passkey 并确认",
+    ceremonyReady: "点击下方按钮打开系统 Passkey 提示。操作须在两分钟内完成。",
+    challengeExpired: "Passkey challenge 已过期，未提交变更。请重新开始。",
+    ceremonyWaiting: "等待系统 Passkey 验证；请勿关闭此页面…",
+    ceremonySubmitting: "正在校验签名并提交，请勿重复操作…",
+    ceremonyUncertain: "操作未确认完成；请刷新核对服务器状态后再重试。",
+    ceremonyCancelled: "已取消 Passkey 流程，未提交变更。",
+    loadKeysFirst: "请先成功读取 Passkey 列表。",
+    registerFirstHint: "登记 “{name}”。注册不会自动更改任何客户端策略。",
+    firstKeyRegistered: "首个 Passkey 已注册。",
+    addKeyStepOne: "添加 Passkey · 1 / 2",
+    addKeyVerifyHint: "先验证已有凭据；成功后需再次点击注册新 Passkey。",
+    missingRegistrationTicket: "服务器未返回新凭据注册许可。",
+    addKeyStepTwo: "添加 Passkey · 2 / 2",
+    addKeyRegisterHint: "已有凭据验证成功。点击下方按钮，为 “{name}” 注册新 Passkey。",
+    keyRegistered: "新 Passkey 已注册。",
+    allRefreshed: "所有数据已刷新。",
+    inboxRefreshed: "待办与通知已刷新。",
+    devicesRefreshed: "设备状态已刷新。",
+    unsubscribeStep: "停用本机推送订阅",
+    permissionStep: "等待通知权限",
+    pushPermissionRequired: "未授权通知权限，无法开启推送。",
+    pushConfigLoading: "正在读取推送配置…",
+    connectPushStep: "连接浏览器推送服务",
+    defaultDeviceName: "当前浏览器",
+    enablePushFailed: "开启推送失败：",
+    retryRefresh: "请刷新后重试。",
+    noActiveDevice: "未找到活跃的本机推送设备，请先开启推送。",
+    auditApplied: "审计筛选已应用。",
+    auditCleared: "已清除审计筛选。",
+    sessionRemaining: "会话剩余 {minutes} 分钟",
+    telemetryRegion: "系统运行遥测",
+    statusRegion: "服务与会话状态",
+    modulesRegion: "控制面板模块",
+    notificationsRegion: "通知列表，可横向滚动",
+    clientsRegion: "客户端列表，可横向滚动",
+    auditStatsRegion: "审计统计",
+    auditRegion: "调用日志，可横向滚动",
+    overviewRegion: "全局概览",
+    pushDevicesRegion: "推送设备列表",
+    securityPolicyStat: "安全策略：IMMUTABLE_ENCLAVE",
+    sandboxStat: "沙箱状态：EPHEMERAL_ISOLATION",
     pageTitle: "Schwab MCP · 控制面板",
     skipLink: "跳至控制面板",
     sysTitle: "客户端与安全控制面板",
@@ -808,6 +1020,18 @@ const DICTIONARY_EN_US: I18nDictionary = {
     nextPage: "Next →",
   },
   auth: {
+    clientContinueTitle: "Return to client",
+    clientContinueNotice: "Account authorization complete. Returning to the client.",
+    clientContinueLink: "Continue to client",
+    accountsTitle: "Select accounts",
+    accountsHeading: "Select accounts to share",
+    accountsLegend: "Accounts available to this client",
+    accountsDesc: "Select multiple accounts, or leave all unchecked for market data only. New accounts require fresh consent.",
+    accountsDisconnected: "Schwab is disconnected or needs reconnection. Only market data access can be authorized for now.",
+    accountsConnect: "Connect Schwab, then restart MCP authorization",
+    accountsConfirm: "Confirm accounts and continue",
+    completionDone: "DONE",
+    completionOnline: "ONLINE",
     gitHubContinueTitle: "Redirecting to GitHub · Schwab MCP",
     gitHubContinueNotice: ">_ Redirecting to GitHub authentication...",
     gitHubContinueLink: "Click here if not redirected automatically",
@@ -826,9 +1050,9 @@ const DICTIONARY_EN_US: I18nDictionary = {
     readOnlyTitle: "Read only",
     readOnlyDesc: "Query quotes and balances; trading tools remain hidden from LLMs.",
     fullAccessTitle: "Full access",
-    fullAccessDesc: "Expose all tools with mandatory order confirmation and safety switches.",
+    fullAccessDesc: "Expose all tools while retaining existing secondary confirmation, session-direct trading, and cancellation rules.",
     advancedSecurityTitle: "Advanced Security · Passkey Approval",
-    advancedSecurityDesc: "Available for full access. Orders and task modifications require biometric or hardware Passkey approval.",
+    advancedSecurityDesc: "Available only for full access. Every order placement or replacement and every delayed-task creation or modification requires browser Passkey approval. Session-direct trading is prohibited. This setting applies per client.",
     githubOwnerNotice: "Clicking continue will redirect to <strong>GitHub</strong> to verify owner identity (numeric ID whitelist).",
     continueButton: "Continue with GitHub",
     footerHint: "If unexpected, please close this window",
@@ -851,6 +1075,13 @@ const DICTIONARY_EN_US: I18nDictionary = {
     completionFooter: "Charles Schwab MCP · Dedicated High-Security Instance",
   },
   security: {
+    scriptOptionsLoading: "Loading approval options…",
+    scriptOptionsReady: "Options ready. Click “Verify with Authenticator”.",
+    scriptAuthVerified: "Approved with Passkey. The requesting device will automatically finish authorization and continue.",
+    scriptAuthCancelled: "This request has been cancelled.",
+    scriptStatusChanged: "Authorization status changed to: {status}",
+    authorizedAccounts: "Authorized accounts",
+    marketDataOnly: "Market data only",
     orderApprovalTitle: "Order Passkey Hardware Approval",
     orderApprovalSubtitle: "Review order details and authorize with your registered Passkey",
     zeroKnowledgeNotice: "• Zero-Downgrade Security: Protected orders require native biometric or hardware Passkey approval.",
@@ -871,7 +1102,7 @@ const DICTIONARY_EN_US: I18nDictionary = {
     approveSubmitBtn: "⚡ Approve via Passkey",
     rejectOrderBtn: "Reject order",
     invokeHardwareBtn: "Verify with Authenticator",
-    approveHint: "The order is submitted immediately upon verification. No conversational downgrade permitted.",
+    approveHint: "After verification, the server immediately submits instant orders or activates delayed tasks. No downgrade to conversational confirmation is permitted.",
     executionOutcome: "Execution Outcome",
     batchCount: "Number of orders",
     batchOrder: "Order",
@@ -881,12 +1112,12 @@ const DICTIONARY_EN_US: I18nDictionary = {
     batchReject: "Reject all orders",
     batchResults: "Individual order results",
     frozenTitle: "schwab_place_order.json [FROZEN]",
-    frozenDesc: "Please verify account identifier, order legs, direction, quantity, price, and duration. The JSON below will be executed upon approval.",
+    frozenDesc: "Verify the account identifier, direction and quantity of every order leg, price type, and duration. For delayed orders, also verify the conditions and deadline. The complete JSON below is what you approve and execute.",
     authenticatorReady: "Authenticator Ready: Apple Secure Enclave / YubiKey / FIDO2",
     authenticatorMeta: "FIDO2 Level 3 Authenticator · WebAuthn User Verification Required",
     recoverTitle: "Recover Passkeys",
     recoverSubtitle: "Verified via independent GitHub Owner OAuth",
-    recoverNotice: "GitHub authentication is the trusted recovery entry. Registering a replacement key will revoke existing credentials, sessions, and pending proposals.",
+    recoverNotice: "The GitHub account is the trust entry for credential recovery. Old credentials are not deleted until the new credential is successfully registered. After completion, old credentials, browser sessions, challenges, and pending enhanced proposals are invalidated. Already activated delayed tasks are retained, and Advanced Security remains enabled.",
     resetConfirmLabel: "Confirmation Phrase",
     resetConfirmHint: "Exact match required",
     resetConfirmPlaceholder: "Enter '重置全部 Passkey'",
@@ -894,7 +1125,7 @@ const DICTIONARY_EN_US: I18nDictionary = {
     replacementKeyDefault: "Replacement Passkey",
     resetSubmitBtn: "Reset All Passkeys & Register Replacement",
     securityManagerTitle: "Advanced Security",
-    securityManagerSubtitle: "Per-client security policy. Unprotected clients follow standard confirmation.",
+    securityManagerSubtitle: "This setting applies per client. Other clients without Advanced Security still use conversational confirmation and session-direct trading policies.",
     registeredPasskeys: "Registered Passkeys",
     activeCount: "{n} active credentials",
     rename: "Rename",
@@ -908,7 +1139,7 @@ const DICTIONARY_EN_US: I18nDictionary = {
     sessionExpiryHint: "Session valid for 15 min · Verification challenge expires in 2 min",
     keyManagement: "Credential Management",
     lostKeyRecovery: "Lost all Passkeys? Recover via GitHub OAuth",
-    disclaimer: "Protects against MCP token or client compromise. Does not cover compromised host or GitHub account.",
+    disclaimer: "Protects against MCP token or client compromise. Does not protect against compromise of the Worker, approval device, or GitHub recovery account.",
     clientAuthTitle: "Client Authorization Approval · Schwab MCP",
     clientAuthAwaitingHeading: "Awaiting Passkey Approval",
     clientAuthHeading: "Client Access Request",
@@ -936,6 +1167,93 @@ const DICTIONARY_EN_US: I18nDictionary = {
     scriptAuthResume: "Passkey approved. Completing authorization and issuing tokens...",
   },
   dashboard: {
+    requestFailed: "Request failed",
+    operationFailed: "Operation failed. Refresh and try again.",
+    invalidList: "Invalid server list data.",
+    invalidCount: "Invalid server statistics.",
+    invalidConnection: "Invalid server connection status.",
+    overviewFailed: "Unable to load overview",
+    clientCount: "{n} clients",
+    unnamedClient: "Unnamed client",
+    redirectCount: "Redirect URIs ({n})",
+    enableAdvanced: "Enable Advanced Security",
+    disableAdvanced: "Disable Advanced Security",
+    enableAdvancedHint: "Every protected trade will require Passkey approval.",
+    disableAdvancedHint: "This client will use standard trade confirmation.",
+    firstKeyNotice: "This operation also registers the first Passkey.",
+    clientsFailed: "Unable to load clients: ",
+    readFailed: "Unable to load",
+    auditFailed: "Unable to load audit log: ",
+    paginationUnknown: "Pagination status unknown",
+    invalidKeyName: "Passkey names must be 1–80 characters.",
+    renameKeyTitle: "Rename Passkey",
+    renameKeyHint: "Rename “{old}” to “{name}”. An existing Passkey must be verified.",
+    keyRenamed: "Passkey renamed.",
+    deleteKeyTitle: "Delete Passkey",
+    deleteKeyHint: "Verify an existing Passkey to delete “{name}”. Other credentials are unaffected.",
+    keyDeleted: "Passkey deleted.",
+    passkeysFailed: "Unable to load Passkeys: ",
+    credentialsUnknown: "Credential status unknown",
+    pendingDeadline: "{created} · Expires: {deadline}",
+    pendingFailed: "Unable to load pending approvals: ",
+    notificationsFailed: "Unable to load notifications: ",
+    selectedNotificationLoading: "Loading selected notification…",
+    selectedNotificationFailed: "Selected notification not found or could not be loaded: ",
+    pushWaitTimeout: "{step} timed out. Check your connection and retry; Chrome also needs access to Google push services.",
+    serviceWorkerUnsupported: "This browser does not support Service Workers.",
+    readServiceWorker: "Reading Service Worker",
+    pushNotReady: "Push service is not ready. Refresh and try again later.",
+    readSubscription: "Reading this device’s push subscription",
+    noPushDevices: "No registered push devices.",
+    unlinkDevice: "Unlink",
+    pwaIosHint: "Opened in Safari. Add to Home Screen for the full PWA and lock-screen notification experience.",
+    pwaDesktopHint: "Install as a standalone desktop app in a supported browser, such as Chrome or Edge.",
+    lastRefresh: "Last refreshed: ",
+    lastRefreshPartial: "Last refreshed (some failures): ",
+    refreshIncomplete: "Refresh incomplete: ",
+    invalidChallenge: "Invalid server Passkey challenge.",
+    registerKeyConfirm: "Register Passkey & Confirm",
+    ceremonyReady: "Click below to open the system Passkey prompt. Complete within two minutes.",
+    challengeExpired: "Passkey challenge expired. No changes submitted. Please start again.",
+    ceremonyWaiting: "Waiting for system Passkey verification. Keep this page open…",
+    ceremonySubmitting: "Verifying the signature and submitting. Do not repeat the operation…",
+    ceremonyUncertain: "Completion could not be confirmed. Refresh and check the server state before retrying.",
+    ceremonyCancelled: "Passkey flow cancelled. No changes submitted.",
+    loadKeysFirst: "Load the Passkey list successfully first.",
+    registerFirstHint: "Register “{name}”. Registration does not automatically change any client policy.",
+    firstKeyRegistered: "First Passkey registered.",
+    addKeyStepOne: "Add Passkey · 1 / 2",
+    addKeyVerifyHint: "Verify an existing credential first, then click again to register a new Passkey.",
+    missingRegistrationTicket: "The server did not return permission to register a new credential.",
+    addKeyStepTwo: "Add Passkey · 2 / 2",
+    addKeyRegisterHint: "Existing credential verified. Click below to register a new Passkey for “{name}”.",
+    keyRegistered: "New Passkey registered.",
+    allRefreshed: "All data refreshed.",
+    inboxRefreshed: "Pending approvals and notifications refreshed.",
+    devicesRefreshed: "Device status refreshed.",
+    unsubscribeStep: "Disabling this device’s push subscription",
+    permissionStep: "Waiting for notification permission",
+    pushPermissionRequired: "Notification permission is required to enable push.",
+    pushConfigLoading: "Loading push configuration…",
+    connectPushStep: "Connecting to browser push service",
+    defaultDeviceName: "This browser",
+    enablePushFailed: "Failed to enable push: ",
+    retryRefresh: "Refresh and try again.",
+    noActiveDevice: "No active push device found for this browser. Enable push first.",
+    auditApplied: "Audit filters applied.",
+    auditCleared: "Audit filters cleared.",
+    sessionRemaining: "Session remaining: {minutes} minutes",
+    telemetryRegion: "System telemetry",
+    statusRegion: "Service and session status",
+    modulesRegion: "Dashboard modules",
+    notificationsRegion: "Notifications, horizontally scrollable",
+    clientsRegion: "Clients, horizontally scrollable",
+    auditStatsRegion: "Audit statistics",
+    auditRegion: "Invocation log, horizontally scrollable",
+    overviewRegion: "Global overview",
+    pushDevicesRegion: "Push devices",
+    securityPolicyStat: "Security policy: IMMUTABLE_ENCLAVE",
+    sandboxStat: "Sandbox status: EPHEMERAL_ISOLATION",
     pageTitle: "Schwab MCP · Control Center",
     skipLink: "Skip to dashboard",
     sysTitle: "Client & Security Console",
@@ -1182,7 +1500,8 @@ export function getSecurityClientI18n(lang: SupportedLang = DEFAULT_LANG): Recor
  */
 export function renderLangDropdown(currentLang: SupportedLang = DEFAULT_LANG, query = ""): string {
   const isZh = currentLang === "zh-CN";
-  const currentLabel = isZh ? "简体中文" : "English";
+  const dict = getDictionary(currentLang);
+  const currentLabel = dict.common.langName;
   const languageHref = (lang: SupportedLang) => {
     const params = new URLSearchParams(query);
     params.set("lang", lang);
@@ -1190,18 +1509,18 @@ export function renderLangDropdown(currentLang: SupportedLang = DEFAULT_LANG, qu
     return "?" + params.toString().replaceAll("&", "&amp;");
   };
   return `<details class="lang-dropdown">
-  <summary aria-haspopup="listbox" aria-label="切换语言 / Switch Language">
+  <summary aria-haspopup="listbox" aria-label="${dict.common.switchLangTitle}">
     <span class="lang-icon" aria-hidden="true">🌐</span>
     <span class="lang-label">${currentLabel}</span>
     <span class="lang-caret" aria-hidden="true">▾</span>
   </summary>
   <div class="lang-dropdown-menu" role="listbox">
     <a href="${languageHref("zh-CN")}" class="lang-dropdown-item${isZh ? " active" : ""}" role="option" aria-selected="${isZh ? "true" : "false"}">
-      <span>简体中文</span>
+      <span lang="zh-CN">简体中文</span>
       <span class="lang-check" aria-hidden="true"${isZh ? "" : ' style="visibility:hidden"'}>✓</span>
     </a>
     <a href="${languageHref("en-US")}" class="lang-dropdown-item${!isZh ? " active" : ""}" role="option" aria-selected="${!isZh ? "true" : "false"}">
-      <span>English</span>
+      <span lang="en-US">English</span>
       <span class="lang-check" aria-hidden="true"${!isZh ? "" : ' style="visibility:hidden"'}>✓</span>
     </a>
   </div>
