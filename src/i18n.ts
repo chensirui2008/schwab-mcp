@@ -408,6 +408,7 @@ export interface I18nDictionary {
     disablePushSuccess: string;
     testPushSent: string;
     testPushFailed: string;
+    testPushNoActiveDevice: string;
     tradeProposalTag: string;
     clientAuthTag: string;
   };
@@ -770,6 +771,7 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     disablePushSuccess: "已停用本机通知推送。",
     testPushSent: "测试通知已发送！",
     testPushFailed: "发送测试通知失败：",
+    testPushNoActiveDevice: "未找到活跃的本机推送设备，请先开启推送。",
     tradeProposalTag: "[交易提案]",
     clientAuthTag: "[客户端授权]",
   },
@@ -1132,6 +1134,7 @@ const DICTIONARY_EN_US: I18nDictionary = {
     disablePushSuccess: "Push notifications disabled on this device.",
     testPushSent: "Test notification sent!",
     testPushFailed: "Failed to send test notification: ",
+    testPushNoActiveDevice: "No active push device found. Enable push notifications on this device first.",
     tradeProposalTag: "[Trade Proposal]",
     clientAuthTag: "[Client Auth]",
   },

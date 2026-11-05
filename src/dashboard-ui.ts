@@ -1223,6 +1223,8 @@ const auditLimit = 25;
 let auditFilters = {clientId:'',toolName:'',status:''};
 let notificationsOffset = 0;
 let notificationsTotal = 0;
+let pendingApprovalsRequest = 0;
+let notificationsRequest = 0;
 let pending = null;
 let returnFocus = null;
 const dialog = $('passkey-dialog');
@@ -1465,12 +1467,14 @@ async function loadPasskeys() {
   }
 }
 async function loadPendingApprovals() {
+  const request = ++pendingApprovalsRequest;
   const container = $('pending-approvals-container');
   const countTag = $('pending-count-tag');
   const inboxBadge = $('inbox-badge');
   try {
     const data = await api('/dashboard/api/pending-approvals');
-    const items = data.items || [];
+    if (request !== pendingApprovalsRequest) return;
+    const items = requireArray(data.items);
     if (countTag) countTag.textContent = format(t('pendingCountTag', '{n} 待办'), { n: items.length });
     if (inboxBadge) {
       inboxBadge.textContent = String(items.length);
@@ -1498,27 +1502,36 @@ async function loadPendingApprovals() {
       container.append(card);
     }
   } catch (err) {
+    if (request !== pendingApprovalsRequest) return;
+    if (countTag) countTag.textContent = format(t('pendingCountTag', '{n} 待办'), { n: '?' });
+    if (inboxBadge) { inboxBadge.textContent = ''; inboxBadge.hidden = true; }
     container.replaceChildren(node('p', '读取待办失败: ' + err.message, 'empty load-error'));
+    throw err;
   }
 }
 async function loadNotifications(offset = 0) {
-  notificationsOffset = offset;
+  const request = ++notificationsRequest;
   const tbody = $('notifications-table-body');
   const unreadTag = $('notifications-unread-tag');
   const infoEl = $('notifications-pagination-info');
   try {
     const data = await api('/dashboard/api/notifications?limit=15&offset=' + offset);
-    notificationsTotal = data.total;
-    if (unreadTag) unreadTag.textContent = format(t('unreadCountTag', '{n} 未读'), { n: data.unreadCount });
-    if (infoEl) infoEl.textContent = format(t('paginationInfo', '显示 {start}–{end} / 共 {total} 条'), { start: data.total ? offset + 1 : 0, end: Math.min(offset + 15, data.total), total: data.total });
+    if (request !== notificationsRequest) return;
+    const items = requireArray(data.items);
+    const total = requireCount(data.total);
+    const unreadCount = requireCount(data.unreadCount);
+    notificationsOffset = offset;
+    notificationsTotal = total;
+    if (unreadTag) unreadTag.textContent = format(t('unreadCountTag', '{n} 未读'), { n: unreadCount });
+    if (infoEl) infoEl.textContent = format(t('paginationInfo', '显示 {start}–{end} / 共 {total} 条'), { start: total ? offset + 1 : 0, end: Math.min(offset + 15, total), total });
     disabled($('notifications-prev-btn'), offset <= 0);
-    disabled($('notifications-next-btn'), offset + 15 >= data.total);
+    disabled($('notifications-next-btn'), offset + 15 >= total);
     tbody.replaceChildren();
-    if (!data.items.length) {
+    if (!items.length) {
       tableMessage(tbody, 5, t('noNotifications', '暂无通知记录。'));
       return;
     }
-    for (const item of data.items) {
+    for (const item of items) {
       const tr = node('tr');
       if (!item.readAt) tr.style.fontWeight = '600';
       const timeTd = node('td', new Date(item.createdAt).toLocaleString(), 'mono');
@@ -1535,15 +1548,31 @@ async function loadNotifications(offset = 0) {
       } else if (!item.readAt) {
         actionTd.append(button(t('markAsRead', '标为已读'), async () => {
           await api('/dashboard/api/notifications/read', 'POST', { id: item.id });
-          loadNotifications(notificationsOffset);
+          await loadNotifications(notificationsOffset);
         }, false, 'compact'));
       }
       tr.append(timeTd, typeTd, summaryTd, statusTd, actionTd);
       tbody.append(tr);
     }
   } catch (err) {
+    if (request !== notificationsRequest) return;
+    notificationsTotal = 0;
+    if (unreadTag) unreadTag.textContent = format(t('unreadCountTag', '{n} 未读'), { n: '?' });
+    if (infoEl) infoEl.textContent = '—';
+    disabled($('notifications-prev-btn'), true);
+    disabled($('notifications-next-btn'), true);
     tableMessage(tbody, 5, '读取通知失败: ' + err.message, true);
+    throw err;
+  } finally {
+    if (request === notificationsRequest) syncControls();
   }
+}
+// Background reads stay interruptible by user navigation; loaders ignore superseded responses.
+function refreshInbox() {
+  if (expired || busy) return;
+  void Promise.all([loadPendingApprovals(), loadNotifications(notificationsOffset)]).catch(error => {
+    if (!expired) message(error.message, true);
+  });
 }
 async function loadHighlightedNotification() {
   const id = document.querySelector('meta[name="highlight-notification"]').content;
@@ -1836,8 +1865,8 @@ $('audit-refresh-btn').addEventListener('click',() => run(async () => { await re
 $('passkeys-refresh-btn').addEventListener('click',() => run(async () => { await refreshAll(); message('所有数据已刷新。'); }));
 $('inbox-refresh-btn')?.addEventListener('click',() => run(async () => { await Promise.all([loadPendingApprovals(), loadNotifications(notificationsOffset)]); message('待办与通知已刷新。'); }));
 $('settings-refresh-btn')?.addEventListener('click',() => run(async () => { await loadPushSettings(); message('设备状态已刷新。'); }));
-$('notifications-prev-btn')?.addEventListener('click',() => run(async () => { notificationsOffset = Math.max(0, notificationsOffset - 15); await loadNotifications(notificationsOffset); }));
-$('notifications-next-btn')?.addEventListener('click',() => run(async () => { if (notificationsOffset + 15 < notificationsTotal) { notificationsOffset += 15; await loadNotifications(notificationsOffset); } }));
+$('notifications-prev-btn')?.addEventListener('click',() => run(async () => { await loadNotifications(Math.max(0, notificationsOffset - 15)); }));
+$('notifications-next-btn')?.addEventListener('click',() => run(async () => { if (notificationsOffset + 15 < notificationsTotal) await loadNotifications(notificationsOffset + 15); }));
 $('push-toggle-btn')?.addEventListener('click', () => run(async () => {
   try {
     if ($('push-toggle-btn').dataset.pushActive === 'true') {
@@ -1880,14 +1909,14 @@ $('push-toggle-btn')?.addEventListener('click', () => run(async () => {
     message(detail, true);
   } finally { await loadPushSettings(); }
 }));
-$('push-test-btn')?.addEventListener('click', async () => {
+$('push-test-btn')?.addEventListener('click', () => run(async () => {
   try {
     const { device } = await currentPushDevice();
-    if (!device?.active) { alert('未找到活跃的本机推送设备，请先开启推送。'); return; }
+    if (!device?.active) { message(t('testPushNoActiveDevice', '未找到活跃的本机推送设备，请先开启推送。'), true); return; }
     await api('/dashboard/api/push/test', 'POST', { id: device.id });
-    alert(t('testPushSent', '测试通知已发送！请观察设备通知栏。'));
-  } catch (err) { alert(t('testPushFailed', '发送测试通知失败: ') + err.message); }
-});
+    message(t('testPushSent', '测试通知已发送！请观察设备通知栏。'));
+  } catch (err) { message(t('testPushFailed', '发送测试通知失败: ') + err.message, true); }
+}));
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault(); deferredPrompt = e;
@@ -1904,8 +1933,7 @@ $('pwa-install-btn')?.addEventListener('click', async () => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !expired) {
-    loadPendingApprovals();
-    loadNotifications(notificationsOffset);
+    refreshInbox();
     refreshPushSettings();
   }
 });
@@ -1921,14 +1949,12 @@ if (navigator.permissions?.query && 'Notification' in window) {
 }
 setInterval(() => {
   if (document.visibilityState === 'visible' && !expired && !busy) {
-    loadPendingApprovals();
-    loadNotifications(notificationsOffset);
+    refreshInbox();
   }
 }, 30000);
 navigator.serviceWorker?.addEventListener('message', e => {
   if (e.data?.type === 'PUSH_RECEIVED') {
-    loadPendingApprovals();
-    loadNotifications(notificationsOffset);
+    refreshInbox();
   }
 });
 $('audit-filter-form').addEventListener('submit',event => {
