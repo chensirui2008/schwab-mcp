@@ -1,4 +1,5 @@
 import { html, raw } from "hono/html";
+import { BROWSER_ERROR_SCRIPT } from "./browser-errors";
 import type { BrowserSession } from "./security-store";
 import { BACKGROUND_SVG, BRAND_LOGO_SVG, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
 import { formatString, getDashboardClientI18n, getDictionary, LANG_DROPDOWN_SCRIPT, renderLangDropdown, resolveLang, type SupportedLang } from "./i18n";
@@ -1204,6 +1205,7 @@ const DASHBOARD_SCRIPT = String.raw`
 const $ = id => document.getElementById(id);
 const i18n = (typeof globalThis !== 'undefined' && globalThis.__I18N__) || (typeof window !== 'undefined' && window.__I18N__) || {};
 function t(k, fallback = '') { return i18n[k] !== undefined ? i18n[k] : fallback; }
+${BROWSER_ERROR_SCRIPT}
 function format(str, vars) {
   let res = str;
   if (!vars) return res;
@@ -1265,7 +1267,7 @@ async function api(path, method = 'GET', body) {
   let data;
   try { data = await res.json(); } catch { throw new Error(format(t('invalidJsonError', '服务器未返回有效 JSON（HTTP {status}）。请重新登录或稍后刷新。'), { status: res.status })); }
   if (res.status === 401 || data.error?.code === 'BROWSER_AUTH_REQUIRED') markExpired();
-  if (!res.ok) throw new Error((data.error?.message || data.error_description || '请求失败') + (data.error?.code ? ' [' + data.error.code + ']' : '') + ' (HTTP ' + res.status + ')');
+  if (!res.ok || data.error) throw new Error(browserErrorMessage(res.status === 401 ? {code:'BROWSER_AUTH_REQUIRED'} : data.error));
   return data;
 }
 async function run(action) {

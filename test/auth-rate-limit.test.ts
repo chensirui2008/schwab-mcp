@@ -7,6 +7,7 @@ import { AuthHandler } from "../src/auth";
 import { vaultStub, type AppEnv } from "../src/env";
 import worker from "../src/index";
 import { AUTHORIZATION_VERSION, READ_SCOPE } from "../src/oauth-access";
+import { getDictionary } from "../src/i18n";
 
 const origin = "https://example.com";
 const redirectUri = "https://rate-limit-client.example/callback";
@@ -66,12 +67,12 @@ async function admissionError(response: Response, status: 429 | 503) {
   expect(response.headers.get("X-Frame-Options")).toBe("DENY");
   expect(response.headers.get("Retry-After")).toBe(status === 429 ? "60" : null);
   expect(response.headers.get("Location")).toBeNull();
-  const body = await response.json<{ error: { code: string; message: string; requestId: string } }>();
-  expect(body).toEqual({ error: {
-    code: status === 429 ? "RATE_LIMITED" : "UPSTREAM_UNAVAILABLE",
-    message: status === 429 ? "Too many authorization attempts; retry later" : "Authorization admission is unavailable; retry later",
-    requestId: expect.stringMatching(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/) as unknown,
-  } });
+  expect(response.headers.get("Content-Type")).toContain("text/html");
+  const body = await response.text();
+  const lang = body.includes('lang="en-US"') ? "en-US" : "zh-CN";
+  expect(body).toContain(getDictionary(lang).browserErrors[status === 429 ? "RATE_LIMITED" : "UPSTREAM_UNAVAILABLE"]);
+  expect(body).toMatch(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/);
+  expect(body).toContain('href="/dashboard?lang=');
 }
 const entries = ["authorize", "approve", "connect", "dashboard-login", "recover", "dashboard", "security", "approval", "authorization", "notification"] as const;
 type Entry = typeof entries[number];

@@ -4,6 +4,7 @@ import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provid
 import type { Context } from "hono";
 import { renderClientAuthorizationPage, renderSecurityPage } from "./security-ui";
 import { renderDashboardPage } from "./dashboard-ui";
+import { renderBrowserErrorPage } from "./browser-error-ui";
 import type { BrowserSession, ClientPolicy, PendingAuthorization } from "./security-store";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -180,7 +181,7 @@ async function beginSchwabAuthorization(env: AppEnv, origin: string): Promise<{ 
 class SecurityCallError extends Error {
   constructor(public error: PublicError) { super(error.message); }
 }
-function browserError(code: ErrorCode, message: string, status: number, requestId = crypto.randomUUID()): Response {
+function browserError(code: ErrorCode, message: string, status: number, requestId: string = crypto.randomUUID()): Response {
   const headers = new Headers({
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
@@ -333,10 +334,57 @@ async function finishAuthorization(
 
 const app = new Hono<{ Bindings: AppEnv }>();
 
+function isBrowserPage(path: string): boolean {
+  return (path === "/security" || path.startsWith("/security/") ||
+    path === "/dashboard" || path.startsWith("/dashboard/") ||
+    path === "/authorize" || path.startsWith("/authorize/") ||
+    path.startsWith("/auth/")) &&
+    !path.startsWith("/security/api/") && !path.startsWith("/dashboard/api/");
+}
+
+app.onError(error => {
+  if (error instanceof SecurityCallError) {
+    const status = error.error.code === "UPSTREAM_UNAVAILABLE" ? 503 : error.error.code === "RATE_LIMITED" ? 429 : error.error.code === "INVALID_ARGUMENT" ? 400 : 403;
+    return browserError(error.error.code, error.error.message, status, error.error.requestId);
+  }
+  if (error instanceof RequestBodyError || error instanceof z.ZodError) {
+    return browserError("INVALID_ARGUMENT", "Invalid request", error instanceof RequestBodyError ? error.status : 400);
+  }
+  const requestId = crypto.randomUUID();
+  logEvent("browser_request_failed", { requestId, code: "UPSTREAM_UNAVAILABLE" });
+  return browserError("UPSTREAM_UNAVAILABLE", "Browser request unavailable", 503, requestId);
+});
+
 app.use("*", async (c, next) => {
   await next();
+  // Navigation errors are HTML even when a shared helper returns a JSON API error.
+  // Keep API errors machine-readable and never render upstream message text.
+  if (isBrowserPage(c.req.path) && c.res.status >= 400) {
+    let code: unknown = c.res.status >= 500 ? "UPSTREAM_UNAVAILABLE" : c.res.status === 429 ? "RATE_LIMITED" : c.res.status === 403 ? "SECURITY_VERIFICATION_FAILED" : "INVALID_ARGUMENT";
+    let requestId: string = crypto.randomUUID();
+    if (c.res.headers.get("Content-Type")?.includes("application/json")) {
+      const parsed = z.object({
+        error: z.union([z.string(), z.object({ code: z.string(), requestId: z.string().optional() })]),
+        requestId: z.string().optional(),
+      }).safeParse(await c.res.clone().json().catch(() => null));
+      if (parsed.success) {
+        const error = parsed.data.error;
+        if (typeof error === "object") {
+          code = error.code;
+          requestId = error.requestId ?? requestId;
+        } else if (error === "invalid_request") code = "INVALID_ARGUMENT";
+        else if (error === "temporarily_unavailable") code = "UPSTREAM_UNAVAILABLE";
+        requestId = parsed.data.requestId ?? requestId;
+      }
+    }
+    const headers = new Headers(c.res.headers);
+    headers.set("Content-Type", "text/html; charset=UTF-8");
+    headers.delete("Content-Length");
+    logEvent("browser_page_failed", { requestId, status: c.res.status });
+    c.res = new Response((await renderBrowserErrorPage(code, requestId, getRequestLang(c))).toString(), { status: c.res.status, headers });
+  }
   // Apply to the final response, including early errors built with Response.json().
-  if (c.req.path.startsWith("/security") || c.req.path.startsWith("/authorize") || c.req.path.startsWith("/dashboard") || c.req.path === "/auth/schwab/complete" || c.req.path === "/auth/github/callback") {
+  if (isBrowserPage(c.req.path) || c.req.path.startsWith("/security/api/") || c.req.path.startsWith("/dashboard/api/")) {
     c.header("Cache-Control", "no-store");
     c.header("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'");
     c.header("X-Frame-Options", "DENY");
@@ -358,6 +406,7 @@ async function beginSecurityLogin(c: Context<{ Bindings: AppEnv }>, recovery: bo
   const rateLimitResponse = await checkBrowserAuthRateLimit(c);
   if (rateLimitResponse) return rateLimitResponse;
   const state = await saveState(c.env, "github", { action: recovery ? "security_recover" : "security_login", origin, returnTo } satisfies GitHubStatePayload);
+  applyLangCookie(c, getRequestLang(c));
   setCookie(c, FLOW_COOKIE, state, FLOW_COOKIE_OPTIONS);
   deleteCookie(c, SECURITY_COOKIE, { path: "/", secure: true });
   return c.redirect(githubAuthorizationUrl(c.env, origin, state));
@@ -393,6 +442,7 @@ app.get("/security/authorizations/:id", async c => {
     if (error instanceof SecurityCallError && error.error.code === "BROWSER_AUTH_REQUIRED") {
       return beginSecurityLogin(c, false, `/security/authorizations/${authorizationId}`);
     }
+    if (!(error instanceof SecurityCallError) || error.error.code === "UPSTREAM_UNAVAILABLE") throw error;
     return c.text("授权请求不存在或已过期，请在发起端重新发起。", 404);
   }
   return c.html(renderClientAuthorizationPage(sessionState.session, details.authorization, details.credentials, details.isOriginalSession, lang));
@@ -503,7 +553,12 @@ async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
   try {
     if (!sessionId) throw new Error("No session");
     state = await securityCall(c.env, "/session", { sessionId });
-  } catch { return beginSecurityLogin(c, false, c.req.path); }
+  } catch (error) {
+    if (!sessionId || (error instanceof SecurityCallError && error.error.code === "BROWSER_AUTH_REQUIRED")) {
+      return beginSecurityLogin(c, false, c.req.path);
+    }
+    throw error;
+  }
   const proposalId = c.req.param("proposalId");
   if (proposalId) {
     try {
@@ -513,7 +568,10 @@ async function renderSecurity(c: Context<{ Bindings: AppEnv }>) {
         if (!proposal.preview || typeof proposal.preview !== "object" || Reflect.get(proposal.preview, "action") !== "BATCH") return c.html(renderPasskeyAuthorizedPage(lang));
       }
       return await c.html(renderSecurityPage(state.session, state.credentials, proposal, lang));
-    } catch { return c.text("提案不可用，请返回客户端查询状态。", 403); }
+    } catch (error) {
+      if (error instanceof SecurityCallError) return browserError(error.error.code, error.error.message, error.error.code === "UPSTREAM_UNAVAILABLE" ? 503 : 403, error.error.requestId);
+      throw error;
+    }
   }
   return c.html(renderSecurityPage(state.session, state.credentials, undefined, lang));
 }
@@ -647,13 +705,9 @@ app.get("/dashboard", async c => {
   if (!validDashboardOrigin(c)) return browserError("SECURITY_VERIFICATION_FAILED", "Invalid origin", 403);
   const lang = getRequestLang(c);
   applyLangCookie(c, lang);
-  try {
-    const state = await getDashboardSession(c);
-    if (!state) return await beginSecurityLogin(c, false, "/dashboard");
-    return await c.html(renderDashboardPage({ session: state.session, appVersion: c.env.APP_VERSION, allowedUserId: c.env.ALLOWED_GITHUB_USER_ID, lang }));
-  } catch {
-    return browserError("UPSTREAM_UNAVAILABLE", "Unable to load dashboard session", 503);
-  }
+  const state = await getDashboardSession(c);
+  if (!state) return await beginSecurityLogin(c, false, "/dashboard");
+  return await c.html(renderDashboardPage({ session: state.session, appVersion: c.env.APP_VERSION, allowedUserId: c.env.ALLOWED_GITHUB_USER_ID, lang }));
 });
 app.get("/dashboard/notifications/:id", async c => {
   const origin = new URL(c.env.SCHWAB_REDIRECT_URI).origin;

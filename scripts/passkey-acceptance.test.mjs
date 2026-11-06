@@ -73,7 +73,7 @@ test('rejecting a draft works without WebAuthn and redirects only after successf
     assert.equal(calls[0].options.headers['X-CSRF-Token'], 'test');
     assert.deepEqual(JSON.parse(calls[0].options.body), { proposalId: 'draft' });
     assert.deepEqual(redirects, fails ? [] : ['/dashboard']);
-    if (fails) assert.equal(status.textContent, 'Unable to cancel');
+    if (fails) assert.match(status.textContent, /操作未能完成.*核对服务器状态/);
     assert.equal(reject.disabled, false);
     assert.equal(approve.disabled, true);
   }
@@ -99,7 +99,7 @@ test('verification failures preserve passkeys and allow retry on management and 
         fetch: async path => {
           if (path.endsWith('verify') && failed) {
             if (offline) throw new Error('offline');
-            return { ok: false, json: async () => ({ error: { message: 'service unavailable' } }) };
+            return { ok: false, json: async () => ({ error: { code: 'UPSTREAM_UNAVAILABLE', message: 'service unavailable' } }) };
           }
           return { ok: true, json: async () => ({}) };
         },
@@ -109,7 +109,7 @@ test('verification failures preserve passkeys and allow retry on management and 
       const invoke = () => registration ? button.click({ currentTarget: button }) : runInNewContext('act("rename", "last")', context);
       await invoke();
       assert.equal(deleted, false, 'a verification error must not delete the authenticator credential');
-      assert.equal(status.textContent, offline ? 'offline' : 'service unavailable');
+      assert.match(status.textContent, offline ? /操作未能完成.*核对服务器状态/ : /服务暂时不可用/);
       assert.equal(reloads, 0);
       assert.equal(button.disabled, false);
       failed = false;
@@ -121,8 +121,8 @@ test('verification failures preserve passkeys and allow retry on management and 
 test('approval redirects only completed results and preserves errors', async () => {
   for (const result of [
     { status: 'EXECUTED' }, { result: { status: 'ACTIVE' } }, { status: 'ACTIVE' },
-    { status: 'FAILED', error: { message: 'Schwab rejected the order' } },
-    { status: 'EXECUTION_UNCERTAIN', error: { message: 'Verify order status' } },
+    { status: 'FAILED', error: { code: 'SCHWAB_REJECTED', message: 'Schwab rejected the order' } },
+    { status: 'EXECUTION_UNCERTAIN', error: { code: 'EXECUTION_UNCERTAIN', message: 'Verify order status' } },
     { status: 'EXECUTION_UNCERTAIN' }, { status: 'EXECUTING' },
   ]) {
     const status = { textContent: '' };
@@ -143,7 +143,10 @@ test('approval redirects only completed results and preserves errors', async () 
     await runInNewContext('act("approve")', context);
     const success = result.status === 'EXECUTED' || result.status === 'ACTIVE' || result.result?.status === 'ACTIVE';
     assert.deepEqual(redirects, success ? ['/security/approvals/proposal-123/complete'] : []);
-    if (result.error) assert.equal(status.textContent, result.error.message);
+    if (result.error) {
+      assert.match(status.textContent, result.error.code === 'SCHWAB_REJECTED' ? /Schwab 拒绝了此请求/ : /执行结果不确定/);
+      assert.notEqual(status.textContent, result.error.message);
+    }
   }
 });
 test('batch approval uses one native assertion and reloads persisted results without completion redirects', async () => {

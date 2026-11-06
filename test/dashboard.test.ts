@@ -665,7 +665,11 @@ describe("Dashboard persisted tool invocation audit", () => {
     vi.stubGlobal("fetch", upstream);
     const response = await dispatch(new Request(callbackUrl, { headers: { Cookie: `__Host-schwab-oauth=${state}` } }), appEnv);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe(provider === "github" ? "GitHub authorization failed" : "Schwab authorization failed");
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    const page = await response.text();
+    expect(page).toContain("请求无效或已过期");
+    expect(page).toContain('href="/dashboard?lang=zh-CN"');
+    expect(page).not.toContain("private-");
     expect(upstream).toHaveBeenCalledTimes(1);
     const events = output.flat().filter((line): line is string => typeof line === "string")
       .map(line => JSON.parse(line) as Record<string, unknown>);

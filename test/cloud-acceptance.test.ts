@@ -141,7 +141,9 @@ describe("same-Worker cloud acceptance isolation", () => {
     expect(denied.status).toBe(403);
     const deniedAuthorization = await browserCall(start.headers.get("Location") ?? "");
     expect(deniedAuthorization.status).toBe(429);
-    expect(await deniedAuthorization.json()).toMatchObject({ error: { code: "RATE_LIMITED" } });
+    expect(deniedAuthorization.headers.get("Content-Type")).toContain("text/html");
+    expect(deniedAuthorization.headers.get("Retry-After")).toBe("60");
+    expect(await deniedAuthorization.text()).toContain("请求过于频繁");
     expect(productionLimit).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(upstream).not.toHaveBeenCalled();

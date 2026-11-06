@@ -1,4 +1,5 @@
 import { html, raw } from "hono/html";
+import { BROWSER_ERROR_SCRIPT } from "./browser-errors";
 import type { BrowserSession, ClientAuthorizationStatus } from "./security-store";
 import type { PermissionLevel } from "./oauth-access";
 import { BACKGROUND_SVG, BRAND_LOGO_SVG, COMMON_STYLES, FAVICON_LINK, PWA_HEAD_TAGS, PWA_SERVICE_WORKER_SCRIPT } from "./auth-ui";
@@ -7,15 +8,35 @@ import { formatString, getDictionary, getSecurityClientI18n, type I18nDictionary
 // Native WebAuthn only; no framework, CDN or browser bearer token.
 const SCRIPT = `
 function t(k, fallback = '') { return (typeof i18n !== 'undefined' && i18n[k]) || fallback; }
+${BROWSER_ERROR_SCRIPT}
 const status = document.querySelector('#status');
 const csrf = document.querySelector('meta[name="csrf"]').content;
 const data = JSON.parse(document.querySelector('#page-data').textContent);
+let sessionExpired = false;
+function clientError(message, code) { return Object.assign(new Error(message), {browserMessage:message, code}); }
+function showError(error) {
+  if (status) status.textContent = error.name === 'NotAllowedError' || error.name === 'AbortError'
+    ? t('scriptCancelledOrTimeout') : error.browserMessage || t('scriptGenericError');
+  if (error.code === 'BROWSER_AUTH_REQUIRED') {
+    sessionExpired = true;
+    const login = document.querySelector('#security-login');
+    if (login) login.hidden = false;
+    document.querySelectorAll('button').forEach(b => b.disabled = true);
+  }
+}
 const enc = b => btoa(String.fromCharCode(...new Uint8Array(b))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
 const dec = s => Uint8Array.from(atob(s.replaceAll('-','+').replaceAll('_','/')), c => c.charCodeAt(0));
 async function api(path, body) {
-  const r = await fetch('/security/api/' + path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify(body)});
-  const v = await r.json();
-  if (!r.ok || v.error) throw new Error(v.error?.message || t('error', '验证失败，请刷新页面重试。'));
+  if (sessionExpired) throw clientError(browserErrorMessage({code:'BROWSER_AUTH_REQUIRED'}), 'BROWSER_AUTH_REQUIRED');
+  let r, v;
+  try {
+    r = await fetch('/security/api/' + path, {method:'POST', credentials:'same-origin', cache:'no-store', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify(body)});
+    v = await r.json();
+  } catch { throw clientError(t('scriptGenericError')); }
+  if (!r.ok || v.error) {
+    const error = r.status === 401 ? {code:'BROWSER_AUTH_REQUIRED'} : v.error;
+    throw clientError(browserErrorMessage(error), error?.code);
+  }
   return v;
 }
 async function ceremony(v) {
@@ -38,7 +59,7 @@ async function ceremony(v) {
     }
   }
   const c = await navigator.credentials[v.registration ? 'create' : 'get']({publicKey:o});
-  if (!c) throw new Error(t('scriptCancelledOrTimeout', '验证已取消，订单保持未批准。'));
+  if (!c) throw clientError(t('scriptCancelledOrTimeout'));
   if (typeof c.toJSON === 'function') {
     return c.toJSON();
   }
@@ -56,14 +77,18 @@ async function ceremony(v) {
 }
 let busy = false;
 async function act(operation, target) {
-  if (busy) return;
+  if (busy || sessionExpired) return;
   busy = true;
   const enabledButtons = [...document.querySelectorAll('button')].filter(b => !b.disabled);
   document.querySelectorAll('button').forEach(b => b.disabled = true);
   if (status) status.textContent = t('scriptVerifyingPrompt', '请在系统提示中完成 Passkey 验证…');
   try {
-    const name = document.querySelector('#credential-name')?.value || 'Passkey';
-    const v = await api('options', {operation,target,name,proposalId:data.proposalId,resetConfirmation:document.querySelector('#reset-confirmation')?.value});
+    const resetConfirmation = document.querySelector('#reset-confirmation')?.value;
+    if (operation === 'recover' && resetConfirmation !== '重置全部 Passkey') throw clientError(t('scriptRecoveryMismatch'));
+    const name = document.querySelector('#credential-name')?.value ?? 'Passkey';
+    if (!name.trim() || name.length > 80) throw clientError(t('scriptInvalidName'));
+    if (operation === 'delete' && data.credentialCount <= 1) throw clientError(t('cannotDeleteLast'));
+    const v = await api('options', {operation,target,name,proposalId:data.proposalId,resetConfirmation});
     const response = await ceremony(v);
     const result = await api('verify', {challengeId:v.challengeId,response});
     if (result.redirectTo) { location.assign(result.redirectTo); return; }
@@ -85,10 +110,10 @@ async function act(operation, target) {
       if (approveBtn) approveBtn.hidden = true;
     } else location.reload();
   } catch(e) {
-    if (status) status.textContent = e.name === 'NotAllowedError' ? t('scriptCancelledOrTimeout', '操作已取消或超时，订单保持未批准。') : e.message;
+    showError(e);
   } finally {
     busy = false;
-    enabledButtons.forEach(b => b.disabled = false);
+    if (!sessionExpired) enabledButtons.forEach(b => b.disabled = false);
   }
 }
 
@@ -102,21 +127,23 @@ document.querySelector('#reject-order')?.addEventListener('click', async () => {
     const result = await api('reject-proposal', {proposalId:data.proposalId});
     location.assign(result.redirectTo);
   } catch(e) {
-    if (status) status.textContent = e.message;
+    showError(e);
   } finally {
     busy = false;
-    enabledButtons.forEach(b => b.disabled = false);
+    if (!sessionExpired) enabledButtons.forEach(b => b.disabled = false);
   }
 });
 document.querySelector('#register-add')?.addEventListener('click', async e => {
   if (busy) return;
   busy = true;
   try {
-    const v = await api('add-options', {ticket:e.currentTarget.dataset.ticket,name:document.querySelector('#credential-name')?.value || 'Passkey'});
+    const name = document.querySelector('#credential-name')?.value ?? 'Passkey';
+    if (!name.trim() || name.length > 80) throw clientError(t('scriptInvalidName'));
+    const v = await api('add-options', {ticket:e.currentTarget.dataset.ticket,name});
     const response = await ceremony(v);
     await api('add-verify', {challengeId:v.challengeId,response});
     location.reload();
-  } catch(e) { if (status) status.textContent = e.message; } finally {busy = false;}
+  } catch(e) { showError(e); } finally {busy = false;}
 });
 
 if (data && data.authorizationId) {
@@ -133,7 +160,7 @@ if (data && data.authorizationId) {
     resumePromise = api('authorization-resume', { authorizationId: authId }).then(result => {
       if (result.redirectTo) location.replace(result.redirectTo);
     }).catch(e => {
-      if (status) status.textContent = e.message;
+      showError(e);
     });
     return resumePromise;
   }
@@ -149,7 +176,7 @@ if (data && data.authorizationId) {
       document.querySelector('#submit-auth-btn').style.display = 'inline-flex';
       if (status) status.textContent = '选项已准备就绪，请点击“调起系统硬件验证”。';
     } catch(e) {
-      if (status) status.textContent = e.message;
+      showError(e);
     } finally {
       busy = false;
     }
@@ -169,7 +196,7 @@ if (data && data.authorizationId) {
         document.querySelector('#action-buttons-container')?.remove();
       }
     } catch(e) {
-      if (status) status.textContent = e.name === 'NotAllowedError' ? '操作已取消，保持未批准。' : e.message;
+      showError(e);
     } finally {
       busy = false;
     }
@@ -183,7 +210,7 @@ if (data && data.authorizationId) {
       if (status) status.textContent = '已取消本次申请。';
       document.querySelector('#action-buttons-container')?.remove();
     } catch(e) {
-      if (status) status.textContent = e.message;
+      showError(e);
     } finally {
       busy = false;
     }
@@ -197,10 +224,15 @@ if (data && data.authorizationId) {
       polling = true;
       try {
         const r = await fetch('/security/api/authorization-status/' + encodeURIComponent(authId), { credentials: 'same-origin' });
-        if (!r.ok) return;
         const s = await r.json();
         // Local verification may have completed while this request was pending.
-        if (busy || resumePromise) return;
+        if (busy || resumePromise || sessionExpired) return;
+        if (!r.ok || s.error) {
+          const error = r.status === 401 ? {code:'BROWSER_AUTH_REQUIRED'} : s.error;
+          showError(clientError(browserErrorMessage(error), error?.code));
+          if (sessionExpired) clearInterval(poller);
+          return;
+        }
         if (s.status === 'APPROVED') {
           await resumeAuthorization();
         } else if (['FINISHING', 'COMPLETED', 'CANCELLED', 'INVALIDATED', 'FAILED', 'EXPIRED'].includes(s.status)) {
@@ -209,7 +241,7 @@ if (data && data.authorizationId) {
           if (badge) badge.textContent = s.status;
           if (status) status.textContent = '授权状态已变更为: ' + s.status;
         }
-      } catch {} finally { polling = false; }
+      } catch(e) { showError(e); } finally { polling = false; }
     }, 2000);
   }
 }
@@ -706,7 +738,7 @@ export function renderSecurityPage(
 
   const isBatch = !!proposal?.preview && typeof proposal.preview === "object" && Reflect.get(proposal.preview, "action") === "BATCH";
   // JSON script content is escaped for the HTML parser as well as the JS parser.
-  const data = JSON.stringify({ proposalId: proposal?.proposalId, isBatch }).replaceAll("<", "\\u003c");
+  const data = JSON.stringify({ proposalId: proposal?.proposalId, isBatch, credentialCount: credentials.length }).replaceAll("<", "\\u003c");
 
   const policyListHtml = html`
     <div class="policy-list">
@@ -925,6 +957,7 @@ export function renderSecurityPage(
       </div>
     `}
     <p id="status" role="status" aria-live="polite"></p>
+    <p id="security-login" hidden><a href="${session.recovery ? "/security/recover" : proposal ? `/security/approvals/${encodeURIComponent(proposal.proposalId)}` : "/security"}?lang=${lang}">${s.scriptRelogin}</a></p>
     <div class="action-hint">${s.sessionExpiryHint}</div>
     <div class="auth-footer">
       <a href="/security">${s.keyManagement}</a>
@@ -1055,6 +1088,7 @@ export function renderClientAuthorizationPage(
       <div class="card-divider"></div>
 
       <div id="status" class="action-hint" role="status" aria-live="polite">${isOriginalSession && clientAuth.status === "PENDING" ? s.statusAwaiting : ""}</div>
+      <p id="security-login" hidden><a href="/security/authorizations/${encodeURIComponent(clientAuth.id)}?lang=${lang}">${s.scriptRelogin}</a></p>
 
       ${clientAuth.status === "PENDING" ? html`
         <div id="action-buttons-container" style="display:flex;flex-direction:column;gap:12px;margin-top:14px;">

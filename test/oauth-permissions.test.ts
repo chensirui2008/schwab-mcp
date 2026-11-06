@@ -366,7 +366,8 @@ describe("S256 PKCE protocol", () => {
     const vault = vi.spyOn(appEnv.SCHWAB_VAULT, "get");
     const response = await dispatch(new Request(`${origin}/authorize?${params.toString()}`), appEnv);
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ error: "invalid_request" });
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    expect(await response.text()).toContain("请求无效或已过期");
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(response.headers.get("location")).toBeNull();
     expect(parse).not.toHaveBeenCalled();
@@ -471,7 +472,8 @@ describe("S256 PKCE protocol", () => {
       ? new Request(`${origin}/authorize/approve`, { method: "POST", headers, body: new URLSearchParams({ state, permissionLevel: "read_only" }) })
       : new Request(`${origin}/auth/github/callback?state=${state}&code=test-code`, { headers }), appEnv);
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ error: "invalid_request" });
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    expect(await response.text()).toContain("请求无效或已过期");
     expect(response.headers.get("location")).toBeNull();
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(list).not.toHaveBeenCalled();
@@ -668,7 +670,8 @@ describe("browser permission consent", () => {
       const failed = await authorize(appEnv, request, "read_only");
       expect(failures).toBeGreaterThan(0);
       expect(failed.status).toBe(503);
-      expect(await failed.json()).toMatchObject({ error: "temporarily_unavailable" });
+      expect(failed.headers.get("Content-Type")).toContain("text/html");
+      expect(await failed.text()).toContain("服务暂时不可用");
       expect(failed.headers.get("location")).toBeNull();
       expect(complete).not.toHaveBeenCalled();
       expect(log).toHaveBeenCalledWith(expect.stringContaining('"event":"mcp_authorization_revocation_failed"'));

@@ -1,3 +1,5 @@
+import type { ErrorCode } from "./types";
+
 export type SupportedLang = "zh-CN" | "en-US";
 
 export const DEFAULT_LANG: SupportedLang = "zh-CN";
@@ -127,6 +129,12 @@ export interface I18nDictionary {
     completionFooter: string;
   };
   security: {
+    scriptGenericError: string;
+    scriptRecoveryMismatch: string;
+    scriptInvalidName: string;
+    scriptRelogin: string;
+    errorPageTitle: string;
+    requestIdLabel: string;
     orderApprovalTitle: string;
     orderApprovalSubtitle: string;
     zeroKnowledgeNotice: string;
@@ -211,6 +219,7 @@ export interface I18nDictionary {
     scriptVerifySuccess: string;
     scriptAuthResume: string;
   };
+  browserErrors: Record<ErrorCode, string>;
   dashboard: {
     pageTitle: string;
     skipLink: string;
@@ -489,6 +498,12 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     completionFooter: "Charles Schwab MCP · 个人专用高安全实例",
   },
   security: {
+    scriptGenericError: "操作未能完成。请刷新核对服务器状态，勿盲目重复提交。",
+    scriptRecoveryMismatch: "确认短语不匹配，请输入“重置全部 Passkey”。",
+    scriptInvalidName: "请输入 1–80 个字符的 Passkey 名称，不能全为空格。",
+    scriptRelogin: "重新通过 GitHub 登录",
+    errorPageTitle: "无法完成此请求",
+    requestIdLabel: "请求编号",
     orderApprovalTitle: "订单 Passkey 硬件批准",
     orderApprovalSubtitle: "核对订单明细并使用 Passkey 授权执行 · 严格防篡改保障",
     zeroKnowledgeNotice: "• 零降级执行保障：受保护订单必须通过原生生物识别或硬件密钥批准，禁止对话降级。",
@@ -572,6 +587,24 @@ const DICTIONARY_ZH_CN: I18nDictionary = {
     scriptUnsupported: "当前环境不支持 WebAuthn，无法使用 Passkey。",
     scriptVerifySuccess: "已有 Passkey 验证成功。点击“注册新 Passkey”继续。",
     scriptAuthResume: "Passkey 核准成功，正在完成授权并交付结果…",
+  },
+  browserErrors: {
+    SECURITY_VERIFICATION_FAILED: "安全验证失败，请检查输入或请求是否已过期，然后刷新页面重新开始。",
+    SECURITY_POLICY_CHANGED: "安全策略已变更，此请求已失效。请返回客户端重新发起。",
+    BROWSER_AUTH_REQUIRED: "浏览器会话已过期，请重新通过 GitHub 登录。",
+    INVALID_ARGUMENT: "请求无效或已过期，请检查输入并重新开始。",
+    UPSTREAM_UNAVAILABLE: "服务暂时不可用，请稍后刷新；若已提交操作，请先核对服务器状态。",
+    RATE_LIMITED: "请求过于频繁，请稍后重试。",
+    ACCOUNT_ACCESS_DENIED: "此客户端无权访问该账户，请重新授权账户权限。",
+    AUTH_REQUIRED: "尚未连接 Schwab，请返回控制面板连接账户。",
+    REAUTHORIZATION_REQUIRED: "Schwab 授权已过期，请返回控制面板重新连接账户。",
+    SCHWAB_REJECTED: "Schwab 拒绝了此请求，请核对订单与账户状态。",
+    CONFIRMATION_INVALID: "确认信息无效，请返回客户端重新发起。",
+    CONFIRMATION_EXPIRED: "确认请求已过期，请返回客户端重新发起。",
+    TRADE_NOT_FOUND: "交易提案不存在或已过期，请返回客户端查询状态。",
+    TRADE_STATE_CONFLICT: "交易状态已变更，请返回客户端核对结果，勿重复提交。",
+    DIRECT_TRADING_SESSION_INVALID: "直接交易会话已失效，请返回客户端重新开始。",
+    EXECUTION_UNCERTAIN: "执行结果不确定，请先查询订单状态，勿重复提交。",
   },
   dashboard: {
     pageTitle: "Schwab MCP · 控制面板",
@@ -851,6 +884,12 @@ const DICTIONARY_EN_US: I18nDictionary = {
     completionFooter: "Charles Schwab MCP · Dedicated High-Security Instance",
   },
   security: {
+    scriptGenericError: "The operation could not be completed. Refresh and check server state before submitting again.",
+    scriptRecoveryMismatch: "Confirmation does not match. Enter “重置全部 Passkey” exactly.",
+    scriptInvalidName: "Enter a Passkey name of 1–80 characters, not just whitespace.",
+    scriptRelogin: "Sign in again with GitHub",
+    errorPageTitle: "Unable to complete this request",
+    requestIdLabel: "Request ID",
     orderApprovalTitle: "Order Passkey Hardware Approval",
     orderApprovalSubtitle: "Review order details and authorize with your registered Passkey",
     zeroKnowledgeNotice: "• Zero-Downgrade Security: Protected orders require native biometric or hardware Passkey approval.",
@@ -934,6 +973,24 @@ const DICTIONARY_EN_US: I18nDictionary = {
     scriptUnsupported: "WebAuthn is not supported in this environment.",
     scriptVerifySuccess: "Existing Passkey verified. Click 'Register New Passkey' to proceed.",
     scriptAuthResume: "Passkey approved. Completing authorization and issuing tokens...",
+  },
+  browserErrors: {
+    SECURITY_VERIFICATION_FAILED: "Security verification failed. Check your input or whether the request expired, then refresh to start again.",
+    SECURITY_POLICY_CHANGED: "The security policy changed and this request is no longer valid. Start again from the client.",
+    BROWSER_AUTH_REQUIRED: "Your browser session expired. Sign in again with GitHub.",
+    INVALID_ARGUMENT: "The request is invalid or expired. Check your input and start again.",
+    UPSTREAM_UNAVAILABLE: "The service is temporarily unavailable. Try later; if you submitted an operation, check server state first.",
+    RATE_LIMITED: "Too many requests. Please try again later.",
+    ACCOUNT_ACCESS_DENIED: "This client cannot access that account. Authorize account access again.",
+    AUTH_REQUIRED: "Schwab is not connected. Return to the dashboard to connect your account.",
+    REAUTHORIZATION_REQUIRED: "Schwab authorization expired. Return to the dashboard to reconnect.",
+    SCHWAB_REJECTED: "Schwab rejected this request. Check the order and account state.",
+    CONFIRMATION_INVALID: "Confirmation is invalid. Start again from the client.",
+    CONFIRMATION_EXPIRED: "Confirmation expired. Start again from the client.",
+    TRADE_NOT_FOUND: "The trade proposal is missing or expired. Check its status in the client.",
+    TRADE_STATE_CONFLICT: "The trade state changed. Check the result in the client before submitting again.",
+    DIRECT_TRADING_SESSION_INVALID: "The direct trading session is no longer valid. Start again from the client.",
+    EXECUTION_UNCERTAIN: "The execution result is uncertain. Check order status before submitting again.",
   },
   dashboard: {
     pageTitle: "Schwab MCP · Control Center",
@@ -1161,6 +1218,7 @@ export function formatString(template: string, vars: Record<string, string | num
 export function getDashboardClientI18n(lang: SupportedLang = DEFAULT_LANG): Record<string, string> {
   const dict = getDictionary(lang);
   return {
+    ...getBrowserErrorClientI18n(lang),
     ...dict.dashboard,
     ...dict.common,
   };
@@ -1172,8 +1230,17 @@ export function getDashboardClientI18n(lang: SupportedLang = DEFAULT_LANG): Reco
 export function getSecurityClientI18n(lang: SupportedLang = DEFAULT_LANG): Record<string, string> {
   const dict = getDictionary(lang);
   return {
+    ...getBrowserErrorClientI18n(lang),
     ...dict.security,
     ...dict.common,
+  };
+}
+
+function getBrowserErrorClientI18n(lang: SupportedLang): Record<string, string> {
+  const dict = getDictionary(lang);
+  return {
+    scriptGenericError: dict.security.scriptGenericError,
+    ...Object.fromEntries(Object.entries(dict.browserErrors).map(([code, message]) => [`browserError_${code}`, message])),
   };
 }
 
